@@ -47,7 +47,9 @@ class StoreTests(unittest.TestCase):
             ready = store.candidates(status="ready")
 
         self.assertIsNotNone(restored)
-        self.assertEqual(restored.issue.labels, ("bug",))  # type: ignore[union-attr]
+        if restored is None:
+            self.fail("candidate was not restored")
+        self.assertEqual(restored.issue.labels, ("bug",))
         self.assertEqual(len(ready), 1)
 
 

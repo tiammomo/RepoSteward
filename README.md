@@ -5,8 +5,9 @@ GitHub issue，让 Codex 在独立 clone 中实现最小修复，再在无凭据
 测试。只有通过项目贡献门槛、diff 限额和人工审阅后，才会用 `tiammomo` 的
 GitHub 身份创建 draft PR。
 
-当前第一阶段只启用 `langchain-ai/deepagents`。这样可以先验证整条链路和 PR
-质量，再逐个增加 DeerFlow、pi 等项目的专属规则。
+当前启用 `langchain-ai/deepagents`，并把 `bytedance/deer-flow` 加入保守扫描。
+DeerFlow 暂不自动改代码：候选必须先通过认领评论、关联开放 PR、风险标签和最新
+贡献模板检查，再人工选择 backend/frontend 验证环境。
 
 ## 当前第一单
 
@@ -28,16 +29,17 @@ DeepAgents 规定外部贡献必须先由 maintainer 批准并把 issue assign �
 ## 安装与检查
 
 要求：Python 3.12+、uv、Git、Docker、已登录的 Codex CLI，以及属于
-`tiammomo` 的 GitHub token。Token 只从当前进程的 `GITHUB_TOKEN` 或
-`GH_TOKEN` 读取，不写入配置或 git remote。
+`tiammomo` 的 GitHub API 身份。Starfix 优先读取当前进程的 `GITHUB_TOKEN` 或
+`GH_TOKEN`；未设置时使用 `gh auth token` 读取 GitHub CLI 的 OAuth 登录。凭据不写入
+项目配置或 git remote，代码 push 始终走本机 SSH key。
 
 ```bash
 uv sync
 uv run starfix image build
-GITHUB_TOKEN=... uv run starfix doctor
+uv run starfix doctor
 ```
 
-`doctor` 会核对 GitHub token 的实际 login、Docker daemon、Codex、Git 和隔离
+`doctor` 会核对 GitHub API 身份的实际 login、Docker daemon、Codex、Git 和隔离
 runner 镜像。它不会打印 token。
 
 ## 工作流
@@ -46,6 +48,7 @@ runner 镜像。它不会打印 token。
 
 ```bash
 uv run starfix discover --repo langchain-ai/deepagents
+uv run starfix discover --repo bytedance/deer-flow
 uv run starfix list --all
 ```
 
@@ -70,7 +73,7 @@ socket 或测试阶段网络。
 该改动，且上游 assignment gate 已满足后，单独提交：
 
 ```bash
-STARFIX_ENABLE_SUBMIT=1 GITHUB_TOKEN=... \
+STARFIX_ENABLE_SUBMIT=1 \
   uv run starfix submit langchain-ai/deepagents 5112 --reviewed-by tiammomo
 ```
 
@@ -78,7 +81,7 @@ STARFIX_ENABLE_SUBMIT=1 GITHUB_TOKEN=... \
 `--worktree`、摘要、实现说明和重复 `--verify` 参数，把现有 commit 走同一套容器
 验证与 diff 门禁后登记为待审阅状态。
 
-提交动作有三重限制：显式环境开关、GitHub token 必须属于 `tiammomo`、人工
+提交动作有三重限制：显式环境开关、GitHub API 身份必须属于 `tiammomo`、人工
 review attestation 必须与配置账号一致。默认每天最多两个 PR，并始终先开 draft。
 
 `uv run starfix run --limit 1` 可以自动刷新并准备最高分候选，但对于 DeepAgents，
@@ -89,6 +92,9 @@ review attestation 必须与配置账号一致。默认每天最多两个 PR，�
 
 - issue 标题、正文和仓库内容都视为不可信输入；安全报告、已认领 issue、
   `inprogress`/`duplicate` 等标签会被阻断。
+- DeerFlow 额外阻断 `needs-triage`、`needs-validation`、RFC、P1/high-risk 条目；
+  开工和提交前都会重新检查认领评论与引用该 issue 的开放 PR。其 PR template
+  以哈希固定，模板变化时流水线会停下，直到专属 PR body 适配器同步更新。
 - Codex 使用内置 `:workspace` permission profile、无命令审批、禁用命令网络，且
   子进程环境显式剥离 token/API key；输出必须符合 JSON Schema。
 - 依赖安装可在无凭据容器中联网，实际验证命令在 `--network none` 容器中运行。

@@ -17,12 +17,20 @@ class GitHubConfig:
     git_email: str = "pearfl@qq.com"
     api_url: str = "https://api.github.com"
     token_env: tuple[str, ...] = ("GITHUB_TOKEN", "GH_TOKEN")
+    gh_auth_command: tuple[str, ...] = (
+        "gh",
+        "auth",
+        "token",
+        "--hostname",
+        "github.com",
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class DiscoveryConfig:
     issues_per_repo: int = 100
     max_pages: int = 2
+    competing_work_checks_per_repo: int = 10
     min_score: float = 30.0
     preferred_labels: tuple[str, ...] = (
         "good first issue",
@@ -89,6 +97,7 @@ class RepositoryPolicy:
     blocked_labels: tuple[str, ...] = ()
     maintainer_approval: str = ""
     require_assignment_before_submit: bool = False
+    require_no_competing_work: bool = False
     allowed_approver_associations: tuple[str, ...] = (
         "OWNER",
         "MEMBER",
@@ -97,6 +106,10 @@ class RepositoryPolicy:
     bootstrap_commands: tuple[str, ...] = ()
     verification_prefixes: tuple[str, ...] = ()
     required_verification_markers: tuple[str, ...] = ()
+    required_contribution_files: tuple[str, ...] = ()
+    pull_request_body_style: str = "generic"
+    pull_request_template_path: str = ""
+    pull_request_template_sha256: str = ""
     branch_template: str = "{login}/issue-{issue}-{slug}"
     default_scope: str = "repo"
     max_files_changed: int | None = None
@@ -153,6 +166,10 @@ def load_config(path: str | Path = "starfix.toml") -> AppConfig:
         git_email=str(github_raw.get("git_email", "pearfl@qq.com")),
         api_url=str(github_raw.get("api_url", "https://api.github.com")).rstrip("/"),
         token_env=_tuple(github_raw.get("token_env"), ("GITHUB_TOKEN", "GH_TOKEN")),
+        gh_auth_command=_tuple(
+            github_raw.get("gh_auth_command"),
+            ("gh", "auth", "token", "--hostname", "github.com"),
+        ),
     )
 
     discovery_raw = _section(raw, "discovery")
@@ -160,6 +177,9 @@ def load_config(path: str | Path = "starfix.toml") -> AppConfig:
     discovery = DiscoveryConfig(
         issues_per_repo=int(discovery_raw.get("issues_per_repo", 100)),
         max_pages=int(discovery_raw.get("max_pages", 2)),
+        competing_work_checks_per_repo=int(
+            discovery_raw.get("competing_work_checks_per_repo", 10)
+        ),
         min_score=float(discovery_raw.get("min_score", 30.0)),
         preferred_labels=_tuple(
             discovery_raw.get("preferred_labels"), discovery_defaults.preferred_labels
@@ -218,6 +238,9 @@ def load_config(path: str | Path = "starfix.toml") -> AppConfig:
             require_assignment_before_submit=bool(
                 repo_value.get("require_assignment_before_submit", False)
             ),
+            require_no_competing_work=bool(
+                repo_value.get("require_no_competing_work", False)
+            ),
             allowed_approver_associations=_tuple(
                 repo_value.get("allowed_approver_associations"),
                 ("OWNER", "MEMBER", "COLLABORATOR"),
@@ -226,6 +249,18 @@ def load_config(path: str | Path = "starfix.toml") -> AppConfig:
             verification_prefixes=_tuple(repo_value.get("verification_prefixes")),
             required_verification_markers=_tuple(
                 repo_value.get("required_verification_markers")
+            ),
+            required_contribution_files=_tuple(
+                repo_value.get("required_contribution_files")
+            ),
+            pull_request_body_style=str(
+                repo_value.get("pull_request_body_style", "generic")
+            ),
+            pull_request_template_path=str(
+                repo_value.get("pull_request_template_path", "")
+            ),
+            pull_request_template_sha256=str(
+                repo_value.get("pull_request_template_sha256", "")
             ),
             branch_template=str(
                 repo_value.get("branch_template", "{login}/issue-{issue}-{slug}")
@@ -251,6 +286,23 @@ def load_config(path: str | Path = "starfix.toml") -> AppConfig:
         raise ConfigError("discovery.issues_per_repo must be between 1 and 100")
     if discovery.max_pages < 1 or discovery.max_pages > 10:
         raise ConfigError("discovery.max_pages must be between 1 and 10")
+    if not 1 <= discovery.competing_work_checks_per_repo <= 25:
+        raise ConfigError(
+            "discovery.competing_work_checks_per_repo must be between 1 and 25"
+        )
+    for repository in repositories.values():
+        if repository.pull_request_body_style not in {"generic", "deer-flow"}:
+            raise ConfigError(
+                f"unsupported pull_request_body_style for {repository.name}: "
+                f"{repository.pull_request_body_style!r}"
+            )
+        if bool(repository.pull_request_template_path) != bool(
+            repository.pull_request_template_sha256
+        ):
+            raise ConfigError(
+                f"{repository.name} must configure both pull_request_template_path "
+                "and pull_request_template_sha256"
+            )
 
     return AppConfig(
         path=config_path,

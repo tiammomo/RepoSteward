@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from .config import AppConfig, RepositoryPolicy
@@ -10,7 +11,9 @@ from .models import Candidate, Issue, RepositoryInfo
 from .store import Store, utc_now
 
 SECURITY_TITLE = re.compile(
-    r"(?:\bsecurity\b|\bvulnerabilit|\bcve-\d|\bghsa-)", re.IGNORECASE
+    r"(?:\bsecurity\b|\bvulnerabilit|\bcve-\d|\bghsa-|\bexfil(?:tration)?\b|"
+    r"\bskillscan\b)",
+    re.IGNORECASE,
 )
 
 
@@ -127,12 +130,58 @@ class DiscoveryService:
             if not policy.enabled or (wanted and key != wanted):
                 continue
             repository = self.github.repository(policy.name)
+            repository_candidates: list[Candidate] = []
             for issue in self.github.issues(
                 policy.name,
                 per_page=self.config.discovery.issues_per_repo,
                 max_pages=self.config.discovery.max_pages,
             ):
                 candidate = score_issue(issue, repository, policy, self.config)
+                repository_candidates.append(candidate)
+            if policy.require_no_competing_work:
+                references = self.github.open_pull_request_references(
+                    policy.name, own_login=self.config.github.login
+                )
+                eligible = sorted(
+                    (value for value in repository_candidates if not value.blockers),
+                    key=lambda value: value.score,
+                    reverse=True,
+                )
+                checked = {
+                    value.issue.number
+                    for value in eligible[
+                        : self.config.discovery.competing_work_checks_per_repo
+                    ]
+                }
+                enriched: list[Candidate] = []
+                for candidate in repository_candidates:
+                    if candidate.blockers:
+                        enriched.append(candidate)
+                        continue
+                    if candidate.issue.number not in checked:
+                        enriched.append(
+                            replace(
+                                candidate,
+                                blockers=candidate.blockers
+                                + ("competing-work check deferred by scan budget",),
+                            )
+                        )
+                        continue
+                    conflicts = self.github.competing_work(
+                        policy.name,
+                        candidate.issue.number,
+                        own_login=self.config.github.login,
+                        pull_request_references=references,
+                    )
+                    blockers = tuple(
+                        f"{value.kind} by {value.actor}: {value.url}"
+                        for value in conflicts
+                    )
+                    enriched.append(
+                        replace(candidate, blockers=candidate.blockers + blockers)
+                    )
+                repository_candidates = enriched
+            for candidate in repository_candidates:
                 self.store.upsert_candidate(candidate)
                 candidates.append(candidate)
         return sorted(candidates, key=lambda item: item.score, reverse=True)

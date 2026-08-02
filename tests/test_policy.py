@@ -73,6 +73,28 @@ class PolicyTests(unittest.TestCase):
         self.assertIn("tiammomo", body)
         self.assertIn("takes responsibility", body)
 
+    def test_deer_flow_body_preserves_required_ai_disclosure(self) -> None:
+        policy = self.config.repositories["bytedance/deer-flow"]
+        body = Pipeline._pull_request_body(
+            123,
+            {
+                "changed_files": ["backend/tests/test_example.py"],
+                "agent_result": {
+                    "summary": "The failing request is handled consistently.",
+                    "implementation_notes": "The backend now preserves the error.",
+                    "verification_commands": ["cd backend && make test"],
+                    "risks": [],
+                },
+            },
+            "tiammomo",
+            policy=policy,
+        )
+        self.assertIn("Fixes #123", body)
+        self.assertIn("## Bug fix verification", body)
+        self.assertIn("## AI assistance", body)
+        self.assertIn("**Tool(s) used:** OpenAI Codex CLI", body)
+        self.assertIn("- [x] I've read and understand every line", body)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -74,6 +74,19 @@ class DiscoveryTests(unittest.TestCase):
             any("private disclosure" in item for item in candidate.blockers)
         )
 
+    def test_exfiltration_scanner_gap_uses_private_disclosure_gate(self) -> None:
+        issue = replace(
+            self.issue,
+            title="SkillScan false negative in an exfiltration signal",
+            labels=("enhancement",),
+        )
+
+        candidate = score_issue(issue, self.repository, self.policy, self.config)
+
+        self.assertTrue(
+            any("private disclosure" in item for item in candidate.blockers)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

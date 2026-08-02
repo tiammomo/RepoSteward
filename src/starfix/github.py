@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -28,15 +30,46 @@ class PullRequest:
     draft: bool
 
 
-def resolve_token(config: GitHubConfig, *, required: bool = False) -> str:
+@dataclass(frozen=True, slots=True)
+class CompetingWork:
+    kind: str
+    actor: str
+    url: str
+    detail: str
+
+
+def resolve_authentication(
+    config: GitHubConfig, *, required: bool = False
+) -> tuple[str, str]:
     for name in config.token_env:
         value = os.environ.get(name, "").strip()
         if value:
-            return value
+            return value, name
+    command = config.gh_auth_command
+    if command and shutil.which(command[0]):
+        try:
+            result = subprocess.run(
+                list(command),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            result = None
+        if result is not None and result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip(), "gh OAuth"
     if required:
         names = " or ".join(config.token_env)
-        raise GitHubError(f"GitHub authentication required; set {names}")
-    return ""
+        raise GitHubError(
+            f"GitHub API authentication required; set {names} or authenticate "
+            "GitHub CLI with 'gh auth login'"
+        )
+    return "", "missing"
+
+
+def resolve_token(config: GitHubConfig, *, required: bool = False) -> str:
+    return resolve_authentication(config, required=required)[0]
 
 
 class GitHubClient:
@@ -191,6 +224,90 @@ class GitHubClient:
             if start.search(body) or end.search(body):
                 return True
         return False
+
+    def competing_work(
+        self,
+        full_name: str,
+        number: int,
+        *,
+        own_login: str,
+        pull_request_references: dict[int, tuple[CompetingWork, ...]] | None = None,
+    ) -> tuple[CompetingWork, ...]:
+        conflicts: list[CompetingWork] = []
+        comments, _ = self._request(
+            "GET",
+            f"/repos/{full_name}/issues/{number}/comments",
+            query={"per_page": 100},
+        )
+        claim = re.compile(
+            r"(?:^|\n)\s*/claim\s*(?:$|\n)|"
+            r"\b(?:i(?:'d|'ll|'m| am| can| will| would)|working on|picking up|"
+            r"taking)\b.{0,100}\b(?:take|work|fix|implement|prepare|send|open|pr)\b|"
+            r"我.{0,40}(?:正在|会|准备).{0,40}(?:修复|实现|提交|提\s*pr)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        for comment in comments:
+            actor = str((comment.get("user") or {}).get("login") or "")
+            if not actor or actor.casefold() == own_login.casefold():
+                continue
+            body = str(comment.get("body") or "").strip()
+            if claim.search(body):
+                conflicts.append(
+                    CompetingWork(
+                        kind="claim_comment",
+                        actor=actor,
+                        url=str(comment.get("html_url") or ""),
+                        detail=body[:240],
+                    )
+                )
+
+        references = pull_request_references
+        if references is None:
+            references = self.open_pull_request_references(
+                full_name, own_login=own_login
+            )
+        conflicts.extend(references.get(number, ()))
+        return tuple(conflicts)
+
+    def open_pull_request_references(
+        self, full_name: str, *, own_login: str
+    ) -> dict[int, tuple[CompetingWork, ...]]:
+        references: dict[int, list[CompetingWork]] = {}
+        seen_pulls: set[int] = set()
+        issue_reference = re.compile(r"(?<![\w/])#(\d+)(?!\d)")
+        for page in range(1, 3):
+            pulls, _ = self._request(
+                "GET",
+                f"/repos/{full_name}/pulls",
+                query={"state": "open", "per_page": 100, "page": page},
+            )
+            for pull in pulls:
+                pull_number = int(pull["number"])
+                if pull_number in seen_pulls:
+                    continue
+                seen_pulls.add(pull_number)
+                body = str(pull.get("body") or "")
+                actor = str((pull.get("user") or {}).get("login") or "")
+                head_owner = str(
+                    (
+                        ((pull.get("head") or {}).get("repo") or {}).get("owner") or {}
+                    ).get("login")
+                    or ""
+                )
+                if own_login.casefold() in {actor.casefold(), head_owner.casefold()}:
+                    continue
+                conflict = CompetingWork(
+                    kind="open_pull_request",
+                    actor=actor,
+                    url=str(pull.get("html_url") or ""),
+                    detail=f"#{pull_number}: {pull.get('title', '')}",
+                )
+                for match in issue_reference.finditer(body):
+                    number = int(match.group(1))
+                    references.setdefault(number, []).append(conflict)
+            if len(pulls) < 100:
+                break
+        return {key: tuple(value) for key, value in references.items()}
 
     def ensure_fork(self, upstream: str, owner: str, *, timeout: int = 120) -> str:
         fork_name = upstream.split("/", 1)[1]

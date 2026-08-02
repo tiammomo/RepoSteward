@@ -7,10 +7,12 @@ git_name = "tiammomo"
 git_email = "pearfl@qq.com"
 api_url = "https://api.github.com"
 token_env = ["GITHUB_TOKEN", "GH_TOKEN"]
+gh_auth_command = ["gh", "auth", "token", "--hostname", "github.com"]
 
 [discovery]
 issues_per_repo = 100
 max_pages = 2
+competing_work_checks_per_repo = 10
 min_score = 30
 preferred_labels = ["good first issue", "help wanted", "bug", "documentation", "external"]
 blocked_labels = [
@@ -56,6 +58,8 @@ min_stars = 5000
 preferred_labels = ["external", "bug", "deepagents"]
 blocked_labels = ["quickjs", "needs-maintainer-action"]
 require_assignment_before_submit = true
+require_no_competing_work = true
+required_contribution_files = ["AGENTS.md", "libs/DEVELOPMENT.md"]
 bootstrap_commands = ["cd libs/deepagents && uv sync --all-groups"]
 verification_prefixes = [
   "cd libs/deepagents && uv run --group test pytest ",
@@ -67,4 +71,46 @@ required_verification_markers = ["pytest", "ruff check", "ruff format", "ty chec
 branch_template = "{login}/{scope}/{slug}"
 default_scope = "sdk"
 max_files_changed = 10
+max_diff_lines = 500
+
+[repositories."bytedance/deer-flow"]
+enabled = true
+# DeerFlow is discovery-only until a non-conflicting issue has been selected and
+# its backend/frontend verification image is chosen explicitly.
+auto_prepare = false
+min_stars = 10000
+preferred_labels = ["help wanted", "bug", "documentation"]
+blocked_labels = [
+  "security",
+  "needs-triage",
+  "needs-validation",
+  "RFC",
+  "P1",
+  "risk:high",
+  "duplicate",
+  "AI Submitted",
+]
+require_no_competing_work = true
+required_contribution_files = [
+  "AGENTS.md",
+  "CONTRIBUTING.md",
+  ".github/pull_request_template.md",
+]
+pull_request_body_style = "deer-flow"
+pull_request_template_path = ".github/pull_request_template.md"
+pull_request_template_sha256 = "001208d279496a4a3475fe7df5c522555a8d6f55fd0b6627562fe0560e75259c"
+bootstrap_commands = ["cd backend && uv sync --all-groups"]
+verification_prefixes = [
+  "cd backend && make lint",
+  "cd backend && make test",
+  "cd frontend && pnpm format",
+  "cd frontend && pnpm lint",
+  "cd frontend && pnpm typecheck",
+  "cd frontend && BETTER_AUTH_SECRET=local-dev-secret pnpm build",
+  "cd frontend && make test",
+  "cd frontend && make test-e2e",
+]
+branch_template = "{login}/{scope}/{slug}"
+default_scope = "deer-flow"
+max_files_changed = 12
 max_diff_lines = 500

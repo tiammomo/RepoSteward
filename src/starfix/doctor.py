@@ -5,7 +5,7 @@ import subprocess
 from typing import Any
 
 from .config import AppConfig
-from .github import GitHubClient, GitHubError, resolve_token
+from .github import GitHubClient, GitHubError, resolve_authentication
 from .verifier import DockerVerifier
 
 
@@ -44,8 +44,8 @@ def run_doctor(config: AppConfig) -> tuple[dict[str, Any], bool]:
         report["runner"]["image"] = config.runner.image
         report["runner"]["image_available"] = image
         ok = ok and image
-    token = resolve_token(config.github)
-    report["github"]["token"] = "present" if token else "missing"
+    token, source = resolve_authentication(config.github)
+    report["github"]["authentication"] = source
     if token:
         try:
             login = GitHubClient(config.github, token).authenticated_login()

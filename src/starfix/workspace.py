@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -155,8 +154,8 @@ class WorkspaceManager:
             text=True,
         ).stdout.strip()
 
-    def push(self, worktree: Path, fork: str, branch: str, token: str) -> None:
-        fork_url = f"https://github.com/{fork}.git"
+    def push(self, worktree: Path, fork: str, branch: str) -> None:
+        fork_url = f"git@github.com:{fork}.git"
         remotes = subprocess.run(
             ["git", "remote"],
             cwd=worktree,
@@ -171,41 +170,19 @@ class WorkspaceManager:
         )
         subprocess.run(remote_command, cwd=worktree, check=True, capture_output=True)
 
-        with tempfile.TemporaryDirectory(prefix="starfix-askpass-") as directory:
-            askpass = Path(directory) / "askpass.sh"
-            askpass.write_text(
-                "#!/bin/sh\n"
-                'case "$1" in\n'
-                "  *Username*) printf '%s\\n' \"$STARFIX_GIT_USERNAME\" ;;\n"
-                "  *) printf '%s\\n' \"$STARFIX_GIT_TOKEN\" ;;\n"
-                "esac\n",
-                encoding="utf-8",
-            )
-            askpass.chmod(0o700)
-            environment = sanitized_environment(keep_codex_credentials=False)
-            environment.update(
-                {
-                    "GIT_ASKPASS": str(askpass),
-                    "STARFIX_GIT_USERNAME": self.config.github.login,
-                    "STARFIX_GIT_TOKEN": token,
-                    "GIT_TERMINAL_PROMPT": "0",
-                }
-            )
-            result = subprocess.run(
-                [
-                    "git",
-                    "-c",
-                    "credential.helper=",
-                    "push",
-                    "--no-verify",
-                    "fork",
-                    f"HEAD:refs/heads/{branch}",
-                ],
-                cwd=worktree,
-                check=False,
-                capture_output=True,
-                text=True,
-                env=environment,
-            )
+        result = subprocess.run(
+            [
+                "git",
+                "push",
+                "--no-verify",
+                "fork",
+                f"HEAD:refs/heads/{branch}",
+            ],
+            cwd=worktree,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=sanitized_environment(keep_codex_credentials=False),
+        )
         if result.returncode:
             raise WorkspaceError(f"git push failed: {result.stderr.strip()}")

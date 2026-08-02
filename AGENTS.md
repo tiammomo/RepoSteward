@@ -15,9 +15,9 @@ opens pull requests only after repository-specific gates and local human review.
 
 ## Safety invariants
 
-- Never expose GitHub credentials to Codex, tests, repository hooks, or Docker
-  containers. A token may be passed only to the GitHub REST client and the
-  hook-disabled `git push` process.
+- Never expose GitHub credentials to Codex, tests, repository hooks, Git push,
+  or Docker containers. An API credential may be passed only to the GitHub REST
+  client; Git clone/push uses the host's SSH key.
 - Do not submit a PR without a separate `submit` invocation, the
   `STARFIX_ENABLE_SUBMIT=1` environment gate, and `--reviewed-by tiammomo`.
 - Respect repository contribution policies. Assignment/approval checks are hard
