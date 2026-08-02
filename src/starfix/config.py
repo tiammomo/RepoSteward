@@ -291,7 +291,11 @@ def load_config(path: str | Path = "starfix.toml") -> AppConfig:
             "discovery.competing_work_checks_per_repo must be between 1 and 25"
         )
     for repository in repositories.values():
-        if repository.pull_request_body_style not in {"generic", "deer-flow"}:
+        if repository.pull_request_body_style not in {
+            "generic",
+            "deer-flow",
+            "openmldb",
+        }:
             raise ConfigError(
                 f"unsupported pull_request_body_style for {repository.name}: "
                 f"{repository.pull_request_body_style!r}"

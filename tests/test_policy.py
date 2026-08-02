@@ -95,6 +95,27 @@ class PolicyTests(unittest.TestCase):
         self.assertIn("**Tool(s) used:** OpenAI Codex CLI", body)
         self.assertIn("- [x] I've read and understand every line", body)
 
+    def test_openmldb_body_is_concise_and_preserves_template(self) -> None:
+        policy = self.config.repositories["4paradigm/openmldb"]
+        body = Pipeline._pull_request_body(
+            939,
+            {
+                "agent_result": {
+                    "summary": "Add a batch configuration.",
+                    "implementation_notes": "Forward it to EngineOptions.",
+                    "verification_commands": ["mvn test"],
+                    "risks": [],
+                }
+            },
+            "tiammomo",
+            policy=policy,
+        )
+        self.assertIn("What kind of change", body)
+        self.assertIn("Closes #939", body)
+        self.assertIn("spark.openmldb.window.column.pruning=true", body)
+        self.assertNotIn("AI assistance", body)
+        self.assertLess(len(body.splitlines()), 20)
+
 
 if __name__ == "__main__":
     unittest.main()

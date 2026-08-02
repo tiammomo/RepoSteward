@@ -382,6 +382,8 @@ class Pipeline:
             return Pipeline._deer_flow_pull_request_body(
                 issue_number, details, reviewed_by
             )
+        if policy is not None and policy.pull_request_body_style == "openmldb":
+            return Pipeline._openmldb_pull_request_body(issue_number, details)
         agent = details["agent_result"]
         commands = agent["verification_commands"]
         verification_text = ", ".join(f"`{value}`" for value in commands)
@@ -404,6 +406,21 @@ Areas for careful review:
 AI assistance: OpenAI Codex CLI was used to investigate the issue, implement the
 change, and draft tests. `{reviewed_by}` reviewed the final diff, understands the
 change, and takes responsibility for this contribution.
+"""
+
+    @staticmethod
+    def _openmldb_pull_request_body(issue_number: int, details: dict[str, Any]) -> str:
+        return f"""* **What kind of change does this PR introduce?**
+
+Feature.
+
+* **What is the current behavior?**
+
+Window column pruning cannot be enabled from openmldb-batch. Closes #{issue_number}.
+
+* **What is the new behavior (if this is a feature change)?**
+
+`spark.openmldb.window.column.pruning=true` enables the engine optimization.
 """
 
     @staticmethod

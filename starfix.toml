@@ -123,6 +123,7 @@ preferred_labels = ["good first issue", "help wanted", "bug", "enhancement", "ba
 require_assignment_before_submit = true
 require_no_competing_work = true
 required_contribution_files = ["CONTRIBUTING.md", ".github/pull_request_template.md"]
+pull_request_body_style = "openmldb"
 pull_request_template_path = ".github/pull_request_template.md"
 pull_request_template_sha256 = "c1e4a04ddac54afdef797758351b9286b98bf0b4980175af29e9831d3cdbde57"
 bootstrap_commands = [

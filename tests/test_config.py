@@ -28,6 +28,7 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(openmldb.auto_prepare)
         self.assertTrue(openmldb.require_assignment_before_submit)
         self.assertTrue(openmldb.require_no_competing_work)
+        self.assertEqual(openmldb.pull_request_body_style, "openmldb")
         self.assertIn("TestSparkPlanner", openmldb.required_verification_markers)
         self.assertEqual(openmldb.default_scope, "batch")
 
