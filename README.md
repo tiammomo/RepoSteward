@@ -5,7 +5,8 @@ GitHub issue，让 Codex 在独立 clone 中实现最小修复，再在无凭据
 测试。只有通过项目贡献门槛、diff 限额和人工审阅后，才会用 `tiammomo` 的
 GitHub 身份创建 draft PR。
 
-当前启用 `langchain-ai/deepagents`，并把 `bytedance/deer-flow` 加入保守扫描。
+当前启用 `langchain-ai/deepagents`，并把 `bytedance/deer-flow` 和
+`4paradigm/OpenMLDB` 加入保守扫描。
 DeerFlow 暂不自动改代码：候选必须先通过认领评论、关联开放 PR、风险标签和最新
 贡献模板检查，再人工选择 backend/frontend 验证环境。
 
@@ -49,6 +50,7 @@ runner 镜像。它不会打印 token。
 ```bash
 uv run starfix discover --repo langchain-ai/deepagents
 uv run starfix discover --repo bytedance/deer-flow
+uv run starfix discover --repo 4paradigm/OpenMLDB
 uv run starfix list --all
 ```
 

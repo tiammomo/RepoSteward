@@ -3,11 +3,50 @@ FROM python:3.12-bookworm
 
 COPY --from=uv /uv /uvx /bin/
 
+ARG TEMURIN_8_URL=https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u502-b07/OpenJDK8U-jdk_x64_linux_hotspot_8u502b07.tar.gz
+ARG TEMURIN_8_SHA256=b8f5440f64f50193c01f67dacba55c9660caffe13b908baf6bd1955f4dd4c3ea
+ARG MAVEN_VERSION=3.9.16
+ARG MAVEN_SHA512=831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6
+ARG PROTOC_VERSION=3.6.1
+ARG PROTOC_SHA256=6003de742ea3fcf703cfec1cd4a3380fd143081a2eb0e559065563496af27807
+
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential git \
+    && apt-get install -y --no-install-recommends build-essential ca-certificates curl git unzip \
+    && curl --fail --location --silent --show-error "$TEMURIN_8_URL" --output /tmp/temurin.tar.gz \
+    && echo "$TEMURIN_8_SHA256  /tmp/temurin.tar.gz" | sha256sum --check - \
+    && curl --fail --location --silent --show-error \
+        "https://dlcdn.apache.org/maven/maven-3/$MAVEN_VERSION/binaries/apache-maven-$MAVEN_VERSION-bin.tar.gz" \
+        --output /tmp/maven.tar.gz \
+    && echo "$MAVEN_SHA512  /tmp/maven.tar.gz" | sha512sum --check - \
+    && curl --fail --location --silent --show-error \
+        "https://github.com/protocolbuffers/protobuf/releases/download/v$PROTOC_VERSION/protoc-$PROTOC_VERSION-linux-x86_64.zip" \
+        --output /tmp/protoc.zip \
+    && echo "$PROTOC_SHA256  /tmp/protoc.zip" | sha256sum --check - \
+    && mkdir -p /opt/java/temurin-8u502-b07 /opt/maven/apache-maven-$MAVEN_VERSION \
+        /opt/protobuf/protoc-$PROTOC_VERSION \
+    && tar -xzf /tmp/temurin.tar.gz --strip-components=1 -C /opt/java/temurin-8u502-b07 \
+    && tar -xzf /tmp/maven.tar.gz --strip-components=1 -C /opt/maven/apache-maven-$MAVEN_VERSION \
+    && unzip -q /tmp/protoc.zip -d /opt/protobuf/protoc-$PROTOC_VERSION \
+    && chmod -R a+rX /opt/protobuf/protoc-$PROTOC_VERSION \
+    && ln -s /opt/java/temurin-8u502-b07 /opt/java/current \
+    && ln -s /opt/maven/apache-maven-$MAVEN_VERSION /opt/maven/current \
+    && ln -s /opt/protobuf/protoc-$PROTOC_VERSION /opt/protobuf/current \
+    && ln -s /opt/java/current/bin/java /usr/local/bin/java \
+    && ln -s /opt/java/current/bin/javac /usr/local/bin/javac \
+    && ln -s /opt/java/current/bin/jar /usr/local/bin/jar \
+    && ln -s /opt/maven/current/bin/mvn /usr/local/bin/mvn \
+    && ln -s /opt/protobuf/current/bin/protoc /usr/local/bin/protoc \
+    && rm -f /tmp/temurin.tar.gz /tmp/maven.tar.gz /tmp/protoc.zip \
     && rm -rf /var/lib/apt/lists/*
 
-ENV UV_LINK_MODE=copy \
+RUN groupadd --gid 1000 starfix \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash starfix
+
+ENV JAVA_HOME=/opt/java/current \
+    MAVEN_HOME=/opt/maven/current \
+    PROTOBUF_HOME=/opt/protobuf/current \
+    PATH=/opt/protobuf/current/bin:/opt/maven/current/bin:/opt/java/current/bin:$PATH \
+    UV_LINK_MODE=copy \
     UV_NO_PROGRESS=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 

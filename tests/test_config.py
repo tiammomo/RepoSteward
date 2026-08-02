@@ -23,6 +23,13 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(deer_flow.require_no_competing_work)
         self.assertEqual(deer_flow.pull_request_body_style, "deer-flow")
         self.assertIn("CONTRIBUTING.md", deer_flow.required_contribution_files)
+        openmldb = config.repositories["4paradigm/openmldb"]
+        self.assertTrue(openmldb.enabled)
+        self.assertFalse(openmldb.auto_prepare)
+        self.assertTrue(openmldb.require_assignment_before_submit)
+        self.assertTrue(openmldb.require_no_competing_work)
+        self.assertIn("TestSparkPlanner", openmldb.required_verification_markers)
+        self.assertEqual(openmldb.default_scope, "batch")
 
     def test_missing_config_has_clear_error(self) -> None:
         with self.assertRaisesRegex(ConfigError, "configuration not found"):
