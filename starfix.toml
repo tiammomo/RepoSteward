@@ -1,0 +1,70 @@
+[project]
+state_dir = ".starfix"
+
+[github]
+login = "tiammomo"
+git_name = "tiammomo"
+git_email = "pearfl@qq.com"
+api_url = "https://api.github.com"
+token_env = ["GITHUB_TOKEN", "GH_TOKEN"]
+
+[discovery]
+issues_per_repo = 100
+max_pages = 2
+min_score = 30
+preferred_labels = ["good first issue", "help wanted", "bug", "documentation", "external"]
+blocked_labels = [
+  "security",
+  "in progress",
+  "inprogress",
+  "duplicate",
+  "invalid",
+  "wontfix",
+  "question",
+  "needs reproduction",
+  "needs confirmation",
+  "server issue",
+]
+
+[safety]
+max_files_changed = 18
+max_diff_lines = 700
+max_daily_submissions = 2
+require_verification = true
+draft_pull_requests = true
+forbidden_paths = [".github/workflows/", ".git/", ".env", "credentials", "secrets"]
+
+[agent]
+executable = "codex"
+timeout_seconds = 1800
+# Leave blank to use the authenticated Codex CLI defaults.
+model = ""
+reasoning_effort = ""
+
+[runner]
+image = "starfix-runner:latest"
+timeout_seconds = 1800
+cpus = 4
+memory = "8g"
+pids_limit = 1024
+max_output_chars = 60000
+
+[repositories."langchain-ai/deepagents"]
+enabled = true
+auto_prepare = true
+min_stars = 5000
+preferred_labels = ["external", "bug", "deepagents"]
+blocked_labels = ["quickjs", "needs-maintainer-action"]
+require_assignment_before_submit = true
+bootstrap_commands = ["cd libs/deepagents && uv sync --all-groups"]
+verification_prefixes = [
+  "cd libs/deepagents && uv run --group test pytest ",
+  "cd libs/deepagents && uv run --all-groups ruff check ",
+  "cd libs/deepagents && uv run --all-groups ruff format ",
+  "cd libs/deepagents && uv run --all-groups ty check",
+]
+required_verification_markers = ["pytest", "ruff check", "ruff format", "ty check"]
+branch_template = "{login}/{scope}/{slug}"
+default_scope = "sdk"
+max_files_changed = 10
+max_diff_lines = 500

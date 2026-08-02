@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "starfix"
+version = "0.1.0"
+description = "A policy-gated pipeline for turning suitable GitHub issues into reviewed pull requests."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "tiammomo", email = "pearfl@qq.com" }]
+dependencies = []
+
+[project.scripts]
+starfix = "starfix.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/starfix"]
