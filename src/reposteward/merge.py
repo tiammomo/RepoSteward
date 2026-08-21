@@ -85,6 +85,9 @@ class MergeSnapshot:
     dependency_digest: str = ""
     dependency_blockers: tuple[str, ...] = ()
     dependencies_complete: bool = True
+    owner_attestation_valid: bool = False
+    owner_attestation_digest: str = ""
+    owner_attestation_status: str = "disabled"
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,8 +180,33 @@ def evaluate_merge(
         block("dependency_blocked", dependency_blocker)
     if not snapshot.activity_digest:
         block("activity_incomplete", "Pull-request activity digest is unavailable.")
-    if snapshot.review_decision.casefold() != "approved":
-        block("review_not_approved", "The current review decision is not approved.")
+    owner_attestation_complete = (
+        snapshot.owner_attestation_valid
+        and snapshot.owner_attestation_status == "valid"
+        and len(snapshot.owner_attestation_digest) == 64
+        and all(
+            value in "0123456789abcdef" for value in snapshot.owner_attestation_digest
+        )
+    )
+    review_decision = snapshot.review_decision.casefold()
+    owner_attestation_can_substitute = (
+        owner_attestation_complete and review_decision in {"", "review_required"}
+    )
+    if snapshot.owner_attestation_valid and not owner_attestation_complete:
+        block(
+            "owner_attestation_incomplete",
+            "Owner attestation validity has no complete audit binding.",
+        )
+    if review_decision != "approved" and not owner_attestation_can_substitute:
+        suffix = (
+            f" Owner attestation is {snapshot.owner_attestation_status}."
+            if snapshot.owner_attestation_status != "disabled"
+            else ""
+        )
+        block(
+            "review_not_approved",
+            "The current review decision is not approved." + suffix,
+        )
     if snapshot.unresolved_conversations:
         block(
             "unresolved_conversations",

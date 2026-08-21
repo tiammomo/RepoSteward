@@ -126,6 +126,8 @@ Merge Execution 或自身审计。
   GitHub 结果；`applying` 没有对应 `completed` 时表示进程可能在外部写入期间中断，重试必须先回读。
 - `portfolio_dependency_events`：按依赖对追加保存维护者 confirm/revoke、当前 head、身份、来源和
   前一事件；事件 digest 唯一，读取时会同时校验物化列与规范化载荷。
+- `owner_review_attestations`：追加保存单维护者对精确 PR 事实的本地审查声明；物化 scope、规范化
+  facts、facts digest 和 attestation digest 在读取时交叉校验，普通 GC 不删除该审计。
 
 Context Pack 与 Harness 绑定在一个事务中写入；Checkpoint 采用追加方式写入。数据库列中的版本、
 摘要、基线和关联 ID 必须与 JSON 内容一致，否则拒绝保存。
@@ -171,6 +173,14 @@ same-repository 和 `auto_merge = true`，进程还必须设置一次性环境�
 不完整事实或权限问题都阻止写入。网络超时或 GitHub 返回不确定结果时先回读；相同 head 已合并视为
 幂等成功，其他状态不会盲目重试。执行器不回复 Reviewer、不服务 Contributor mode，也没有常驻
 调度器。
+
+Owner Attestation 是 Merge Decision Engine 的可选输入，不是 GitHub Review。它只在仓库显式启用、
+当前 token 身份为 owner/admin 且有 push 权限、PR 作者与操作者一致、head 是该 run 持续跟踪的
+same-repository 分支、GitHub branch protection 与 applicable rulesets 均可完整读取且不要求独立
+Reviewer 时创建。创建动作有独立环境开关，并要求除 ReviewDecision 外的全部合并门禁已经通过。
+声明绑定 head/base、policy、diff、checks、Review、会话、活动、依赖和规则摘要；Merge Decision 与
+Merge Executor 每次重新读取事实后才接受完全匹配的最新声明。它不会提交 GitHub Approval，也不会
+调用 admin bypass。
 
 三类协议文档都使用 Draft 2020-12 JSON Schema，schema 随 Python 包发布。持久化和导入边界会
 拒绝未知字段、未来版本、跨 work item/run 的关联错配及不一致摘要。Bundle digest 只能检测意外

@@ -64,6 +64,129 @@ class GitHubAuthenticationTests(unittest.TestCase):
         run.assert_called_once()
 
 
+class GitHubOwnerReviewPolicyTests(unittest.TestCase):
+    def test_unprotected_branch_has_complete_review_policy(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        not_protected = GitHubError("not protected", status_code=404)
+
+        with patch.object(
+            client,
+            "_request",
+            side_effect=[
+                ({"protected": False}, None),
+                not_protected,
+                ([], SimpleNamespace(headers={})),
+            ],
+        ):
+            result = client.branch_review_policy("Owner/Repo", "main")
+
+        self.assertTrue(result["complete"])
+        self.assertFalse(result["requires_independent_review"])
+        self.assertEqual(result["requirements"], [])
+        self.assertEqual(len(result["rules_digest"]), 64)
+
+    def test_classic_and_ruleset_review_requirements_are_combined(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        classic = {
+            "required_pull_request_reviews": {
+                "required_approving_review_count": 1,
+                "require_code_owner_reviews": True,
+                "require_last_push_approval": False,
+            }
+        }
+        rules = [
+            {
+                "type": "pull_request",
+                "ruleset_source_type": "Repository",
+                "ruleset_source": "owner/repo",
+                "parameters": {
+                    "required_approving_review_count": 0,
+                    "require_code_owner_review": False,
+                    "require_last_push_approval": True,
+                },
+            }
+        ]
+
+        with patch.object(
+            client,
+            "_request",
+            side_effect=[
+                ({"protected": True}, None),
+                (classic, None),
+                (rules, SimpleNamespace(headers={})),
+            ],
+        ):
+            result = client.branch_review_policy("owner/repo", "release/v1")
+
+        self.assertTrue(result["requires_independent_review"])
+        self.assertEqual(
+            result["requirements"],
+            [
+                "classic:approvals=1",
+                "classic:code_owner_review",
+                "ruleset:last_push_approval",
+            ],
+        )
+
+    def test_unreadable_or_malformed_rules_fail_closed(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        with (
+            patch.object(
+                client,
+                "_request",
+                side_effect=GitHubError("forbidden", status_code=403),
+            ),
+            self.assertRaisesRegex(GitHubError, "forbidden"),
+        ):
+            client.branch_review_policy("owner/repo", "main")
+
+        malformed = {
+            "required_pull_request_reviews": {"required_approving_review_count": "1"}
+        }
+        with (
+            patch.object(
+                client,
+                "_request",
+                side_effect=[({"protected": True}, None), (malformed, None)],
+            ),
+            self.assertRaisesRegex(GitHubError, "count was malformed"),
+        ):
+            client.branch_review_policy("owner/repo", "main")
+
+        protected_but_hidden = GitHubError("not found", status_code=404)
+        with (
+            patch.object(
+                client,
+                "_request",
+                side_effect=[({"protected": True}, None), protected_but_hidden],
+            ),
+            self.assertRaisesRegex(GitHubError, "settings are unavailable"),
+        ):
+            client.branch_review_policy("owner/repo", "main")
+
+    def test_repository_exposes_owner_and_admin_permission(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        payload = {
+            "full_name": "owner/repo",
+            "default_branch": "main",
+            "stargazers_count": 1,
+            "forks_count": 2,
+            "open_issues_count": 3,
+            "pushed_at": "2026-08-22T00:00:00Z",
+            "archived": False,
+            "fork": False,
+            "license": None,
+            "permissions": {"push": True, "admin": True},
+            "owner": {"login": "owner"},
+        }
+        with patch.object(client, "_request", return_value=(payload, None)):
+            repository = client.repository("owner/repo")
+
+        self.assertTrue(repository.can_push)
+        self.assertTrue(repository.can_admin)
+        self.assertEqual(repository.owner_login, "owner")
+
+
 class GitHubCompetingWorkTests(unittest.TestCase):
     def test_claim_comment_and_linked_pull_request_are_blockers(self) -> None:
         client = GitHubClient(GitHubConfig(), token="test-token")
@@ -410,7 +533,14 @@ class GitHubPullRequestTests(unittest.TestCase):
             "body": "Depends on #11",
             "user": {"login": "contributor"},
             "updated_at": "2026-08-20T00:00:00Z",
-            "head": {"sha": "a" * 40},
+            "head": {
+                "sha": "a" * 40,
+                "ref": "contributor/feat/example",
+                "repo": {
+                    "full_name": "owner/repo",
+                    "owner": {"login": "owner"},
+                },
+            },
             "base": {"ref": "main"},
             "mergeable": True,
             "mergeable_state": "clean",
@@ -475,7 +605,14 @@ class GitHubPullRequestTests(unittest.TestCase):
             "body": "Depends on #11",
             "user": {"login": "contributor"},
             "updated_at": "2026-08-20T00:00:00Z",
-            "head": {"sha": "a" * 40},
+            "head": {
+                "sha": "a" * 40,
+                "ref": "contributor/feat/example",
+                "repo": {
+                    "full_name": "owner/repo",
+                    "owner": {"login": "owner"},
+                },
+            },
             "base": {"ref": "main"},
             "mergeable": True,
             "mergeable_state": "clean",
@@ -544,6 +681,11 @@ class GitHubPullRequestTests(unittest.TestCase):
         self.assertEqual(activity["pull_request"]["head_sha"], "a" * 40)
         self.assertEqual(activity["pull_request"]["body"], "Depends on #11")
         self.assertEqual(activity["pull_request"]["author"], "contributor")
+        self.assertEqual(activity["pull_request"]["head_owner"], "owner")
+        self.assertEqual(activity["pull_request"]["head_repository"], "owner/repo")
+        self.assertEqual(
+            activity["pull_request"]["head_branch"], "contributor/feat/example"
+        )
         self.assertEqual(activity["comments"][0]["id"], 21)
         self.assertEqual(activity["reviews"][0]["state"], "CHANGES_REQUESTED")
         self.assertEqual(activity["reviews"][0]["association"], "MEMBER")

@@ -16,6 +16,8 @@ class RepositoryInfo:
     is_fork: bool
     license_spdx: str | None = None
     can_push: bool = False
+    can_admin: bool = False
+    owner_login: str = ""
 
 
 @dataclass(frozen=True, slots=True)

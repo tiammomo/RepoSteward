@@ -24,6 +24,10 @@ MAX_REST_PAGES = 1_000
 class GitHubError(RuntimeError):
     """A GitHub API request failed."""
 
+    def __init__(self, message: str, *, status_code: int = 0) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -151,7 +155,8 @@ class GitHubClient:
             except json.JSONDecodeError:
                 pass
             raise GitHubError(
-                f"GitHub {method} {path} failed ({exc.code}): {message}"
+                f"GitHub {method} {path} failed ({exc.code}): {message}",
+                status_code=exc.code,
             ) from exc
         except urllib.error.URLError as exc:
             raise GitHubError(f"GitHub {method} {path} failed: {exc.reason}") from exc
@@ -487,7 +492,116 @@ class GitHubClient:
             is_fork=bool(payload["fork"]),
             license_spdx=(str(license_info["spdx_id"]) if license_info else None),
             can_push=bool((payload.get("permissions") or {}).get("push", False)),
+            can_admin=bool((payload.get("permissions") or {}).get("admin", False)),
+            owner_login=str((payload.get("owner") or {}).get("login") or ""),
         )
+
+    def branch_review_policy(self, full_name: str, branch: str) -> dict[str, Any]:
+        """Read every applicable GitHub review rule and fail closed on ambiguity."""
+        if not branch:
+            raise ValueError("branch must not be empty")
+        encoded = urllib.parse.quote(branch, safe="")
+        branch_payload, _ = self._request(
+            "GET", f"/repos/{full_name}/branches/{encoded}"
+        )
+        if not isinstance(branch_payload, dict) or not isinstance(
+            branch_payload.get("protected"), bool
+        ):
+            raise GitHubError("GitHub branch protection status was malformed")
+        classic: dict[str, Any] = {}
+        try:
+            payload, _ = self._request(
+                "GET", f"/repos/{full_name}/branches/{encoded}/protection"
+            )
+        except GitHubError as exc:
+            if exc.status_code != 404:
+                raise
+            if bool(branch_payload["protected"]):
+                raise GitHubError(
+                    "GitHub reports a protected branch but its classic protection "
+                    "settings are unavailable"
+                ) from exc
+        else:
+            if not isinstance(payload, dict):
+                raise GitHubError("GitHub branch protection was not an object")
+            classic = payload
+
+        requirements: set[str] = set()
+        classic_reviews = classic.get("required_pull_request_reviews")
+        if classic_reviews is not None:
+            if not isinstance(classic_reviews, dict):
+                raise GitHubError("GitHub branch review protection was malformed")
+            self._collect_review_requirements(
+                classic_reviews, requirements, source="classic"
+            )
+        rules = self._paginated_rest_values(
+            f"/repos/{full_name}/rules/branches/{encoded}"
+        )
+        compact_rules: list[dict[str, Any]] = []
+        for rule in rules:
+            rule_type = str(rule.get("type") or "")
+            if not rule_type:
+                raise GitHubError("GitHub applicable branch rule omitted its type")
+            if rule_type != "pull_request":
+                continue
+            parameters = rule.get("parameters")
+            if not isinstance(parameters, dict):
+                raise GitHubError("GitHub pull-request rule omitted its parameters")
+            before = set(requirements)
+            self._collect_review_requirements(
+                parameters, requirements, source="ruleset"
+            )
+            compact_rules.append(
+                {
+                    "type": rule_type,
+                    "source_type": str(rule.get("ruleset_source_type") or ""),
+                    "source": str(rule.get("ruleset_source") or ""),
+                    "requirements": sorted(requirements - before),
+                }
+            )
+        facts = {
+            "repository": full_name.casefold(),
+            "branch": branch,
+            "classic_review_protection": classic_reviews is not None,
+            "rules": sorted(
+                compact_rules,
+                key=lambda value: (
+                    value["source_type"],
+                    value["source"],
+                    value["type"],
+                ),
+            ),
+            "requirements": sorted(requirements),
+            "requires_independent_review": bool(requirements),
+            "complete": True,
+        }
+        return {**facts, "rules_digest": _canonical_digest(facts)}
+
+    @staticmethod
+    def _collect_review_requirements(
+        parameters: dict[str, Any], requirements: set[str], *, source: str
+    ) -> None:
+        count = parameters.get("required_approving_review_count", 0)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise GitHubError("GitHub required review count was malformed")
+        if count:
+            requirements.add(f"{source}:approvals={count}")
+        for key in ("require_code_owner_reviews", "require_code_owner_review"):
+            value = parameters.get(key, False)
+            if not isinstance(value, bool):
+                raise GitHubError(f"GitHub {key} review rule was malformed")
+            if value:
+                requirements.add(f"{source}:code_owner_review")
+        last_push = parameters.get("require_last_push_approval", False)
+        if not isinstance(last_push, bool):
+            raise GitHubError("GitHub last-push review rule was malformed")
+        if last_push:
+            requirements.add(f"{source}:last_push_approval")
+        required_reviewers = parameters.get("required_reviewers", [])
+        if not isinstance(required_reviewers, list):
+            raise GitHubError("GitHub required reviewers rule was malformed")
+        if required_reviewers:
+            requirements.add(f"{source}:required_reviewers")
 
     def issues(
         self, full_name: str, *, per_page: int = 100, max_pages: int = 2
@@ -793,6 +907,14 @@ class GitHubClient:
         if include_body:
             pull_state["body"] = str(pull.get("body") or "")
             pull_state["author"] = str((pull.get("user") or {}).get("login") or "")
+            head = pull.get("head") or {}
+            pull_state["head_owner"] = str(
+                (((head.get("repo") or {}).get("owner") or {}).get("login")) or ""
+            )
+            pull_state["head_repository"] = str(
+                (head.get("repo") or {}).get("full_name") or ""
+            )
+            pull_state["head_branch"] = str(head.get("ref") or "")
         return {
             "pull_request": pull_state,
             "comments": [

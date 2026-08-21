@@ -422,6 +422,40 @@ auto_merge_method = "octopus"
             with self.assertRaisesRegex(ConfigError, "auto_merge_method"):
                 load_config(path)
 
+    def test_owner_attestation_requires_explicit_maintainer_same_repo_mode(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+owner_attestation = true
+mode = "contributor"
+submission_strategy = "fork"
+""",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "owner_attestation only"):
+                load_config(path)
+
+            path.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+owner_attestation = true
+mode = "maintainer"
+submission_strategy = "same-repository"
+""",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+
+        self.assertTrue(config.repositories["owner/repo"].owner_attestation)
+
     def test_quoted_boolean_is_rejected_instead_of_becoming_true(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"

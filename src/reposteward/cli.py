@@ -263,6 +263,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     merge_decision.add_argument("run_id")
 
+    merge_attest = subparsers.add_parser(
+        "merge-attest", help="append an exact owner review attestation"
+    )
+    merge_attest.add_argument("run_id")
+    merge_attest.add_argument("--reviewed-by", required=True)
+
     merge = subparsers.add_parser(
         "merge", help="execute one fresh opt-in maintainer merge decision"
     )
@@ -549,6 +555,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "merge-decision":
             _json(pipeline.merge_decision(args.run_id))
+            return 0
+        if args.command == "merge-attest":
+            _json(
+                pipeline.attest_owner_review(args.run_id, reviewed_by=args.reviewed_by)
+            )
             return 0
         if args.command == "merge":
             _json(

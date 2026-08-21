@@ -105,6 +105,29 @@ def _checkpoint_payload(
     }
 
 
+def _owner_review_facts(run_id: str) -> dict:
+    return {
+        "repository": "owner/repo",
+        "pull_number": 12,
+        "run_id": run_id,
+        "actor": "alice",
+        "pull_author": "alice",
+        "head_owner": "owner",
+        "head_repository": "owner/repo",
+        "head_branch": "alice/feat/example",
+        "head_sha": "a" * 40,
+        "base_sha": "b" * 40,
+        "policy_digest": "c" * 64,
+        "review_decision": "",
+        "diff_digest": "d" * 64,
+        "checks_digest": "e" * 64,
+        "conversation_digest": "f" * 64,
+        "dependency_digest": "1" * 64,
+        "activity_digest": "2" * 64,
+        "rules_digest": "3" * 64,
+    }
+
+
 class StoreTests(unittest.TestCase):
     def test_legacy_unversioned_database_is_migrated_without_data_loss(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -269,6 +292,67 @@ class StoreTests(unittest.TestCase):
             self.assertIsNotNone(table)
             self.assertIsNotNone(index)
             self.assertIsNotNone(digest_index)
+
+    def test_version_eleven_database_receives_owner_review_attestation_audit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute("DROP TABLE owner_review_attestations")
+                connection.execute("PRAGMA user_version=11")
+
+            migrated = Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                table = connection.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE name='owner_review_attestations'"
+                ).fetchone()
+                index = connection.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE name='owner_review_attestations_for_pull'"
+                ).fetchone()
+
+            self.assertEqual(migrated.schema_version(), SCHEMA_VERSION)
+            self.assertIsNotNone(table)
+            self.assertIsNotNone(index)
+
+    def test_owner_review_attestations_are_idempotent_and_tamper_evident(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            run_id = store.start_run("owner/repo", 7, "merge")
+            facts = _owner_review_facts(run_id)
+
+            first = store.append_owner_review_attestation(facts=facts)
+            repeated = store.append_owner_review_attestation(facts=facts)
+            history = store.owner_review_attestations("OWNER/REPO", 12)
+            latest = store.latest_owner_review_attestation("owner/repo", 12)
+            statistics = store.storage_statistics(repository="owner/repo")
+
+            self.assertEqual(first["id"], repeated["id"])
+            self.assertTrue(repeated["idempotent"])
+            self.assertEqual(len(history), 1)
+            assert latest is not None
+            self.assertEqual(latest["facts"], facts)
+            self.assertEqual(
+                next(
+                    value["records"]
+                    for value in statistics
+                    if value["category"] == "owner_review_attestation_audit"
+                ),
+                1,
+            )
+
+            with closing(sqlite3.connect(store.path)) as connection, connection:
+                connection.execute(
+                    "UPDATE owner_review_attestations SET payload='{}' WHERE id=?",
+                    (first["id"],),
+                )
+            with self.assertRaisesRegex(StoreError, "attestation was modified"):
+                store.latest_owner_review_attestation("owner/repo", 12)
 
     def test_dependency_attestations_are_append_only_idempotent_and_verified(
         self,
