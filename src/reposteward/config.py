@@ -35,6 +35,14 @@ class GitHubConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class IssueReviewConfig:
+    project_owner: str = ""
+    project_number: int = 0
+    project_owner_type: str = "user"
+    require_distinct_reviewer: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class DiscoveryConfig:
     issues_per_repo: int = 100
     max_pages: int = 2
@@ -140,6 +148,7 @@ class AppConfig:
     workspace_dir: Path
     state_namespace: bool
     github: GitHubConfig
+    issue_review: IssueReviewConfig
     discovery: DiscoveryConfig
     safety: SafetyConfig
     agent: AgentConfig
@@ -279,6 +288,12 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
     user_github = user.get("github")
     if isinstance(user_github, dict):
         result["github"] = dict(user_github)
+
+    user_issue_review = user.get("issue_review")
+    if isinstance(user_issue_review, dict):
+        result["issue_review"] = dict(user_issue_review)
+    else:
+        result.pop("issue_review", None)
 
     user_agent = user.get("agent")
     project_agent = project.get("agent")
@@ -438,6 +453,18 @@ def load_config(
             ("gh", "auth", "token", "--hostname", "github.com"),
         ),
     )
+
+    issue_review_raw = _section(raw, "issue_review")
+    issue_review = IssueReviewConfig(
+        project_owner=str(issue_review_raw.get("project_owner", "")).strip(),
+        project_number=int(issue_review_raw.get("project_number", 0)),
+        project_owner_type=str(
+            issue_review_raw.get("project_owner_type", "user")
+        ).strip(),
+        require_distinct_reviewer=_boolean(
+            issue_review_raw.get("require_distinct_reviewer"), True
+        ),
+    )
     legacy_project = bool(project_raw) and "config_version" not in project_raw
     state_namespace = _boolean(project.get("namespace_state"), not legacy_project)
     if state_namespace:
@@ -571,6 +598,16 @@ def load_config(
         raise ConfigError("[github].git_name must not be empty")
     if not github.git_email:
         raise ConfigError("[github].git_email must not be empty")
+    if issue_review.project_owner_type not in {"user", "organization"}:
+        raise ConfigError(
+            "issue_review.project_owner_type must be 'user' or 'organization'"
+        )
+    if issue_review.project_number < 0:
+        raise ConfigError("issue_review.project_number must not be negative")
+    if bool(issue_review.project_owner) != bool(issue_review.project_number):
+        raise ConfigError(
+            "issue_review.project_owner and project_number must be configured together"
+        )
     if discovery.issues_per_repo < 1 or discovery.issues_per_repo > 100:
         raise ConfigError("discovery.issues_per_repo must be between 1 and 100")
     if discovery.max_pages < 1 or discovery.max_pages > 10:
@@ -640,6 +677,7 @@ def load_config(
         workspace_dir=workspace_dir,
         state_namespace=state_namespace,
         github=github,
+        issue_review=issue_review,
         discovery=discovery,
         safety=safety,
         agent=agent,

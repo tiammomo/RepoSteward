@@ -3,6 +3,9 @@
 RepoSteward 采用 Issue 驱动、聚焦 PR、自动检查和人工 Review 的维护方式。除明显的拼写修正外，
 请先创建或认领 Issue，再开始实现。
 
+多人共同准备 Issue 时，先使用团队配置的 GitHub Project Draft Issue 作为线上提案。提案在转换为
+正式 Issue 前必须重新检查最新正文、潜在重复项和安全风险，并由提案创建者之外的 reviewer 确认。
+
 ## 开始前
 
 1. 搜索已有 Issue 和 PR，确认问题尚未被处理或认领。

@@ -35,6 +35,23 @@ class PullRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectIssueProposal:
+    item_id: str
+    database_id: int
+    project_id: str
+    project_number: int
+    project_url: str
+    updated_at: str
+    creator: str
+    content_type: str
+    title: str
+    body: str
+    issue_number: int = 0
+    issue_url: str = ""
+    repository: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class CompetingWork:
     kind: str
     actor: str
@@ -133,6 +150,262 @@ class GitHubClient:
             raise GitHubError("cannot check login without a GitHub token")
         payload, _ = self._request("GET", "/user")
         return str(payload["login"])
+
+    def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        payload, _ = self._request(
+            "POST", "/graphql", data={"query": query, "variables": variables}
+        )
+        if not isinstance(payload, dict):
+            raise GitHubError("GitHub GraphQL response was not an object")
+        errors = payload.get("errors")
+        if isinstance(errors, list) and errors:
+            messages = "; ".join(str(value.get("message", value)) for value in errors)
+            raise GitHubError(f"GitHub GraphQL failed: {messages}")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise GitHubError("GitHub GraphQL response did not contain data")
+        return data
+
+    def project_v2(self, owner: str, number: int, *, owner_type: str) -> dict[str, Any]:
+        field = "organization" if owner_type == "organization" else "user"
+        data = self._graphql(
+            f"""
+            query($owner: String!, $number: Int!) {{
+              {field}(login: $owner) {{
+                projectV2(number: $number) {{ id number url closed }}
+              }}
+            }}
+            """,
+            {"owner": owner, "number": number},
+        )
+        container = data.get(field)
+        project = container.get("projectV2") if isinstance(container, dict) else None
+        if not isinstance(project, dict):
+            raise GitHubError(
+                f"GitHub Project not found: {owner_type} {owner}#{number}"
+            )
+        if bool(project.get("closed")):
+            raise GitHubError(
+                f"GitHub Project is closed: {owner_type} {owner}#{number}"
+            )
+        return {
+            "id": str(project["id"]),
+            "number": int(project["number"]),
+            "url": str(project["url"]),
+        }
+
+    @staticmethod
+    def _project_item_fields() -> str:
+        return """
+          id
+          fullDatabaseId
+          updatedAt
+          creator { login }
+          project { id number url }
+          content {
+            __typename
+            ... on DraftIssue { title body }
+            ... on Issue {
+              number
+              url
+              title
+              body
+              repository { nameWithOwner }
+            }
+          }
+        """
+
+    @staticmethod
+    def _parse_project_issue_proposal(value: dict[str, Any]) -> ProjectIssueProposal:
+        project = value.get("project")
+        content = value.get("content")
+        creator = value.get("creator")
+        if not isinstance(project, dict) or not isinstance(content, dict):
+            raise GitHubError("GitHub Project item is missing project or content")
+        content_type = str(content.get("__typename") or "")
+        if content_type not in {"DraftIssue", "Issue"}:
+            raise GitHubError(
+                f"GitHub Project item must contain a draft or issue, got {content_type!r}"
+            )
+        repository = content.get("repository")
+        return ProjectIssueProposal(
+            item_id=str(value["id"]),
+            database_id=int(value.get("fullDatabaseId") or 0),
+            project_id=str(project["id"]),
+            project_number=int(project["number"]),
+            project_url=str(project["url"]),
+            updated_at=str(value["updatedAt"]),
+            creator=(
+                str(creator.get("login") or "") if isinstance(creator, dict) else ""
+            ),
+            content_type=content_type,
+            title=str(content.get("title") or ""),
+            body=str(content.get("body") or ""),
+            issue_number=int(content.get("number") or 0),
+            issue_url=str(content.get("url") or ""),
+            repository=(
+                str(repository.get("nameWithOwner") or "")
+                if isinstance(repository, dict)
+                else ""
+            ),
+        )
+
+    def add_project_issue_proposal(
+        self, *, project_id: str, title: str, body: str, client_mutation_id: str
+    ) -> ProjectIssueProposal:
+        fields = self._project_item_fields()
+        data = self._graphql(
+            f"""
+            mutation($projectId: ID!, $title: String!, $body: String!,
+                     $clientMutationId: String!) {{
+              addProjectV2DraftIssue(input: {{
+                projectId: $projectId,
+                title: $title,
+                body: $body,
+                clientMutationId: $clientMutationId
+              }}) {{
+                projectItem {{ {fields} }}
+              }}
+            }}
+            """,
+            {
+                "projectId": project_id,
+                "title": title,
+                "body": body,
+                "clientMutationId": client_mutation_id,
+            },
+        )
+        result = data.get("addProjectV2DraftIssue")
+        item = result.get("projectItem") if isinstance(result, dict) else None
+        if not isinstance(item, dict):
+            raise GitHubError("GitHub did not return the created Project draft item")
+        return self._parse_project_issue_proposal(item)
+
+    def project_issue_proposal(self, item_id: str) -> ProjectIssueProposal:
+        fields = self._project_item_fields()
+        data = self._graphql(
+            f"""
+            query($itemId: ID!) {{
+              node(id: $itemId) {{
+                ... on ProjectV2Item {{ {fields} }}
+              }}
+            }}
+            """,
+            {"itemId": item_id},
+        )
+        item = data.get("node")
+        if not isinstance(item, dict) or not item.get("id"):
+            raise GitHubError(f"GitHub Project item not found: {item_id}")
+        return self._parse_project_issue_proposal(item)
+
+    def project_issue_proposal_by_database_id(
+        self,
+        *,
+        project_id: str,
+        database_id: int,
+        max_items: int = 1000,
+    ) -> ProjectIssueProposal:
+        """Resolve the numeric itemId exposed by GitHub Project browser URLs."""
+        if database_id < 1:
+            raise GitHubError("GitHub Project item database ID must be positive")
+        max_items = min(max(max_items, 1), 1000)
+        fields = self._project_item_fields()
+        cursor: str | None = None
+        scanned = 0
+        max_pages = (max_items + 99) // 100
+        pages = 0
+        while scanned < max_items and pages < max_pages:
+            pages += 1
+            page_size = min(100, max_items - scanned)
+            data = self._graphql(
+                f"""
+                query($projectId: ID!, $cursor: String, $first: Int!) {{
+                  node(id: $projectId) {{
+                    ... on ProjectV2 {{
+                      items(
+                        first: $first,
+                        after: $cursor,
+                        archivedStates: [NOT_ARCHIVED]
+                      ) {{
+                        nodes {{ {fields} }}
+                        pageInfo {{ hasNextPage endCursor }}
+                      }}
+                    }}
+                  }}
+                }}
+                """,
+                {
+                    "projectId": project_id,
+                    "cursor": cursor,
+                    "first": page_size,
+                },
+            )
+            project = data.get("node")
+            connection = project.get("items") if isinstance(project, dict) else None
+            if not isinstance(connection, dict):
+                raise GitHubError(f"GitHub Project not found: {project_id}")
+            nodes = connection.get("nodes")
+            if not isinstance(nodes, list):
+                raise GitHubError("GitHub Project items response was not a list")
+            if not nodes:
+                break
+            scanned += len(nodes)
+            for value in nodes:
+                if (
+                    isinstance(value, dict)
+                    and int(value.get("fullDatabaseId") or 0) == database_id
+                ):
+                    return self._parse_project_issue_proposal(value)
+            page_info = connection.get("pageInfo")
+            has_next = (
+                bool(page_info.get("hasNextPage"))
+                if isinstance(page_info, dict)
+                else False
+            )
+            if not has_next:
+                break
+            cursor_value = page_info.get("endCursor")
+            if not isinstance(cursor_value, str) or not cursor_value:
+                raise GitHubError("GitHub Project pagination cursor is missing")
+            cursor = cursor_value
+        raise GitHubError(
+            f"active GitHub Project item {database_id} was not found in the first "
+            f"{max_items} items; use its GraphQL node ID or archive old proposals"
+        )
+
+    def convert_project_issue_proposal(
+        self, *, item_id: str, repository: str
+    ) -> ProjectIssueProposal:
+        owner, name = repository.split("/", 1)
+        repository_data = self._graphql(
+            """
+            query($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) { id }
+            }
+            """,
+            {"owner": owner, "name": name},
+        ).get("repository")
+        if not isinstance(repository_data, dict):
+            raise GitHubError(f"repository not found: {repository}")
+        fields = self._project_item_fields()
+        data = self._graphql(
+            f"""
+            mutation($itemId: ID!, $repositoryId: ID!) {{
+              convertProjectV2DraftIssueItemToIssue(input: {{
+                itemId: $itemId,
+                repositoryId: $repositoryId
+              }}) {{
+                item {{ {fields} }}
+              }}
+            }}
+            """,
+            {"itemId": item_id, "repositoryId": str(repository_data["id"])},
+        )
+        result = data.get("convertProjectV2DraftIssueItemToIssue")
+        item = result.get("item") if isinstance(result, dict) else None
+        if not isinstance(item, dict):
+            raise GitHubError("GitHub did not return the converted Issue")
+        return self._parse_project_issue_proposal(item)
 
     def repository(self, full_name: str) -> RepositoryInfo:
         payload, _ = self._request("GET", f"/repos/{full_name}")

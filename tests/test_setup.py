@@ -36,6 +36,9 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(result["github_login"], "alice")
         self.assertEqual(parsed["config_version"], 1)
         self.assertEqual(parsed["github"]["login"], "alice")
+        self.assertEqual(parsed["issue_review"]["project_owner"], "")
+        self.assertEqual(parsed["issue_review"]["project_number"], 0)
+        self.assertTrue(parsed["issue_review"]["require_distinct_reviewer"])
         self.assertEqual(
             parsed["project"]["state_dir"], str(root / "state" / "reposteward")
         )
@@ -54,6 +57,23 @@ class SetupTests(unittest.TestCase):
                 initialize_user_config(path=path, login="alice")
 
             self.assertEqual(path.read_text(encoding="utf-8"), "existing")
+
+    def test_init_can_configure_a_shared_issue_review_project(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+
+            initialize_user_config(
+                path=path,
+                login="alice",
+                issue_project_owner="team",
+                issue_project_number=7,
+                issue_project_owner_type="organization",
+            )
+            parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(parsed["issue_review"]["project_owner"], "team")
+        self.assertEqual(parsed["issue_review"]["project_number"], 7)
+        self.assertEqual(parsed["issue_review"]["project_owner_type"], "organization")
 
     def test_repo_add_creates_project_config_that_layers_over_user_config(self) -> None:
         with TemporaryDirectory() as directory:

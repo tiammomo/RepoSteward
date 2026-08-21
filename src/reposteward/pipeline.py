@@ -23,7 +23,14 @@ from .context import (
 from .discovery import score_issue
 from .github import GitHubClient, GitHubError, resolve_token
 from .harness import Harness, HarnessRequest, create_harness
-from .issues import render_issue_body, validate_issue_title
+from .issues import (
+    attach_proposal_marker,
+    issue_review_digest,
+    issue_security_signals,
+    proposal_body,
+    render_issue_body,
+    validate_issue_title,
+)
 from .models import AgentResult, Candidate
 from .policy import PolicyError, conventional_scope, enforce_change_policy
 from .protocol import read_context_bundle, validate_context_bundle
@@ -106,7 +113,10 @@ class Pipeline:
             "next_actions": [
                 f"reposteward issue duplicate-check {draft['id']}",
                 f"reposteward issue inspect {draft['id']}",
-                "review the Markdown and publish it manually on GitHub",
+                (
+                    f"REPOSTEWARD_ENABLE_ISSUE_STAGE=1 reposteward issue stage "
+                    f"{draft['id']} --submitted-by {self.config.github.login}"
+                ),
             ],
             "public_write": False,
         }
@@ -141,6 +151,262 @@ class Pipeline:
             "similar_issues": similar,
             "requires_human_judgment": True,
             "public_write": False,
+        }
+
+    def _issue_review_project(self, client: GitHubClient) -> dict[str, Any]:
+        review = self.config.issue_review
+        if not review.project_owner or not review.project_number:
+            raise PolicyError(
+                "online issue review is not configured; set [issue_review] "
+                "project_owner and project_number in the user config"
+            )
+        return client.project_v2(
+            review.project_owner,
+            review.project_number,
+            owner_type=review.project_owner_type,
+        )
+
+    @staticmethod
+    def _proposal_summary(proposal: Any) -> dict[str, Any]:
+        return {
+            "item_id": proposal.item_id,
+            "database_id": proposal.database_id,
+            "project_id": proposal.project_id,
+            "project_number": proposal.project_number,
+            "project_url": proposal.project_url,
+            "updated_at": proposal.updated_at,
+            "creator": proposal.creator,
+            "content_type": proposal.content_type,
+            "title": proposal.title,
+            "issue_number": proposal.issue_number,
+            "issue_url": proposal.issue_url,
+            "repository": proposal.repository,
+        }
+
+    @staticmethod
+    def _project_item_database_id(reference: str) -> int:
+        value = reference.strip()
+        if value.isdecimal():
+            return int(value)
+        match = re.search(r"(?:[?&])itemId=(\d+)(?:&|$)", value)
+        return int(match.group(1)) if match else 0
+
+    def _online_issue_proposal(
+        self,
+        client: GitHubClient,
+        *,
+        project_id: str,
+        reference: str,
+    ) -> Any:
+        database_id = self._project_item_database_id(reference)
+        if database_id:
+            return client.project_issue_proposal_by_database_id(
+                project_id=project_id,
+                database_id=database_id,
+            )
+        return client.project_issue_proposal(reference)
+
+    def _authenticated_publication_client(self, attested_by: str) -> GitHubClient:
+        if attested_by.casefold() != self.config.github.login.casefold():
+            raise PolicyError(
+                f"review attestation must match the configured account "
+                f"{self.config.github.login!r}"
+            )
+        token = resolve_token(self.config.github, required=True)
+        client = GitHubClient(self.config.github, token)
+        authenticated = client.authenticated_login()
+        if authenticated.casefold() != self.config.github.login.casefold():
+            raise GitHubError(
+                f"token belongs to {authenticated!r}, "
+                f"expected {self.config.github.login!r}"
+            )
+        return client
+
+    def stage_issue_proposal(
+        self, draft_id: str, *, submitted_by: str
+    ) -> dict[str, Any]:
+        if os.environ.get("REPOSTEWARD_ENABLE_ISSUE_STAGE") != "1":
+            raise PolicyError(
+                "online proposal staging is disabled; set "
+                "REPOSTEWARD_ENABLE_ISSUE_STAGE=1 for this command"
+            )
+        draft = self.issue_draft(draft_id)
+        self.policy(str(draft["repository"]))
+        signals = issue_security_signals(str(draft["title"]), str(draft["body"]))
+        if signals:
+            raise PolicyError(
+                "potential security report must use a private reporting channel: "
+                + ", ".join(signals)
+            )
+        client = self._authenticated_publication_client(submitted_by)
+        project = self._issue_review_project(client)
+        existing = self.store.issue_proposal_for_draft(project["id"], draft_id)
+        if existing is not None:
+            proposal = client.project_issue_proposal(existing["project_item_id"])
+            return {
+                **self._proposal_summary(proposal),
+                "repository": draft["repository"],
+                "idempotent": True,
+                "public_write": False,
+            }
+        staged_body = attach_proposal_marker(
+            str(draft["body"]),
+            repository=str(draft["repository"]),
+            draft_id=draft_id,
+        )
+        proposal = client.add_project_issue_proposal(
+            project_id=project["id"],
+            title=str(draft["title"]),
+            body=staged_body,
+            client_mutation_id=f"reposteward-stage-{draft_id}",
+        )
+        content_digest = hashlib.sha256(
+            f"{proposal.title}\0{proposal.body}".encode()
+        ).hexdigest()
+        self.store.record_issue_proposal(
+            project_item_id=proposal.item_id,
+            project_id=proposal.project_id,
+            project_url=proposal.project_url,
+            draft_id=draft_id,
+            repository=str(draft["repository"]),
+            creator=proposal.creator,
+            content_digest=content_digest,
+        )
+        return {
+            **self._proposal_summary(proposal),
+            "repository": draft["repository"],
+            "next_action": (
+                f"reposteward issue review {proposal.item_id} "
+                f"--repository {draft['repository']}"
+            ),
+            "public_write": True,
+        }
+
+    def issue_proposal_review(
+        self,
+        project_item_id: str,
+        *,
+        repository: str,
+        client: GitHubClient | None = None,
+    ) -> dict[str, Any]:
+        policy = self.policy(repository)
+        active_client = client or self.github
+        expected_project = self._issue_review_project(active_client)
+        proposal = self._online_issue_proposal(
+            active_client,
+            project_id=str(expected_project["id"]),
+            reference=project_item_id,
+        )
+        if proposal.project_id != expected_project["id"]:
+            raise PolicyError("proposal is not in the configured issue review project")
+        if proposal.content_type == "Issue":
+            if proposal.repository.casefold() != policy.name.casefold():
+                raise PolicyError(
+                    "converted proposal belongs to a different repository"
+                )
+            return {
+                **self._proposal_summary(proposal),
+                "repository": policy.name,
+                "status": "published",
+                "eligible_for_promotion": False,
+                "public_write": False,
+            }
+        title = validate_issue_title(proposal.title)
+        body = proposal_body(proposal.body, repository=policy.name)
+        security_signals = issue_security_signals(title, body)
+        similar = active_client.similar_issues(policy.name, title, limit=10)
+        content_digest = hashlib.sha256(f"{title}\0{body}".encode()).hexdigest()
+        digest = issue_review_digest(
+            project_item_id=proposal.item_id,
+            project_id=proposal.project_id,
+            updated_at=proposal.updated_at,
+            repository=policy.name,
+            title=title,
+            body=body,
+            creator=proposal.creator,
+            similar_issues=similar,
+        )
+        return {
+            **self._proposal_summary(proposal),
+            "repository": policy.name,
+            "title": title if not security_signals else "[potential security report]",
+            "content_digest": content_digest,
+            "similar_issues": similar,
+            "security_signals": list(security_signals),
+            "review_digest": digest,
+            "distinct_reviewer_required": (
+                self.config.issue_review.require_distinct_reviewer
+            ),
+            "duplicates_require_human_judgment": True,
+            "eligible_for_promotion": not security_signals,
+            "public_write": False,
+        }
+
+    def promote_issue_proposal(
+        self,
+        project_item_id: str,
+        *,
+        repository: str,
+        reviewed_by: str,
+        review_digest: str,
+        duplicates_reviewed: bool,
+    ) -> dict[str, Any]:
+        if os.environ.get("REPOSTEWARD_ENABLE_ISSUE_PROMOTION") != "1":
+            raise PolicyError(
+                "issue promotion is disabled; set "
+                "REPOSTEWARD_ENABLE_ISSUE_PROMOTION=1 for this command"
+            )
+        if not duplicates_reviewed:
+            raise PolicyError("promotion requires an explicit duplicate review")
+        client = self._authenticated_publication_client(reviewed_by)
+        report = self.issue_proposal_review(
+            project_item_id, repository=repository, client=client
+        )
+        if report.get("status") == "published":
+            return {**report, "idempotent": True}
+        if report["security_signals"]:
+            raise PolicyError(
+                "potential security report must use a private reporting channel: "
+                + ", ".join(report["security_signals"])
+            )
+        if review_digest != report["review_digest"]:
+            raise PolicyError(
+                "review digest is stale; inspect the latest online proposal and "
+                "duplicate results again"
+            )
+        if (
+            self.config.issue_review.require_distinct_reviewer
+            and str(report["creator"]).casefold() == reviewed_by.casefold()
+        ):
+            raise PolicyError("proposal creator and final reviewer must be different")
+        converted = client.convert_project_issue_proposal(
+            item_id=str(report["item_id"]),
+            repository=str(report["repository"]),
+        )
+        if converted.content_type != "Issue":
+            raise GitHubError("GitHub did not convert the proposal into an Issue")
+        if converted.repository.casefold() != str(report["repository"]).casefold():
+            raise GitHubError("GitHub converted the proposal into the wrong repository")
+        self.store.record_issue_proposal(
+            project_item_id=converted.item_id,
+            project_id=converted.project_id,
+            project_url=converted.project_url,
+            draft_id="",
+            repository=str(report["repository"]),
+            creator=str(report["creator"]),
+            content_digest=str(report["content_digest"]),
+        )
+        self.store.mark_issue_proposal_published(
+            converted.item_id,
+            issue_number=converted.issue_number,
+            issue_url=converted.issue_url,
+        )
+        return {
+            **self._proposal_summary(converted),
+            "repository": converted.repository,
+            "reviewed_by": reviewed_by,
+            "review_digest": review_digest,
+            "public_write": True,
         }
 
     def gate_status(self, repository: str, issue_number: int) -> dict[str, Any]:

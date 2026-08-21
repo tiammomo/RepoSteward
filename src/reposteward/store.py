@@ -12,7 +12,7 @@ from typing import Any
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -168,6 +168,33 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         ON context_imports(work_item_id, imported_at DESC)
         """,
     ),
+    4: (
+        """
+        CREATE TABLE IF NOT EXISTS issue_proposals (
+            project_item_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            project_url TEXT NOT NULL,
+            draft_id TEXT NOT NULL DEFAULT '',
+            repository TEXT NOT NULL,
+            creator TEXT NOT NULL,
+            content_digest TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'staged',
+            issue_number INTEGER NOT NULL DEFAULT 0,
+            issue_url TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS issue_proposals_for_local_draft
+        ON issue_proposals(project_id, draft_id)
+        WHERE draft_id <> ''
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS issue_proposals_recent
+        ON issue_proposals(status, updated_at DESC)
+        """,
+    ),
 }
 
 
@@ -266,6 +293,78 @@ class Store:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def issue_proposal_for_draft(
+        self, project_id: str, draft_id: str
+    ) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM issue_proposals
+                WHERE project_id=? AND draft_id=?
+                """,
+                (project_id, draft_id),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def record_issue_proposal(
+        self,
+        *,
+        project_item_id: str,
+        project_id: str,
+        project_url: str,
+        draft_id: str,
+        repository: str,
+        creator: str,
+        content_digest: str,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO issue_proposals(
+                    project_item_id, project_id, project_url, draft_id,
+                    repository, creator, content_digest, status,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'staged', ?, ?)
+                ON CONFLICT(project_item_id) DO UPDATE SET
+                    project_url=excluded.project_url,
+                    repository=excluded.repository,
+                    creator=excluded.creator,
+                    content_digest=excluded.content_digest,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    project_item_id,
+                    project_id,
+                    project_url,
+                    draft_id,
+                    repository.casefold(),
+                    creator,
+                    content_digest,
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM issue_proposals WHERE project_item_id=?",
+                (project_item_id,),
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def mark_issue_proposal_published(
+        self, project_item_id: str, *, issue_number: int, issue_url: str
+    ) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                UPDATE issue_proposals
+                SET status='published', issue_number=?, issue_url=?, updated_at=?
+                WHERE project_item_id=?
+                """,
+                (issue_number, issue_url, utc_now(), project_item_id),
+            )
 
     def ensure_work_item(
         self,

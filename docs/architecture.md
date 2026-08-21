@@ -17,6 +17,9 @@ RepoSteward 在 Harness 之外持续保存这些信息，并提供稳定的控�
 - 人工责任：准备和提交分离，公开写入必须经过显式开关和 review attestation；
 - 可移植交接：不依赖某个供应商的会话 ID，也不依赖某个 GPT 账号的历史记录。
 
+Issue 在进入实现流水线前也采用准备/发布分离：GitHub Project Draft Issue 是多人共享的线上
+提案，仓库正式 Issue 是经过第二人审核后的工作契约。二者不能由一次无审核写操作直接贯通。
+
 Harness 仍然可以保留自己的原生 session，作为命中缓存或继续推理的加速信息；它不是任务事实
 的唯一副本。
 
@@ -41,6 +44,18 @@ GitHub facts + repository policy
             GitHub PR
 ```
 
+Issue 入口使用独立状态机：
+
+```text
+local draft ── explicit stage ──► Project Draft Issue
+                                      │ online edits
+                                      ▼
+                         duplicate + security review digest
+                                      │ distinct reviewer
+                                      ▼
+                              repository Issue
+```
+
 - RepoSteward 拥有流水线、策略、持久状态、审计和 GitHub 读写。
 - Harness 只接收一个 Context Pack 和隔离工作区，返回规范化结果与使用量。
 - Runner 只安装依赖并执行已允许的验证命令，不接触宿主凭据。
@@ -57,6 +72,8 @@ SQLite 使用显式 `PRAGMA user_version` 迁移。现有用户的未版本化�
 - `harness_runs`：run 与 Harness、模型、可选原生 session 的绑定；
 - `checkpoints`：按 run 单调递增的状态快照，记录 HEAD、完成项、决定、证据、风险和下一步。
 - `context_imports`：按 bundle digest 去重保存的跨机器交接历史，不覆盖本机较新的 Issue 快照。
+- `issue_proposals`：缓存本机发起的 Project item 和转换结果；GitHub Project 中的最新内容仍是
+  多人审查阶段的唯一真相。
 
 Context Pack 与 Harness 绑定在一个事务中写入；Checkpoint 采用追加方式写入。数据库列中的版本、
 摘要、基线和关联 ID 必须与 JSON 内容一致，否则拒绝保存。

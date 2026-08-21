@@ -46,7 +46,15 @@ def _toml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def render_user_config(login: str, git_name: str, git_email: str) -> str:
+def render_user_config(
+    login: str,
+    git_name: str,
+    git_email: str,
+    *,
+    issue_project_owner: str = "",
+    issue_project_number: int = 0,
+    issue_project_owner_type: str = "user",
+) -> str:
     return f"""config_version = {CONFIG_VERSION}
 
 [project]
@@ -63,6 +71,12 @@ signoff_commits = true
 api_url = "https://api.github.com"
 token_env = ["GITHUB_TOKEN", "GH_TOKEN"]
 gh_auth_command = ["gh", "auth", "token", "--hostname", "github.com"]
+
+[issue_review]
+project_owner = {_toml_string(issue_project_owner)}
+project_number = {issue_project_number}
+project_owner_type = {_toml_string(issue_project_owner_type)}
+require_distinct_reviewer = true
 
 [agent]
 harness = "codex-cli"
@@ -107,6 +121,9 @@ def initialize_user_config(
     login: str = "",
     git_name: str = "",
     git_email: str = "",
+    issue_project_owner: str = "",
+    issue_project_number: int = 0,
+    issue_project_owner_type: str = "user",
     force: bool = False,
 ) -> dict[str, Any]:
     if not login:
@@ -116,10 +133,25 @@ def initialize_user_config(
         git_email = git_email or detected_email
     git_name = git_name or login
     git_email = git_email or f"{login}@users.noreply.github.com"
+    if issue_project_owner_type not in {"user", "organization"}:
+        raise ConfigError("issue project owner type must be 'user' or 'organization'")
+    if issue_project_number < 0:
+        raise ConfigError("issue project number must not be negative")
+    if bool(issue_project_owner.strip()) != bool(issue_project_number):
+        raise ConfigError(
+            "issue project owner and project number must be configured together"
+        )
     target = (path or default_user_config_path()).expanduser().resolve()
     _write_atomic(
         target,
-        render_user_config(login, git_name, git_email),
+        render_user_config(
+            login,
+            git_name,
+            git_email,
+            issue_project_owner=issue_project_owner.strip(),
+            issue_project_number=issue_project_number,
+            issue_project_owner_type=issue_project_owner_type,
+        ),
         force=force,
     )
     return {

@@ -1,0 +1,86 @@
+name: Review online issue proposal
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_item_id:
+        description: Project draft node ID, numeric itemId, or browser URL
+        required: true
+        type: string
+      repository:
+        description: Target repository in owner/name form
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-review-${{ inputs.project_item_id }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    environment: reposteward-issue-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PROJECT_ITEM_ID: ${{ inputs.project_item_id }}
+      TARGET_REPOSITORY: ${{ inputs.repository }}
+      ISSUE_PROJECT_OWNER: ${{ vars.REPOSTEWARD_ISSUE_PROJECT_OWNER }}
+      ISSUE_PROJECT_NUMBER: ${{ vars.REPOSTEWARD_ISSUE_PROJECT_NUMBER }}
+      ISSUE_PROJECT_OWNER_TYPE: ${{ vars.REPOSTEWARD_ISSUE_PROJECT_OWNER_TYPE }}
+    steps:
+      - name: Check out trusted RepoSteward code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.32"
+          enable-cache: true
+
+      - name: Install Python and RepoSteward
+        run: |
+          uv python install 3.12
+          uv sync --locked --python 3.12
+
+      - name: Isolate RepoSteward runtime state
+        run: |
+          {
+            echo "XDG_CONFIG_HOME=$RUNNER_TEMP/reposteward/config"
+            echo "XDG_STATE_HOME=$RUNNER_TEMP/reposteward/state"
+            echo "XDG_DATA_HOME=$RUNNER_TEMP/reposteward/data"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate review configuration
+        env:
+          GH_TOKEN: ${{ secrets.REPOSTEWARD_GITHUB_REVIEW_TOKEN }}
+        run: |
+          test -n "$GH_TOKEN"
+          test -n "$ISSUE_PROJECT_OWNER"
+          test -n "$ISSUE_PROJECT_NUMBER"
+          test "$ISSUE_PROJECT_OWNER_TYPE" = "user" -o "$ISSUE_PROJECT_OWNER_TYPE" = "organization"
+
+      - name: Create ephemeral trusted configuration
+        run: |
+          mkdir -p "$RUNNER_TEMP/reposteward/project"
+          uv run reposteward init \
+            --login "$GITHUB_ACTOR" \
+            --issue-project-owner "$ISSUE_PROJECT_OWNER" \
+            --issue-project-number "$ISSUE_PROJECT_NUMBER" \
+            --issue-project-owner-type "$ISSUE_PROJECT_OWNER_TYPE"
+          uv run reposteward repo add "$TARGET_REPOSITORY" \
+            --path "$RUNNER_TEMP/reposteward/project/.reposteward.toml"
+
+      - name: Produce read-only review digest
+        env:
+          GH_TOKEN: ${{ secrets.REPOSTEWARD_GITHUB_REVIEW_TOKEN }}
+        run: |
+          uv run reposteward \
+            --config "$RUNNER_TEMP/reposteward/project/.reposteward.toml" \
+            issue review "$PROJECT_ITEM_ID" \
+            --repository "$TARGET_REPOSITORY"

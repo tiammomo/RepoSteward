@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from pathlib import Path
+from typing import Any
 
 MAX_ISSUE_TITLE_CHARS = 200
 MAX_ISSUE_BODY_CHARS = 30_000
@@ -11,6 +14,20 @@ SENSITIVE_DETAIL = re.compile(
     r"aws_secret_access_key|npm_token|pypi_token)\s*[:=]\s*\S+|"
     r"\bgh[pousr]_[A-Za-z0-9]{20,}\b|"
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
+)
+SECURITY_REPORT = re.compile(
+    r"(?i)(?:\bCVE-\d{4}-\d+\b|\b(?:security vulnerability|"
+    r"remote code execution|arbitrary code execution|privilege escalation|"
+    r"authentication bypass|authorization bypass|credential leak|secret leak|"
+    r"token leak|command injection|sql injection|cross-site scripting|xss|csrf|"
+    r"path traversal|sandbox escape|insecure deserialization)\b|"
+    r"安全漏洞|凭据泄露|密钥泄露|令牌泄露|身份验证绕过|鉴权绕过|权限绕过|"
+    r"命令注入|SQL\s*注入|跨站脚本|路径穿越|沙箱逃逸|任意代码执行|远程代码执行|提权)"
+)
+PROPOSAL_MARKER = re.compile(
+    r"^<!-- reposteward-proposal:v1 repository=(?P<repository>[A-Za-z0-9_.-]+/"
+    r"[A-Za-z0-9_.-]+) draft_id=(?P<draft_id>[a-f0-9]{32}) -->\n?",
+    re.MULTILINE,
 )
 
 
@@ -109,3 +126,79 @@ def validate_issue_title(title: str) -> str:
     if SENSITIVE_DETAIL.search(value):
         raise ValueError("issue title appears to contain a credential")
     return value
+
+
+def issue_security_signals(title: str, body: str) -> tuple[str, ...]:
+    """Return fail-closed signals that require a private reporting channel."""
+    combined = f"{title}\n{body}"
+    signals: list[str] = []
+    if SENSITIVE_DETAIL.search(combined):
+        signals.append("credential-like content")
+    if SECURITY_REPORT.search(combined):
+        signals.append("potential security vulnerability")
+    return tuple(signals)
+
+
+def attach_proposal_marker(body: str, *, repository: str, draft_id: str) -> str:
+    marker = (
+        f"<!-- reposteward-proposal:v1 repository={repository.lower()} "
+        f"draft_id={draft_id} -->"
+    )
+    return f"{marker}\n{body.lstrip()}"
+
+
+def proposal_body(body: str, *, repository: str) -> str:
+    """Strip and validate optional RepoSteward routing metadata."""
+    match = PROPOSAL_MARKER.search(body)
+    if match and match.group("repository").casefold() != repository.casefold():
+        raise ValueError(
+            "online proposal targets a different repository than the review command"
+        )
+    clean = PROPOSAL_MARKER.sub("", body, count=1).strip() + "\n"
+    if not clean.strip():
+        raise ValueError("online proposal body must not be empty")
+    if len(clean) > MAX_ISSUE_BODY_CHARS:
+        raise ValueError(f"issue body exceeds {MAX_ISSUE_BODY_CHARS} characters")
+    if SENSITIVE_DETAIL.search(clean):
+        raise ValueError("issue body appears to contain a credential")
+    return clean
+
+
+def issue_review_digest(
+    *,
+    project_item_id: str,
+    project_id: str,
+    updated_at: str,
+    repository: str,
+    title: str,
+    body: str,
+    creator: str,
+    similar_issues: list[dict[str, Any]],
+) -> str:
+    normalized_similar = sorted(
+        (
+            {
+                "number": int(value["number"]),
+                "title": str(value["title"]),
+                "state": str(value["state"]),
+                "url": str(value["url"]),
+            }
+            for value in similar_issues
+        ),
+        key=lambda value: (value["number"], value["url"]),
+    )
+    payload = {
+        "version": 1,
+        "project_item_id": project_item_id,
+        "project_id": project_id,
+        "updated_at": updated_at,
+        "repository": repository.casefold(),
+        "title": title,
+        "body": body,
+        "creator": creator.casefold(),
+        "similar_issues": normalized_similar,
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
