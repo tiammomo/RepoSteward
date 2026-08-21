@@ -14,8 +14,8 @@ from reposteward.models import (
     AgentResult,
     VerificationResult,
 )
-from reposteward.pipeline import Pipeline
-from reposteward.policy import DiffSummary
+from reposteward.pipeline import Pipeline, _canonical_digest, _repair_feedback
+from reposteward.policy import DiffSummary, PolicyError
 
 
 def _follow(**extra: object) -> dict:
@@ -43,6 +43,35 @@ def _follow(**extra: object) -> dict:
 
 
 class RepairTests(unittest.TestCase):
+    def test_out_of_scope_feedback_is_persisted_as_a_suggestion(self) -> None:
+        actionable, suggestions = _repair_feedback(
+            _follow(
+                new_review_comments=[
+                    {"id": 1, "path": "docs/other.md", "body": "rewrite"}
+                ]
+            ),
+            ("src/example.py",),
+        )
+        pipeline = object.__new__(Pipeline)
+        pipeline.store = Mock()
+        pipeline.store.commit_github_follow_up.return_value = {"sequence": 9}
+        source = {
+            "id": "source",
+            "repository": "owner/repo",
+            "status": "submitted",
+            "stage": "pull_request",
+            "worktree": "/tmp/worktree",
+            "details": {},
+        }
+
+        pipeline._commit_repair_event_preview(
+            source, _follow(), suggestions=suggestions
+        )
+
+        self.assertEqual(actionable, ())
+        saved = pipeline.store.update_run.call_args.kwargs["details"]
+        self.assertEqual(saved["repair_suggestions"][0]["id"], 1)
+
     def test_no_new_activity_does_not_start_a_run_or_harness(self) -> None:
         pipeline = object.__new__(Pipeline)
         pipeline.config = SimpleNamespace(
@@ -165,3 +194,75 @@ class RepairTests(unittest.TestCase):
         harness.run.assert_called_once()
         pipeline.verifier.verify.assert_called_once()
         store.commit_github_follow_up.assert_called_once()
+
+
+class RepairSubmissionTests(unittest.TestCase):
+    def test_submission_guard_fails_when_events_change(self) -> None:
+        policy = RepositoryPolicy(name="owner/repo")
+        snapshot = {"head_sha": "a" * 40, "base_sha": "b" * 40}
+        guard = {
+            "source_run_id": "source",
+            "pull_number": 12,
+            "parent_commit": "a" * 40,
+            "base_sha": "b" * 40,
+            "base_branch": "main",
+            "policy_digest": repository_policy_digest(policy),
+            "event_watermark": 9,
+            "snapshot_digest": _canonical_digest(snapshot),
+        }
+        pipeline = object.__new__(Pipeline)
+        pipeline.store = Mock()
+        pipeline.store.run.return_value = {"status": "submitted"}
+        pipeline.store.ingest_github_pr_activity.return_value = {
+            "previous_sequence": 9,
+            "through_sequence": 9,
+        }
+        client = Mock()
+        client.pull_request_activity.return_value = {
+            "pull_request": {"head_sha": "a" * 40, "base_branch": "main"}
+        }
+        client.pull_request_merge_snapshot.return_value = snapshot
+
+        pipeline._validate_repair_submission(
+            client=client, policy=policy, details={"repair_guard": guard}
+        )
+        pipeline.store.ingest_github_pr_activity.return_value["through_sequence"] = 10
+
+        with self.assertRaisesRegex(PolicyError, "event_watermark"):
+            pipeline._validate_repair_submission(
+                client=client, policy=policy, details={"repair_guard": guard}
+            )
+
+    def test_submission_guard_fails_when_snapshot_changes(self) -> None:
+        policy = RepositoryPolicy(name="owner/repo")
+        snapshot = {"head_sha": "a" * 40, "base_sha": "b" * 40}
+        pipeline = object.__new__(Pipeline)
+        pipeline.store = Mock()
+        pipeline.store.run.return_value = {"status": "submitted"}
+        pipeline.store.ingest_github_pr_activity.return_value = {
+            "previous_sequence": 9,
+            "through_sequence": 9,
+        }
+        client = Mock()
+        client.pull_request_activity.return_value = {
+            "pull_request": {"head_sha": "a" * 40, "base_branch": "main"}
+        }
+        client.pull_request_merge_snapshot.return_value = {
+            **snapshot,
+            "review_decision": "CHANGES_REQUESTED",
+        }
+        guard = {
+            "source_run_id": "source",
+            "pull_number": 12,
+            "parent_commit": "a" * 40,
+            "base_sha": "b" * 40,
+            "base_branch": "main",
+            "policy_digest": repository_policy_digest(policy),
+            "event_watermark": 9,
+            "snapshot_digest": _canonical_digest(snapshot),
+        }
+
+        with self.assertRaisesRegex(PolicyError, "github_snapshot"):
+            pipeline._validate_repair_submission(
+                client=client, policy=policy, details={"repair_guard": guard}
+            )

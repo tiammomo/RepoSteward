@@ -1543,7 +1543,11 @@ class Pipeline:
         return result
 
     def _commit_repair_event_preview(
-        self, source_run: dict[str, Any], preview: dict[str, Any]
+        self,
+        source_run: dict[str, Any],
+        preview: dict[str, Any],
+        *,
+        suggestions: tuple[dict[str, Any], ...] = (),
     ) -> dict[str, Any]:
         committed = self.store.commit_github_follow_up(
             run_id=str(source_run["id"]),
@@ -1557,6 +1561,7 @@ class Pipeline:
         details = {
             **source_run.get("details", {}),
             "github_snapshot": preview["_github_snapshot"],
+            "repair_suggestions": list(suggestions),
         }
         self.store.update_run(
             str(source_run["id"]),
@@ -1615,7 +1620,9 @@ class Pipeline:
         changed_files = tuple(str(value) for value in details.get("changed_files", ()))
         repair_items, suggestions = _repair_feedback(follow, changed_files)
         if not repair_items:
-            self._commit_repair_event_preview(source_run, follow)
+            self._commit_repair_event_preview(
+                source_run, follow, suggestions=suggestions
+            )
             return {
                 "source_run_id": source_run_id,
                 "repair_prepared": False,
@@ -1805,7 +1812,9 @@ class Pipeline:
                 sequence=int(follow["event_watermark"]),
                 batch_digest=str(follow["event_batch_digest"]),
             )
-            self._commit_repair_event_preview(source_run, follow)
+            self._commit_repair_event_preview(
+                source_run, follow, suggestions=suggestions
+            )
             self._save_checkpoint(
                 context,
                 status="ready",
@@ -1857,6 +1866,57 @@ class Pipeline:
                 details={**failure_details, "error": str(exc)},
             )
             raise
+
+    def _validate_repair_submission(
+        self,
+        *,
+        client: GitHubClient,
+        policy: RepositoryPolicy,
+        details: dict[str, Any],
+    ) -> None:
+        """Reject a prepared repair when any frozen publication fact changed."""
+        guard = details.get("repair_guard")
+        if not isinstance(guard, dict):
+            return
+        if policy.mode != "contributor" or policy.submission_strategy != "fork":
+            raise PolicyError("prepared contributor repair has an invalid policy mode")
+        source_run_id = str(guard.get("source_run_id") or "")
+        source_run = self.store.run(source_run_id)
+        if source_run is None or str(source_run.get("status")) != "submitted":
+            raise PolicyError("prepared repair source run is unavailable")
+        pull_number = int(guard.get("pull_number") or 0)
+        activity = client.pull_request_activity(policy.name, pull_number)
+        event_batch = self.store.ingest_github_pr_activity(
+            run_id=source_run_id,
+            repository=policy.name,
+            pull_number=pull_number,
+            activity=activity,
+        )
+        snapshot = client.pull_request_merge_snapshot(policy.name, pull_number)
+        pull = activity["pull_request"]
+        expected_sequence = int(guard.get("event_watermark") or 0)
+        stale: list[str] = []
+        if (
+            int(event_batch["previous_sequence"]) != expected_sequence
+            or int(event_batch["through_sequence"]) != expected_sequence
+        ):
+            stale.append("event_watermark")
+        if str(pull.get("head_sha") or "") != str(guard.get("parent_commit") or ""):
+            stale.append("head")
+        if str(pull.get("base_branch") or "") != str(guard.get("base_branch") or ""):
+            stale.append("base_branch")
+        if str(snapshot.get("base_sha") or "") != str(guard.get("base_sha") or ""):
+            stale.append("base")
+        if repository_policy_digest(policy) != str(guard.get("policy_digest") or ""):
+            stale.append("policy")
+        if _canonical_digest(snapshot) != str(guard.get("snapshot_digest") or ""):
+            stale.append("github_snapshot")
+        if stale:
+            raise PolicyError(
+                "prepared repair is stale ("
+                + ", ".join(dict.fromkeys(stale))
+                + "); run follow-up and prepare a new repair"
+            )
 
     def merge_decision(self, run_id: str) -> dict[str, Any]:
         """Evaluate and audit current merge eligibility without writing to GitHub."""
@@ -2001,6 +2061,10 @@ class Pipeline:
         )
         closed_pull = None
         if reopen_pull_request:
+            if isinstance(details.get("repair_guard"), dict):
+                raise PolicyError(
+                    "a prepared repair cannot reopen another pull request"
+                )
             closed_pull = client.pull_request(policy.name, reopen_pull_request)
             if closed_pull.state != "closed":
                 raise PolicyError(
@@ -2048,6 +2112,19 @@ class Pipeline:
                 owner=head_owner,
                 branch=details["branch"],
             )
+            repair_guard = details.get("repair_guard")
+            if isinstance(repair_guard, dict):
+                if existing_pull is None or existing_pull.number != int(
+                    repair_guard.get("pull_number") or 0
+                ):
+                    raise PolicyError(
+                        "prepared repair no longer matches its original pull request"
+                    )
+                self._validate_repair_submission(
+                    client=client,
+                    policy=policy,
+                    details=details,
+                )
             if existing_pull:
                 if existing_pull.base_branch != details["base_branch"]:
                     raise PolicyError(
