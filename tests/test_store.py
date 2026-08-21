@@ -432,6 +432,40 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(events[0]["payload_available"])
         self.assertIsNone(blob)
 
+    def test_successor_run_starts_at_committed_event_watermark(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            activity = {
+                "pull_request": {"number": 12, "head_sha": "a" * 40},
+                "comments": [{"id": 1, "body": "fix this"}],
+                "reviews": [],
+                "review_comments": [],
+                "checks": [],
+            }
+            source = store.start_run("owner/repo", 7, "pull_request")
+            batch = store.ingest_github_pr_activity(
+                run_id=source,
+                repository="owner/repo",
+                pull_number=12,
+                activity=activity,
+            )
+            successor = store.start_run("owner/repo", 7, "repair")
+            store.seed_github_pr_watermark(
+                run_id=successor,
+                repository="owner/repo",
+                pull_number=12,
+                sequence=batch["through_sequence"],
+                batch_digest=batch["batch_digest"],
+            )
+            repeated = store.ingest_github_pr_activity(
+                run_id=successor,
+                repository="owner/repo",
+                pull_number=12,
+                activity=activity,
+            )
+
+        self.assertEqual(repeated["events"], [])
+
     def test_merge_decision_audit_is_append_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")

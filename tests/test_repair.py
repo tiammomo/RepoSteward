@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+from reposteward.config import RepositoryPolicy
+from reposteward.context import repository_policy_digest
+from reposteward.models import (
+    AgentExecution,
+    AgentMetrics,
+    AgentResult,
+    VerificationResult,
+)
+from reposteward.pipeline import Pipeline
+from reposteward.policy import DiffSummary
+
+
+def _follow(**extra: object) -> dict:
+    value = {
+        "changed": True,
+        "head_matches_verified_commit": True,
+        "next_action": "review_new_activity",
+        "event_watermark": 9,
+        "event_batch_digest": "d" * 64,
+        "pull_request": {"number": 12},
+        "new_comments": [],
+        "new_comments_omitted": 0,
+        "new_reviews": [],
+        "new_reviews_omitted": 0,
+        "new_review_comments": [],
+        "new_review_comments_omitted": 0,
+        "changed_checks": [],
+        "changed_checks_omitted": 0,
+        "_previous_event_watermark": 3,
+        "_checkpoint_payload": {"status": "submitted"},
+        "_github_snapshot": {},
+    }
+    value.update(extra)
+    return value
+
+
+class RepairTests(unittest.TestCase):
+    def test_no_new_activity_does_not_start_a_run_or_harness(self) -> None:
+        pipeline = object.__new__(Pipeline)
+        pipeline.config = SimpleNamespace(
+            repositories={"owner/repo": RepositoryPolicy(name="owner/repo")}
+        )
+        pipeline.store = Mock()
+        pipeline.store.run.return_value = {
+            "id": "source",
+            "repository": "owner/repo",
+            "issue_number": 7,
+            "status": "submitted",
+            "details": {"pr_url": "https://example.test/pull/12"},
+        }
+        pipeline._follow_up = Mock(
+            return_value=_follow(changed=False, next_action="wait_for_activity")
+        )
+        pipeline.harness = Mock()
+
+        pipeline.prepare_repair("source")
+        pipeline.harness.run.assert_not_called()
+
+    def test_in_scope_feedback_is_verified_and_left_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            worktree = Path(directory)
+            (worktree / ".git").mkdir()
+            parent = "a" * 40
+            policy = RepositoryPolicy(name="owner/repo")
+            source = {
+                "id": "source",
+                "repository": "owner/repo",
+                "issue_number": 7,
+                "status": "submitted",
+                "stage": "pull_request",
+                "worktree": str(worktree),
+                "details": {
+                    "worktree": str(worktree),
+                    "base_branch": "main",
+                    "base_commit": "b" * 40,
+                    "branch": "alice/fix",
+                    "commit_sha": parent,
+                    "changed_files": ["src/example.py"],
+                    "pr_url": "https://example.test/pull/12",
+                },
+            }
+            ready = {"id": "repair", "repository": "owner/repo", "issue_number": 7}
+            store = Mock()
+            store.run.side_effect = lambda run_id: (
+                source if run_id == "source" else ready
+            )
+            store.start_run.return_value = "repair"
+            store.candidate.return_value = SimpleNamespace(
+                issue=SimpleNamespace(
+                    repository="owner/repo",
+                    number=7,
+                    title="Fix edge",
+                    body="Original scope",
+                    url="https://example.test/issues/7",
+                    updated_at="2026-01-02T00:00:00Z",
+                ),
+                repository=SimpleNamespace(default_branch="main"),
+            )
+            store.context_bundle.return_value = {
+                "work_item": {"id": "work"},
+                "context_pack": {
+                    "project": {"policy_digest": repository_policy_digest(policy)}
+                },
+                "checkpoint": {"id": "checkpoint", "status": "submitted"},
+            }
+            store.latest_harness_session.return_value = "session"
+            store.save_checkpoint.return_value = {}
+            store.update_run.side_effect = lambda run_id, **values: ready.update(values)
+            harness = Mock()
+            harness.name = "fake"
+            harness.run.return_value = AgentExecution(
+                AgentResult("Fixed.", "fix(repo): address review", "notes", ()),
+                AgentMetrics(),
+                "fake",
+                "test",
+            )
+            pipeline = object.__new__(Pipeline)
+            pipeline.config = SimpleNamespace(
+                repositories={"owner/repo": policy},
+                agent=SimpleNamespace(model="test"),
+                state_dir=worktree / "state",
+            )
+            pipeline.store, pipeline.harness = store, harness
+            pipeline.github, pipeline.verifier, pipeline.workspaces = (
+                Mock(),
+                Mock(),
+                Mock(),
+            )
+            pipeline.github.pull_request_merge_snapshot.return_value = {
+                "head_sha": parent,
+                "base_sha": "b" * 40,
+                "state": "OPEN",
+            }
+            pipeline.verifier.verify.return_value = VerificationResult(True, ())
+            pipeline.workspaces.commit.return_value = "c" * 40
+            pipeline._follow_up = Mock(
+                return_value=_follow(
+                    new_review_comments=[
+                        {"id": 2, "path": "src/example.py", "body": "handle None"}
+                    ]
+                )
+            )
+
+            with (
+                patch.object(Pipeline, "_revision", return_value=parent),
+                patch(
+                    "reposteward.pipeline.subprocess.run",
+                    return_value=SimpleNamespace(stdout=""),
+                ),
+                patch(
+                    "reposteward.pipeline.enforce_change_policy",
+                    return_value=DiffSummary(("src/example.py",), 1, 1),
+                ),
+            ):
+                pipeline.prepare_repair("source")
+
+        harness.run.assert_called_once()
+        pipeline.verifier.verify.assert_called_once()
+        store.commit_github_follow_up.assert_called_once()
