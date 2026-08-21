@@ -242,6 +242,26 @@ class CliSetupTests(unittest.TestCase):
             "owner/repo", pull_number=2, limit=100
         )
 
+    def test_ci_diagnose_is_routed_as_a_read_only_command(self) -> None:
+        pipeline = MagicMock()
+        pipeline.ci_failure_analysis.return_value = {
+            "analysis_digest": "a" * 64,
+            "failures": [],
+            "public_write": False,
+        }
+        output = io.StringIO()
+
+        with (
+            patch("reposteward.cli.load_config", return_value=object()),
+            patch("reposteward.cli.Pipeline", return_value=pipeline),
+            redirect_stdout(output),
+        ):
+            code = main(["ci", "diagnose", "owner/repo", "12"])
+
+        self.assertEqual(code, 0)
+        pipeline.ci_failure_analysis.assert_called_once_with("owner/repo", 12)
+        self.assertIn('"public_write": false', output.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

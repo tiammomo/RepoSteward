@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import unittest
+import urllib.error
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from reposteward.config import GitHubConfig
 from reposteward.github import GitHubClient, GitHubError, resolve_authentication
@@ -616,6 +618,122 @@ class GitHubPullRequestTests(unittest.TestCase):
                 title="docs: example",
                 body="Closes #1",
             )
+
+
+class GitHubActionsEvidenceTests(unittest.TestCase):
+    def test_check_runs_workflow_runs_and_jobs_are_compact_and_paginated(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        check = {
+            "id": 51,
+            "name": "quality",
+            "status": "completed",
+            "conclusion": "failure",
+            "details_url": "https://github.test/actions/runs/10/job/20",
+            "app": {"slug": "github-actions"},
+        }
+        run = {
+            "id": 10,
+            "name": "CI",
+            "event": "pull_request",
+            "status": "completed",
+            "conclusion": "failure",
+            "head_branch": "feature",
+            "head_sha": "a" * 40,
+            "run_attempt": 2,
+            "created_at": "2026-08-21T00:00:00Z",
+            "updated_at": "2026-08-21T00:01:00Z",
+            "html_url": "https://github.test/actions/runs/10",
+            "pull_requests": [{"number": 12}],
+        }
+        job = {
+            "id": 20,
+            "run_id": 10,
+            "run_attempt": 2,
+            "head_sha": "a" * 40,
+            "workflow_name": "CI",
+            "name": "quality",
+            "status": "completed",
+            "conclusion": "failure",
+            "html_url": "https://github.test/actions/runs/10/job/20",
+            "labels": ["ubuntu-latest"],
+            "runner_group_name": "GitHub Actions 1",
+            "check_run_url": "https://api.github.test/repos/o/r/check-runs/51",
+            "steps": [
+                {
+                    "number": 1,
+                    "name": "Run tests",
+                    "status": "completed",
+                    "conclusion": "failure",
+                }
+            ],
+        }
+
+        with patch.object(
+            client, "_paginated_rest_values", side_effect=[[check], [run], [job]]
+        ) as paginated:
+            checks = client.check_runs("owner/repo", "a" * 40)
+            runs = client.workflow_runs(
+                "owner/repo", branch="feature", event="pull_request", limit=12
+            )
+            jobs = client.workflow_jobs("owner/repo", 10)
+
+        self.assertEqual(checks[0]["app_slug"], "github-actions")
+        self.assertEqual(runs[0]["pull_numbers"], [12])
+        self.assertEqual(jobs[0]["check_run_id"], 51)
+        self.assertEqual(jobs[0]["steps"][0]["name"], "Run tests")
+        self.assertEqual(paginated.call_args_list[1].kwargs["max_items"], 12)
+        self.assertEqual(paginated.call_args_list[2].kwargs["query"], {"filter": "all"})
+
+    def test_job_log_is_bounded_and_does_not_forward_authorization(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        initial_requests = []
+        location = "https://signed.example.test/job.log?sig=private"
+
+        class RedirectOpener:
+            def open(self, request, timeout):
+                initial_requests.append(request)
+                raise urllib.error.HTTPError(
+                    request.full_url,
+                    302,
+                    "Found",
+                    {"Location": location},
+                    io.BytesIO(),
+                )
+
+        download_response = io.BytesIO(b"x" * 20)
+        with (
+            patch("urllib.request.build_opener", return_value=RedirectOpener()),
+            patch("urllib.request.urlopen", return_value=download_response) as download,
+        ):
+            result = client.workflow_job_log("owner/repo", 20, max_bytes=12)
+
+        self.assertEqual(result["text"], "x" * 12)
+        self.assertEqual(result["bytes_read"], 12)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(
+            initial_requests[0].get_header("Authorization"), "Bearer test-token"
+        )
+        signed_request = download.call_args.args[0]
+        self.assertIsNone(signed_request.get_header("Authorization"))
+        self.assertEqual(signed_request.get_header("Range"), "bytes=-12")
+        self.assertEqual(signed_request.full_url, location)
+
+    def test_job_log_rejects_non_https_redirects(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        opener = MagicMock()
+        opener.open.side_effect = urllib.error.HTTPError(
+            "https://api.github.test/logs",
+            302,
+            "Found",
+            {"Location": "http://signed.example.test/job.log"},
+            io.BytesIO(),
+        )
+
+        with (
+            patch("urllib.request.build_opener", return_value=opener),
+            self.assertRaisesRegex(GitHubError, "unsafe redirect"),
+        ):
+            client.workflow_job_log("owner/repo", 20, max_bytes=12)
 
 
 if __name__ == "__main__":
