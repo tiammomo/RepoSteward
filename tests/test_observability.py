@@ -21,6 +21,77 @@ from reposteward.verifier import DockerVerifier
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _bind_test_context(store: Store, run_id: str) -> None:
+    work_item = store.ensure_work_item(
+        "owner/repo",
+        kind="github_issue",
+        external_id="7",
+        title="Example issue",
+    )
+    sources = [
+        {
+            "kind": "repository_policy",
+            "locator": "test-policy",
+            "digest": "a" * 64,
+            "trust": "operator_trusted",
+            "updated_at": "",
+        }
+    ]
+    source_digest = hashlib.sha256(
+        json.dumps(
+            sources,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    context = {
+        "id": "pack-1",
+        "schema_version": 1,
+        "work_item_id": work_item["id"],
+        "project": {
+            "repository": "owner/repo",
+            "default_branch": "main",
+            "base_commit": "a" * 40,
+            "policy_digest": "b" * 64,
+            "verification_prefixes": [],
+            "required_verification_markers": [],
+            "instruction_sources": [],
+        },
+        "task": {
+            "kind": "github_issue",
+            "external_id": "7",
+            "title": "Example issue",
+            "description": "Example",
+            "description_omitted_chars": 0,
+            "url": "https://github.com/owner/repo/issues/7",
+            "updated_at": "2026-08-20T00:00:00Z",
+            "acceptance_criteria": [],
+        },
+        "constraints": [],
+        "sources": sources,
+        "handoff": None,
+        "source_digest": source_digest,
+        "provenance": {
+            "run_id": run_id,
+            "harness": "codex-cli",
+            "model": "",
+            "created_at": "2026-08-20T00:00:00Z",
+            "generator": "reposteward",
+        },
+    }
+    store.save_context_run(
+        pack_id="pack-1",
+        work_item_id=work_item["id"],
+        run_id=run_id,
+        schema_version=1,
+        source_digest=source_digest,
+        base_commit="a" * 40,
+        payload=context,
+        harness="codex-cli",
+    )
+
+
 class AgentMetricsTests(unittest.TestCase):
     def test_jsonl_usage_and_tool_calls_are_recorded(self) -> None:
         events = "\n".join(
@@ -222,6 +293,7 @@ class ReviewPacketTests(unittest.TestCase):
             )
             store = Store(state_dir / "reposteward.sqlite3")
             run_id = store.start_run("owner/repo", 7, "pull_request")
+            _bind_test_context(store, run_id)
             store.update_run(
                 run_id,
                 status="submitted",
@@ -287,14 +359,21 @@ class ReviewPacketTests(unittest.TestCase):
 
             first = pipeline.follow_up(run_id)
             second = pipeline.follow_up(run_id)
+            activity["comments"][0]["body"] = "edited review"
+            activity["comments"][0]["updated_at"] = "2026-08-21T00:00:00Z"
+            edited = pipeline.follow_up(run_id)
             activity["checks"][0]["conclusion"] = "failure"
             failed = pipeline.follow_up(run_id)
             activity["pull_request"]["head_sha"] = "b" * 40
             changed_head = pipeline.follow_up(run_id)
+            events = store.github_pr_events("owner/repo", 12)
+            watermark = store.github_pr_watermark(run_id)
+            bundle = store.context_bundle(run_id)
 
         self.assertTrue(first["changed"])
         self.assertEqual(len(first["new_comments"]), 1)
         self.assertEqual(len(first["new_review_comments"]), 1)
+        self.assertTrue(first["review_checkpoint_id"])
         self.assertIn("untrusted", first["trust_boundary"])
         self.assertLessEqual(len(first["new_comments"][0]["body"]), 640)
         self.assertTrue(first["head_matches_verified_commit"])
@@ -302,9 +381,23 @@ class ReviewPacketTests(unittest.TestCase):
         self.assertEqual(second["new_comments"], [])
         self.assertEqual(second["new_review_comments"], [])
         self.assertEqual(second["changed_checks"], [])
+        self.assertEqual(len(edited["new_comments"]), 1)
+        self.assertEqual(edited["new_comments"][0]["body"], "edited review")
         self.assertEqual(failed["next_action"], "diagnose_failed_checks")
         self.assertEqual(changed_head["next_action"], "reverify_changed_head")
         self.assertFalse(changed_head["head_matches_verified_commit"])
+        self.assertEqual(len(events), 7)
+        assert watermark is not None
+        self.assertEqual(changed_head["event_watermark"], watermark["sequence"])
+        assert bundle is not None
+        self.assertEqual(bundle["checkpoint"]["next_action"], "reverify_changed_head")
+        self.assertEqual(
+            bundle["checkpoint"]["id"], changed_head["review_checkpoint_id"]
+        )
+        self.assertIn(
+            "source=github_untrusted",
+            bundle["checkpoint"]["evidence"][-1]["summary"],
+        )
 
 
 if __name__ == "__main__":

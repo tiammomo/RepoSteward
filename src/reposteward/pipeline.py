@@ -17,6 +17,7 @@ from .context import (
     failed_checkpoint,
     portable_bundle,
     ready_checkpoint,
+    review_checkpoint,
     running_checkpoint,
     write_portable_bundle,
 )
@@ -1011,38 +1012,25 @@ class Pipeline:
         pull_number = int(match.group(1))
         repository = str(run["repository"])
         activity = self.github.pull_request_activity(repository, pull_number)
-        previous = details.get("github_snapshot")
-        if not isinstance(previous, dict):
-            previous = {}
-        previous_comment_ids = {int(value) for value in previous.get("comment_ids", ())}
-        previous_review_ids = {int(value) for value in previous.get("review_ids", ())}
-        previous_review_comment_ids = {
-            int(value) for value in previous.get("review_comment_ids", ())
-        }
-        previous_checks = previous.get("checks")
-        if not isinstance(previous_checks, dict):
-            previous_checks = {}
+        event_batch = self.store.ingest_github_pr_activity(
+            run_id=run_id,
+            repository=repository,
+            pull_number=pull_number,
+            activity=activity,
+        )
+        pending_events = event_batch["events"]
 
-        new_comments = [
-            value
-            for value in activity["comments"]
-            if value["id"] not in previous_comment_ids
-        ]
-        new_reviews = [
-            value
-            for value in activity["reviews"]
-            if value["id"] not in previous_review_ids
-        ]
-        new_review_comments = [
-            value
-            for value in activity["review_comments"]
-            if value["id"] not in previous_review_comment_ids
-        ]
-        changed_checks = []
-        for value in activity["checks"]:
-            state = [value["status"], value["conclusion"]]
-            if previous_checks.get(str(value["id"])) != state:
-                changed_checks.append(value)
+        def event_payloads(event_type: str) -> list[dict[str, Any]]:
+            return [
+                value["payload"]
+                for value in pending_events
+                if value["event_type"] == event_type
+            ]
+
+        new_comments = event_payloads("issue_comment")
+        new_reviews = event_payloads("review")
+        new_review_comments = event_payloads("review_comment")
+        changed_checks = event_payloads("check")
 
         pull = activity["pull_request"]
         snapshot = {
@@ -1057,17 +1045,6 @@ class Pipeline:
                 for value in activity["checks"]
             },
         }
-        previous_pull = previous.get("pull_request")
-        pull_changed = previous_pull != pull
-        details = {**details, "github_snapshot": snapshot}
-        self.store.update_run(
-            run_id,
-            status=str(run["status"]),
-            stage=str(run["stage"]),
-            worktree=str(run["worktree"]),
-            details=details,
-        )
-
         activity_limit = 3
         check_limit = 12
 
@@ -1130,6 +1107,44 @@ class Pipeline:
         else:
             next_action = "wait_for_activity"
 
+        checkpoint_payload = None
+        if pending_events:
+            context_bundle = self.store.context_bundle(run_id)
+            if context_bundle is not None:
+                checkpoint_payload = review_checkpoint(
+                    context_bundle,
+                    head_commit=str(pull["head_sha"]),
+                    pull_request_url=str(pull["url"]),
+                    batch_digest=str(event_batch["batch_digest"]),
+                    event_count=len(pending_events),
+                    through_sequence=int(event_batch["through_sequence"]),
+                    next_action=next_action,
+                )
+            committed = self.store.commit_github_follow_up(
+                run_id=run_id,
+                repository=repository,
+                pull_number=pull_number,
+                previous_sequence=int(event_batch["previous_sequence"]),
+                through_sequence=int(event_batch["through_sequence"]),
+                batch_digest=str(event_batch["batch_digest"]),
+                checkpoint=checkpoint_payload,
+            )
+        else:
+            committed = {
+                "idempotent": True,
+                "sequence": int(event_batch["through_sequence"]),
+                "checkpoint": None,
+            }
+
+        details = {**details, "github_snapshot": snapshot}
+        self.store.update_run(
+            run_id,
+            status=str(run["status"]),
+            stage=str(run["stage"]),
+            worktree=str(run["worktree"]),
+            details=details,
+        )
+
         return {
             "run_id": run_id,
             "repository": repository,
@@ -1139,12 +1154,13 @@ class Pipeline:
             ),
             "pull_request": pull,
             "head_matches_verified_commit": head_matches,
-            "changed": bool(
-                pull_changed
-                or new_comments
-                or new_reviews
-                or new_review_comments
-                or changed_checks
+            "changed": bool(pending_events),
+            "event_count": len(pending_events),
+            "event_watermark": committed["sequence"],
+            "review_checkpoint_id": (
+                committed["checkpoint"]["id"]
+                if isinstance(committed.get("checkpoint"), dict)
+                else ""
             ),
             "new_comments": compact_activity(new_comments),
             "new_comments_omitted": max(0, len(new_comments) - activity_limit),

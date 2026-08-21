@@ -75,12 +75,17 @@ SQLite 使用显式 `PRAGMA user_version` 迁移。现有用户的未版本化�
 - `issue_proposals`：缓存本机发起的 Project item 和转换结果；GitHub Project 中的最新内容仍是
   多人审查阶段的唯一真相。
 - `github_pr_events`：按 repository、PR、事件类型、稳定 ID 和内容摘要追加 GitHub 事件版本；
-  原始正文显式标记为 GitHub 不可信输入。
-- `github_pr_watermarks`：保存每个 run 已形成 Review Checkpoint 的事件序号；Checkpoint 和水位
-  可以在同一事务中提交。
+  评论编辑、check 状态和 PR head 变化不会覆盖旧版本，原始正文显式标记为 GitHub 不可信输入。
+- `github_pr_watermarks`：保存每个 run 已经形成 Review Checkpoint 的事件序号。事件先幂等入库，
+  Checkpoint 与水位再在同一事务中提交，因此中断后可以安全重试。
 
 Context Pack 与 Harness 绑定在一个事务中写入；Checkpoint 采用追加方式写入。数据库列中的版本、
 摘要、基线和关联 ID 必须与 JSON 内容一致，否则拒绝保存。
+
+PR 跟进以 GitHub 的结构化事件为唯一真相。`follow-up` 完整遍历 REST 分页，以稳定 ID 和规范化
+内容摘要区分事件版本，并只从水位后的版本生成紧凑 Review Checkpoint。模型分类或摘要属于可重建
+派生信息，不能覆盖事件，也不能直接授权 push、回复或 merge。原始评论和 Review 正文始终标记为
+外部不可信输入。
 
 三类协议文档都使用 Draft 2020-12 JSON Schema，schema 随 Python 包发布。持久化和导入边界会
 拒绝未知字段、未来版本、跨 work item/run 的关联错配及不一致摘要。Bundle digest 只能检测意外
@@ -122,5 +127,5 @@ uv run reposteward context import handoff.json
 ## 后续优先级
 
 1. 增加 Claude Code 与 DeepSeek 适配器，并运行同一契约测试套件。
-2. 为 reviewer feedback 生成新的增量 Checkpoint，而不是把完整评论历史重新注入上下文。
-3. 增加 context redaction、保留期限和跨机器加密导出策略。
+2. 为增量 reviewer feedback 增加统一 token 预算、内容去重和 Contributor 修复闭环。
+3. 增加 context redaction、分层保留期限、安全 GC 和跨机器加密导出策略。
