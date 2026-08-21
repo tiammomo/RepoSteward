@@ -1,5 +1,6 @@
 .git
 .starfix
+.reposteward
 .venv
 __pycache__
 *.pyc
@@ -7,3 +8,8 @@ __pycache__
 .ruff_cache
 dist
 build
+notes
+.env
+.env.*
+*.sqlite
+*.sqlite3

@@ -77,7 +77,14 @@ class CliSetupTests(unittest.TestCase):
                 "alice",
             ]
             output = io.StringIO()
-            with patch.dict("os.environ", {"XDG_CONFIG_HOME": str(config_home)}):
+            with patch.dict(
+                "os.environ",
+                {
+                    "XDG_CONFIG_HOME": str(config_home),
+                    "XDG_STATE_HOME": str(root / "state"),
+                    "XDG_DATA_HOME": str(root / "data"),
+                },
+            ):
                 with redirect_stdout(io.StringIO()):
                     self.assertEqual(main(initialize_args), 0)
                     self.assertEqual(

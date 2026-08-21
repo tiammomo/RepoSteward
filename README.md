@@ -94,7 +94,8 @@ uv run reposteward repo add owner/repository --mode maintainer
 贡献者模式默认推送到用户 fork；维护者模式默认推送到原仓库的独立分支。提交前会通过 GitHub
 API 验证当前身份确实拥有 push 权限，并继续禁止直接使用默认分支。
 
-命令会创建 `.reposteward.toml`，随后需要填写该仓库允许的安装和验证命令。完整字段可参考
+命令会创建本机专用的 `.reposteward.toml`，并自动加入该仓库的 `.git/info/exclude`，不会修改
+仓库受版本控制的 `.gitignore`，也不会让配置混入后续 PR。随后需要填写该仓库允许的安装和验证命令。完整字段可参考
 [`reposteward.example.toml`](reposteward.example.toml)，现有复杂仓库适配示例位于
 [`examples/tiammomo.toml`](examples/tiammomo.toml)。
 
@@ -111,8 +112,10 @@ API 验证当前身份确实拥有 push 权限，并继续禁止直接使用默�
 ```
 
 旧的 `starfix.toml` 仍可被发现，缺少 `config_version` 的旧配置按版本 1 兼容读取。新配置
-默认把状态隔离到 `<state_dir>/<GitHub host>/<login>/`，避免切换 GitHub 用户时混用运行记录；
-旧配置保持原有状态位置。项目层不能覆盖用户层的 GitHub 身份、Agent executable 或 Runner
+默认把数据库和运行日志隔离到 `~/.local/state/reposteward/<GitHub host>/<login>/`，把临时克隆隔离到
+`~/.local/share/reposteward/workspaces/<GitHub host>/<login>/`；支持 XDG 目录变量，Windows 使用
+`LOCALAPPDATA`。这样不会在被维护的仓库中产生运行文件，也避免切换 GitHub 用户时混用记录。
+旧配置显式指定 `state_dir` 时保持原有工作区布局。项目层不能覆盖用户层的运行目录、GitHub 身份、Agent executable 或 Runner
 image；项目安全设置只能收紧用户限额和默认禁止路径，不能静默放宽它们。
 
 ## 准备 Issue 草稿
@@ -178,7 +181,7 @@ uv run reposteward logs RUN_ID
 uv run reposteward logs RUN_ID --command 1 --tail-chars 12000
 ```
 
-验证日志默认保存在 `.reposteward/runs/RUN_ID/verification/`。通过命令在数据库中保留最后
+验证日志默认保存在用户状态目录的 `runs/RUN_ID/verification/`。通过命令在数据库中保留最后
 2,000 个字符，失败命令保留最后 12,000 个字符；更完整的日志文件有 2,000,000 字符上限，
 并记录原始长度和 SHA-256。
 

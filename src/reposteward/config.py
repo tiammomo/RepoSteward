@@ -70,6 +70,10 @@ class SafetyConfig:
     forbidden_paths: tuple[str, ...] = (
         ".github/workflows/",
         ".git/",
+        ".reposteward/",
+        ".starfix/",
+        ".reposteward.toml",
+        "reposteward.local.toml",
         ".env",
         "credentials",
         "secrets",
@@ -133,6 +137,7 @@ class AppConfig:
     config_version: int
     path: Path
     state_dir: Path
+    workspace_dir: Path
     state_namespace: bool
     github: GitHubConfig
     discovery: DiscoveryConfig
@@ -170,6 +175,29 @@ def default_user_config_path() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME", "").strip()
     root = Path(base).expanduser() if base else Path.home() / ".config"
     return (root / "reposteward" / "config.toml").resolve()
+
+
+def default_state_dir() -> Path:
+    """Return the per-user runtime-state root without creating it."""
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA", "").strip():
+        return (Path(os.environ["LOCALAPPDATA"]).expanduser() / "RepoSteward").resolve()
+    base = os.environ.get("XDG_STATE_HOME", "").strip()
+    root = Path(base).expanduser() if base else Path.home() / ".local" / "state"
+    return (root / "reposteward").resolve()
+
+
+def default_workspace_dir() -> Path:
+    """Return the per-user disposable-workspace root without creating it."""
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA", "").strip():
+        root = Path(os.environ["LOCALAPPDATA"]).expanduser() / "RepoSteward"
+    else:
+        base = os.environ.get("XDG_DATA_HOME", "").strip()
+        root = (
+            Path(base).expanduser() / "reposteward"
+            if base
+            else Path.home() / ".local" / "share" / "reposteward"
+        )
+    return (root / "workspaces").resolve()
 
 
 def discover_project_config(start: Path | None = None) -> Path | None:
@@ -228,6 +256,25 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
     result = _merge(user, project)
     if not user:
         return result
+
+    # Runtime state and disposable clones belong to the user/machine trust layer.
+    # A repository-local config must not redirect them into the target repository.
+    user_project = user.get("project")
+    project_project = project.get("project")
+    trusted_project = user_project if isinstance(user_project, dict) else {}
+    merged_project = _merge(
+        trusted_project,
+        project_project if isinstance(project_project, dict) else {},
+    )
+    for key in ("state_dir", "workspace_dir", "namespace_state"):
+        if key in trusted_project:
+            merged_project[key] = trusted_project[key]
+        else:
+            merged_project.pop(key, None)
+    if merged_project:
+        result["project"] = merged_project
+    else:
+        result.pop("project", None)
 
     user_github = user.get("github")
     if isinstance(user_github, dict):
@@ -338,7 +385,8 @@ def load_config(
     _validate_config_version(raw, config_path)
 
     project = _section(raw, "project")
-    state_value = str(project.get("state_dir", ".reposteward"))
+    state_is_explicit = "state_dir" in project
+    state_value = str(project.get("state_dir", default_state_dir()))
     state_dir = Path(state_value).expanduser()
     if not state_dir.is_absolute():
         project_section = project_raw.get("project", {})
@@ -348,8 +396,30 @@ def load_config(
         elif isinstance(user_section, dict) and "state_dir" in user_section:
             state_base = resolved_user_path.parent if resolved_user_path else Path.cwd()
         else:
-            state_base = project_path.parent if project_path else Path.cwd()
+            state_base = default_state_dir().parent
         state_dir = (state_base / state_dir).resolve()
+
+    workspace_is_explicit = "workspace_dir" in project
+    workspace_dir: Path | None
+    if workspace_is_explicit:
+        workspace_dir = Path(str(project["workspace_dir"])).expanduser()
+        if not workspace_dir.is_absolute():
+            project_section = project_raw.get("project", {})
+            user_section = user_raw.get("project", {})
+            if isinstance(project_section, dict) and "workspace_dir" in project_section:
+                workspace_base = project_path.parent if project_path else Path.cwd()
+            elif isinstance(user_section, dict) and "workspace_dir" in user_section:
+                workspace_base = (
+                    resolved_user_path.parent if resolved_user_path else Path.cwd()
+                )
+            else:
+                workspace_base = default_workspace_dir().parent
+            workspace_dir = (workspace_base / workspace_dir).resolve()
+    elif state_is_explicit:
+        # Preserve the layout of existing configs that only define state_dir.
+        workspace_dir = None
+    else:
+        workspace_dir = default_workspace_dir()
 
     github_raw = _section(raw, "github")
     login = str(github_raw.get("login", "")).strip()
@@ -375,6 +445,12 @@ def load_config(
         safe_host = re.sub(r"[^a-z0-9.-]+", "-", host.casefold()).strip("-")
         safe_login = re.sub(r"[^a-z0-9._-]+", "-", github.login.casefold()).strip("-")
         state_dir = state_dir / (safe_host or "forge") / (safe_login or "user")
+        if workspace_dir is not None:
+            workspace_dir = (
+                workspace_dir / (safe_host or "forge") / (safe_login or "user")
+            )
+    if workspace_dir is None:
+        workspace_dir = state_dir / "workspaces"
 
     discovery_raw = _section(raw, "discovery")
     discovery_defaults = DiscoveryConfig()
@@ -395,13 +471,14 @@ def load_config(
 
     safety_raw = _section(raw, "safety")
     safety_defaults = SafetyConfig()
+    configured_forbidden = _tuple(safety_raw.get("forbidden_paths"))
     safety = SafetyConfig(
         max_files_changed=int(safety_raw.get("max_files_changed", 18)),
         max_diff_lines=int(safety_raw.get("max_diff_lines", 700)),
         require_verification=_boolean(safety_raw.get("require_verification"), True),
         draft_pull_requests=_boolean(safety_raw.get("draft_pull_requests"), True),
-        forbidden_paths=_tuple(
-            safety_raw.get("forbidden_paths"), safety_defaults.forbidden_paths
+        forbidden_paths=tuple(
+            dict.fromkeys(safety_defaults.forbidden_paths + configured_forbidden)
         ),
     )
 
@@ -560,6 +637,7 @@ def load_config(
         config_version=version_value or CONFIG_VERSION,
         path=config_path,
         state_dir=state_dir,
+        workspace_dir=workspace_dir,
         state_namespace=state_namespace,
         github=github,
         discovery=discovery,

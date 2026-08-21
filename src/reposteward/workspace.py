@@ -66,7 +66,7 @@ def slugify(value: str, *, limit: int = 48) -> str:
 class WorkspaceManager:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        self.root = config.state_dir / "workspaces"
+        self.root = config.workspace_dir
         self.root.mkdir(parents=True, exist_ok=True)
 
     def clone(self, candidate: Candidate) -> Path:

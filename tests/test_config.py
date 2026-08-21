@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from reposteward.config import ConfigError, load_config
 
@@ -14,6 +15,7 @@ class ConfigTests(unittest.TestCase):
         config = load_config(ROOT / "examples" / "tiammomo.toml")
 
         self.assertEqual(config.github.login, "tiammomo")
+        self.assertEqual(config.workspace_dir, config.state_dir / "workspaces")
         self.assertEqual(config.runner.max_output_chars, 12_000)
         self.assertEqual(config.runner.passed_output_chars, 2_000)
         self.assertEqual(config.runner.max_log_chars, 2_000_000)
@@ -116,6 +118,7 @@ executable = "codex"
                 """config_version = 1
 [project]
 state_dir = ".state"
+workspace_dir = ".workspaces"
 [runner]
 memory = "4g"
 image = "untrusted-runner:latest"
@@ -134,7 +137,14 @@ max_diff_lines = 99
                 encoding="utf-8",
             )
 
-            config = load_config(project, user_path=user)
+            with patch.dict(
+                "os.environ",
+                {
+                    "XDG_STATE_HOME": str(root / "user-state"),
+                    "XDG_DATA_HOME": str(root / "user-data"),
+                },
+            ):
+                config = load_config(project, user_path=user)
 
         self.assertEqual(config.github.login, "alice")
         self.assertEqual(config.github.git_name, "Alice")
@@ -147,7 +157,17 @@ max_diff_lines = 99
         self.assertTrue(config.safety.require_verification)
         self.assertIn(".github/workflows/", config.safety.forbidden_paths)
         self.assertEqual(
-            config.state_dir, project.parent / ".state" / "api.github.com" / "alice"
+            config.state_dir,
+            root / "user-state" / "reposteward" / "api.github.com" / "alice",
+        )
+        self.assertEqual(
+            config.workspace_dir,
+            root
+            / "user-data"
+            / "reposteward"
+            / "workspaces"
+            / "api.github.com"
+            / "alice",
         )
         self.assertTrue(config.state_namespace)
         self.assertEqual(config.repositories["owner/repo"].max_diff_lines, 99)

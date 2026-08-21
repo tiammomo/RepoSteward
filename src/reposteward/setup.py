@@ -8,7 +8,13 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from .config import CONFIG_VERSION, ConfigError, default_user_config_path
+from .config import (
+    CONFIG_VERSION,
+    ConfigError,
+    default_state_dir,
+    default_user_config_path,
+    default_workspace_dir,
+)
 
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
@@ -42,6 +48,11 @@ def _toml_string(value: str) -> str:
 
 def render_user_config(login: str, git_name: str, git_email: str) -> str:
     return f"""config_version = {CONFIG_VERSION}
+
+[project]
+state_dir = {_toml_string(str(default_state_dir()))}
+workspace_dir = {_toml_string(str(default_workspace_dir()))}
+namespace_state = true
 
 [github]
 login = {_toml_string(login)}
@@ -144,12 +155,7 @@ def add_repository(
         ):
             raise ConfigError(f"repository is already configured: {repository}")
     else:
-        existing = (
-            f"config_version = {CONFIG_VERSION}\n\n"
-            "[project]\n"
-            'state_dir = ".reposteward"\n'
-            "namespace_state = true\n"
-        )
+        existing = f"config_version = {CONFIG_VERSION}\n"
     separator = (
         ""
         if existing.endswith("\n\n")
@@ -169,9 +175,48 @@ branch_template = "{{login}}/{{scope}}/{{slug}}"
 default_scope = "repo"
 """
     _write_atomic(target, existing + separator + section, force=target.exists())
+    git_exclude_added = _exclude_local_config(target)
     return {
         "config": str(target),
         "repository": repository,
         "mode": mode,
+        "git_exclude_added": git_exclude_added,
         "next_action": "configure bootstrap_commands and verification_prefixes",
     }
+
+
+def _exclude_local_config(target: Path) -> bool:
+    """Keep an untracked local config out of target-repository changes."""
+    repository_root = _capture(
+        ["git", "-C", str(target.parent), "rev-parse", "--show-toplevel"]
+    )
+    if not repository_root:
+        return False
+    root = Path(repository_root).resolve()
+    try:
+        relative = target.resolve().relative_to(root)
+    except ValueError:
+        return False
+    tracked = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", str(relative)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if tracked.returncode == 0:
+        return False
+    exclude_value = _capture(
+        ["git", "-C", str(root), "rev-parse", "--git-path", "info/exclude"]
+    )
+    if not exclude_value:
+        return False
+    exclude_path = Path(exclude_value)
+    if not exclude_path.is_absolute():
+        exclude_path = root / exclude_path
+    pattern = f"/{relative.as_posix()}"
+    existing = exclude_path.read_text(encoding="utf-8") if exclude_path.exists() else ""
+    if pattern in existing.splitlines():
+        return False
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    _write_atomic(exclude_path, f"{existing}{separator}{pattern}\n", force=True)
+    return True
