@@ -6,6 +6,8 @@ __pycache__/
 .ruff_cache/
 .starfix/
 .reposteward/
+.reposteward.toml
+reposteward.local.toml
 dist/
 build/
 *.egg-info/

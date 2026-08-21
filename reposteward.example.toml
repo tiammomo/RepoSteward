@@ -1,7 +1,8 @@
 config_version = 1
 
 [project]
-state_dir = ".reposteward"
+state_dir = "~/.local/state/reposteward"
+workspace_dir = "~/.local/share/reposteward/workspaces"
 namespace_state = true
 
 [github]
