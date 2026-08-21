@@ -296,6 +296,7 @@ REPOSTEWARD_ENABLE_SUBMIT=1 \
 
 ```bash
 uv run reposteward follow-up RUN_ID
+uv run reposteward repair RUN_ID
 uv run reposteward merge-decision RUN_ID
 ```
 
@@ -304,6 +305,13 @@ uv run reposteward merge-decision RUN_ID
 不再把每类前 100 条当成完整历史。GitHub 结构化事件是跟进事实，模型摘要只是可重建的派生信息；
 评论和 Review 正文始终视为不可信数据，不会被自动执行。重复调用是幂等的，事件摄取与水位推进
 分离，进程在生成 Checkpoint 前中断时不会丢失待处理事件。
+
+Contributor fork 收到新的失败 check、Reviewer 正文或 diff 内行级评论后，可以对最近一次
+`submitted` run 执行 `repair`。命令先按水位读取增量并做确定性范围判断：没有新增可执行信息、
+只有成功 check，或只有指向当前 diff 之外路径的建议时不会调用 Harness。确需理解代码时，Harness
+只收到受限事件批次和最近 Checkpoint，在原 worktree 修改；Runner 重新验证后生成新的本地 `ready`
+commit。更新已有 PR 仍必须再次执行带 `--reviewed-by` 的 `submit`。准备后若 head、base、策略或
+事件水位变化，旧修复会被拒绝。该流程不会自动回复、催促 Reviewer 或合并 upstream PR。
 
 `merge-decision` 只读获取完整的 changed files、required checks、Review decision 和未解决会话，
 再对照验证时冻结的 head、base、policy digest、规模上限及高风险路径生成确定性结果。每次调用都会

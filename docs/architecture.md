@@ -103,6 +103,12 @@ PR 跟进以 GitHub 的结构化事件为唯一真相。`follow-up` 完整遍历
 派生信息，不能覆盖事件，也不能直接授权 push、回复或 merge。原始评论和 Review 正文始终标记为
 外部不可信输入。
 
+Contributor 修复循环消费一个已提交 run 的下一批事件。确定性规划先排除重复轮询、非失败 check
+和指向原 PR diff 之外路径的建议；只有剩余反馈需要理解代码时才创建 successor run 并调用 Harness。
+successor 从已提交水位开始，避免重新注入完整 PR 历史。修复通过相同隔离 Runner 与 diff 策略后只
+进入本地 `ready` 状态；每个新 commit 都需要新的 submit 身份确认。准备时冻结 head、base、policy
+digest、事件水位和完整 GitHub 结构化快照，公开 push 前逐项复核，任一变化都使准备失效。
+
 Merge Decision Engine 位于执行器之前。它完整分页读取 GitHub 结构化状态，并以纯函数检查已验证
 head/base、策略摘要、审批、required checks、未解决会话、规模和不可削弱的高风险路径。结果只表示
 当前快照是否具备资格，不执行 merge，也不以 Harness 推理替代确定性事实。任何不完整快照都失败
@@ -148,5 +154,5 @@ uv run reposteward context import handoff.json
 ## 后续优先级
 
 1. 增加 Claude Code 与 DeepSeek 适配器，并运行同一契约测试套件。
-2. 为增量 reviewer feedback 增加统一 token 预算、内容去重和 Contributor 修复闭环。
-3. 增加 context redaction、分层保留期限、安全 GC 和跨机器加密导出策略。
+2. 为增量 reviewer feedback 增加统一 token 预算与内容去重。
+3. 增加 context redaction 和跨机器加密导出策略。
