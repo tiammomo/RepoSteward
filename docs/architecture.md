@@ -61,6 +61,18 @@ local draft ── explicit stage ──► Project Draft Issue
 - Runner 只安装依赖并执行已允许的验证命令，不接触宿主凭据。
 - 人类审阅者决定是否发布，并对最终提交负责。
 
+## 仓库级 PR 组合视图
+
+单个 run 的 Checkpoint 不能回答多个开放 PR 是否修改同一批文件。Portfolio Inspector 因此从
+GitHub 当前事实临时构建仓库级快照：先完整分页枚举开放 PR，再复用 Merge Snapshot 的完整分页读取
+获得每个 PR 的 head/base、文件、规模、required checks、Review 和未解决会话。采集错误、权限不足
+或过程中检测到的 head/state 变化都会显式降低完整性，不会被当成“没有冲突”。
+
+重叠关系按 changed file 建立倒排索引，只为实际共同修改文件的 PR 组合生成边；成本与读取的文件
+引用和最终输出边数相关，不对所有 PR 两两重扫文件列表。规范化后的完整快照生成稳定摘要，调用方
+可以用 expected digest 检测后续读取是否已经陈旧。v1 不把快照写入数据库、不调用 Harness，也不
+修改 workspace 或 GitHub；它是后续依赖排序、WIP 策略和单步协调器的只读事实层。
+
 ## 持久数据模型
 
 SQLite 使用显式 `PRAGMA user_version` 迁移。现有用户的未版本化数据库会原地升级；高于当前

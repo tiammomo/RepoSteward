@@ -49,6 +49,7 @@ RepoSteward 把一次代码维护任务拆成八个可审计步骤：
 - 在无凭据、无网络的容器中执行允许的验证命令；
 - 生成紧凑的 Review Packet，并在人工确认后创建 Draft PR；
 - 使用 Context Pack 和 Checkpoint 在账号、机器或 Harness 之间交接任务。
+- 只读汇总仓库全部开放 PR，并标出文件重叠、CI、Review 与事实完整性。
 
 Claude Code、DeepSeek 等 Harness 目前只有统一接入契约，尚未提供内置适配器。配置格式和公开
 接口在稳定版本发布前仍可能调整。
@@ -229,6 +230,32 @@ uv run reposteward prepare owner/repository 123
 Docker socket。
 
 如果改动已经在外部工作区完成，可以使用 `adopt` 将现有 commit 纳入同一验证与审阅流程。
+
+## PR 组合快照
+
+在同时维护多个 PR 时，可以先生成仓库级只读快照：
+
+```bash
+uv run reposteward portfolio inspect owner/repository --format text
+uv run reposteward portfolio inspect owner/repository --format json
+```
+
+命令会完整分页读取全部开放 PR，再汇总每个 PR 的 head/base、Draft 状态、changed files、diff
+规模、required checks、Review decision 和未解决会话。文件重叠通过倒排索引构建，不会逐对重新扫描
+所有 changed files。任何权限不足、分页不完整或采集期间的状态变化都会把快照标记为不完整，并在
+结果中保留对应 PR 和错误原因。
+
+每个快照都有基于规范化事实生成的稳定 SHA-256。需要在后续动作前检查事实是否仍未变化时，可传入
+上一次摘要：
+
+```bash
+uv run reposteward portfolio inspect owner/repository \
+  --expected-digest SNAPSHOT_DIGEST \
+  --format text
+```
+
+该命令不调用 Harness、不修改 workspace、不持久化快照，也不执行任何 GitHub 写操作。JSON 适合
+自动化消费，文本输出只展示紧凑的人类审阅摘要。
 
 ## 审阅与日志
 

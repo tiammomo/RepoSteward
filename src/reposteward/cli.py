@@ -12,6 +12,7 @@ from .discovery import DiscoveryService
 from .doctor import run_doctor
 from .issues import read_details
 from .pipeline import Pipeline
+from .portfolio import render_portfolio_text
 from .setup import add_repository, initialize_user_config
 
 
@@ -188,6 +189,23 @@ def _parser() -> argparse.ArgumentParser:
     )
     storage_gc.add_argument("--repo", default="", help="limit to owner/name")
     storage_gc.add_argument("--apply", action="store_true")
+
+    portfolio = subparsers.add_parser(
+        "portfolio", help="inspect repository-wide pull request state"
+    )
+    portfolio_commands = portfolio.add_subparsers(
+        dest="portfolio_command", required=True
+    )
+    portfolio_inspect = portfolio_commands.add_parser(
+        "inspect", help="build a read-only open pull request snapshot"
+    )
+    portfolio_inspect.add_argument("repository")
+    portfolio_inspect.add_argument(
+        "--expected-digest",
+        default="",
+        help="report whether current facts still match this snapshot digest",
+    )
+    portfolio_inspect.add_argument("--format", choices=("json", "text"), default="json")
 
     follow_up = subparsers.add_parser(
         "follow-up",
@@ -437,6 +455,19 @@ def main(argv: list[str] | None = None) -> int:
                 _json(pipeline.storage_gc(repository=args.repo, apply=args.apply))
                 return 0
             raise AssertionError(f"unhandled storage command: {args.storage_command}")
+        if args.command == "portfolio":
+            if args.portfolio_command == "inspect":
+                result = pipeline.portfolio_snapshot(
+                    args.repository, expected_digest=args.expected_digest
+                )
+                if args.format == "text":
+                    print(render_portfolio_text(result))
+                else:
+                    _json(result)
+                return 0
+            raise AssertionError(
+                f"unhandled portfolio command: {args.portfolio_command}"
+            )
         if args.command == "follow-up":
             _json(pipeline.follow_up(args.run_id))
             return 0
