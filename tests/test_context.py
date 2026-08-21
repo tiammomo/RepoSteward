@@ -14,8 +14,10 @@ from reposteward.agent import CodexCliHarness, build_harness_prompt
 from reposteward.config import AgentConfig, ConfigError, RepositoryPolicy, load_config
 from reposteward.context import (
     MAX_HANDOFF_ITEM_CHARS,
+    MAX_REPAIR_ITEM_CHARS,
     MAX_TASK_DESCRIPTION_CHARS,
     build_context_pack,
+    build_repair_context_pack,
     portable_bundle,
     review_checkpoint,
 )
@@ -31,6 +33,7 @@ from reposteward.models import (
 )
 from reposteward.pipeline import Pipeline
 from reposteward.policy import DiffSummary
+from reposteward.protocol import validate_context_pack
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -66,6 +69,36 @@ def _candidate(body: str = "Reproduce the bug") -> Candidate:
 
 
 class ContextPackTests(unittest.TestCase):
+    def test_repair_context_keeps_bounded_incremental_feedback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pack = build_repair_context_pack(
+                _candidate(),
+                RepositoryPolicy(name="owner/repo"),
+                work_item_id="work-1",
+                run_id="run-2",
+                worktree=Path(directory),
+                base_commit="a" * 40,
+                harness="codex-cli",
+                model="gpt-example",
+                previous_checkpoint={"id": "checkpoint-1", "status": "submitted"},
+                pull_request_url="https://github.com/owner/repo/pull/12",
+                head_commit="b" * 40,
+                event_watermark=9,
+                event_batch_digest="c" * 64,
+                repair_items=tuple(
+                    {"kind": "review_comment", "body": "x" * 10_000} for _ in range(100)
+                ),
+            )
+
+        self.assertEqual(len(pack.task.acceptance_criteria), 17)
+        self.assertLessEqual(
+            len(pack.task.acceptance_criteria[-1]), MAX_REPAIR_ITEM_CHARS
+        )
+        self.assertEqual(pack.sources[-1].kind, "github_pr_event_batch")
+        self.assertEqual(pack.sources[-1].digest, "c" * 64)
+        self.assertIn("current_follow_up", build_harness_prompt(pack))
+        validate_context_pack(pack.to_dict())
+
     def test_review_checkpoint_records_one_incremental_event_batch(self) -> None:
         bundle = {
             "work_item": {"id": "work-1"},
