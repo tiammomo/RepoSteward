@@ -1137,6 +1137,63 @@ class Store:
             "events": events,
         }
 
+    def seed_github_pr_watermark(
+        self,
+        *,
+        run_id: str,
+        repository: str,
+        pull_number: int,
+        sequence: int,
+        batch_digest: str,
+    ) -> dict[str, Any]:
+        """Start a successor run at an already committed event boundary."""
+        repository = repository.casefold()
+        if pull_number < 1 or sequence < 0:
+            raise ValueError("pull number must be positive and sequence non-negative")
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = connection.execute(
+                "SELECT repository FROM runs WHERE id=?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"run not found: {run_id}")
+            if str(run["repository"]).casefold() != repository:
+                raise StoreError("GitHub watermark belongs to a different repository")
+            if sequence:
+                event = connection.execute(
+                    """
+                    SELECT sequence FROM github_pr_events
+                    WHERE repository=? AND pull_number=? AND sequence=?
+                    """,
+                    (repository, pull_number, sequence),
+                ).fetchone()
+                if event is None:
+                    raise StoreError(
+                        "GitHub watermark does not reference a stored event"
+                    )
+            connection.execute(
+                """
+                INSERT INTO github_pr_watermarks(
+                    run_id, repository, pull_number, sequence,
+                    batch_digest, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO NOTHING
+                """,
+                (run_id, repository, pull_number, sequence, batch_digest, utc_now()),
+            )
+            row = connection.execute(
+                "SELECT * FROM github_pr_watermarks WHERE run_id=?", (run_id,)
+            ).fetchone()
+            assert row is not None
+            if (
+                str(row["repository"]).casefold() != repository
+                or int(row["pull_number"]) != pull_number
+                or int(row["sequence"]) != sequence
+                or str(row["batch_digest"]) != batch_digest
+            ):
+                raise StoreError("successor GitHub watermark already has another scope")
+        return dict(row)
+
     def commit_github_follow_up(
         self,
         *,

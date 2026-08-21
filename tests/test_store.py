@@ -432,6 +432,58 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(events[0]["payload_available"])
         self.assertIsNone(blob)
 
+    def test_successor_run_starts_at_committed_event_watermark(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            activity = {
+                "pull_request": {
+                    "number": 12,
+                    "head_sha": "a" * 40,
+                    "state": "open",
+                },
+                "comments": [{"id": 1, "body": "fix this"}],
+                "reviews": [],
+                "review_comments": [],
+                "checks": [],
+            }
+            source = store.start_run("owner/repo", 7, "pull_request")
+            store.update_run(
+                source,
+                status="submitted",
+                details={"pr_url": "https://github.com/owner/repo/pull/12"},
+            )
+            batch = store.ingest_github_pr_activity(
+                run_id=source,
+                repository="owner/repo",
+                pull_number=12,
+                activity=activity,
+            )
+            store.commit_github_follow_up(
+                run_id=source,
+                repository="owner/repo",
+                pull_number=12,
+                previous_sequence=batch["previous_sequence"],
+                through_sequence=batch["through_sequence"],
+                batch_digest=batch["batch_digest"],
+            )
+            successor = store.start_run("owner/repo", 7, "repair")
+            seeded = store.seed_github_pr_watermark(
+                run_id=successor,
+                repository="owner/repo",
+                pull_number=12,
+                sequence=batch["through_sequence"],
+                batch_digest=batch["batch_digest"],
+            )
+            repeated = store.ingest_github_pr_activity(
+                run_id=successor,
+                repository="owner/repo",
+                pull_number=12,
+                activity=activity,
+            )
+
+        self.assertEqual(seeded["sequence"], batch["through_sequence"])
+        self.assertEqual(repeated["events"], [])
+
     def test_merge_decision_audit_is_append_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")

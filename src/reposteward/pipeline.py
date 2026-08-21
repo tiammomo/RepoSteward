@@ -16,6 +16,7 @@ from .context import (
     CONTEXT_SCHEMA_VERSION,
     ContextPack,
     build_context_pack,
+    build_repair_context_pack,
     failed_checkpoint,
     portable_bundle,
     ready_checkpoint,
@@ -43,6 +44,65 @@ from .review import compact_command, compact_run
 from .store import Store
 from .verifier import DockerVerifier
 from .workspace import WorkspaceManager
+
+FAILED_CHECK_CONCLUSIONS = frozenset(
+    {"action_required", "cancelled", "failure", "stale", "timed_out"}
+)
+
+
+def _canonical_digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+
+
+def _repair_feedback(
+    follow_up: dict[str, Any], changed_files: tuple[str, ...]
+) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    """Separate actionable in-scope feedback from path-scoped suggestions."""
+    allowed_paths = set(changed_files)
+    actionable: list[dict[str, Any]] = []
+    suggestions: list[dict[str, Any]] = []
+
+    for kind, key in (
+        ("issue_comment", "new_comments"),
+        ("review", "new_reviews"),
+        ("review_comment", "new_review_comments"),
+    ):
+        values = follow_up.get(key, ())
+        if not isinstance(values, (list, tuple)):
+            continue
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            item = {"kind": kind, **value}
+            path = str(value.get("path") or "")
+            if kind == "review_comment" and path and path not in allowed_paths:
+                suggestions.append(
+                    {**item, "reason": "path_outside_existing_pull_request_scope"}
+                )
+                continue
+            body = str(value.get("body") or "").strip()
+            state = str(value.get("state") or "").casefold()
+            if kind == "review" and not body and state != "changes_requested":
+                continue
+            if kind == "issue_comment" and not body:
+                continue
+            actionable.append(item)
+
+    checks = follow_up.get("changed_checks", ())
+    if isinstance(checks, (list, tuple)):
+        for value in checks:
+            if not isinstance(value, dict):
+                continue
+            if (
+                str(value.get("conclusion") or "").casefold()
+                in FAILED_CHECK_CONCLUSIONS
+            ):
+                actionable.append({"kind": "failed_check", **value})
+    return tuple(actionable), tuple(suggestions)
 
 
 class Pipeline:
@@ -1295,7 +1355,11 @@ class Pipeline:
         return {**result, "audit": [applying, completed], "applied": applied}
 
     def follow_up(self, run_id: str) -> dict[str, Any]:
-        """Return only GitHub activity that changed since the previous check."""
+        """Commit and return GitHub activity changed since the previous check."""
+        return self._follow_up(run_id, commit=True)
+
+    def _follow_up(self, run_id: str, *, commit: bool) -> dict[str, Any]:
+        """Collect one event batch, optionally advancing its Review Checkpoint."""
         run = self.store.run(run_id)
         if run is None:
             raise KeyError(f"run not found: {run_id}")
@@ -1378,13 +1442,6 @@ class Pipeline:
             return result
 
         head_matches = pull["head_sha"] == str(details.get("commit_sha", ""))
-        failed_conclusions = {
-            "action_required",
-            "cancelled",
-            "failure",
-            "stale",
-            "timed_out",
-        }
         if not head_matches:
             next_action = "reverify_changed_head"
         elif pull.get("merged"):
@@ -1392,7 +1449,8 @@ class Pipeline:
         elif pull["state"] != "open":
             next_action = "inspect_closed_pull_request"
         elif any(
-            value["conclusion"] in failed_conclusions for value in activity["checks"]
+            value["conclusion"] in FAILED_CHECK_CONCLUSIONS
+            for value in activity["checks"]
         ):
             next_action = "diagnose_failed_checks"
         elif new_comments or new_reviews or new_review_comments:
@@ -1415,15 +1473,22 @@ class Pipeline:
                     through_sequence=int(event_batch["through_sequence"]),
                     next_action=next_action,
                 )
-            committed = self.store.commit_github_follow_up(
-                run_id=run_id,
-                repository=repository,
-                pull_number=pull_number,
-                previous_sequence=int(event_batch["previous_sequence"]),
-                through_sequence=int(event_batch["through_sequence"]),
-                batch_digest=str(event_batch["batch_digest"]),
-                checkpoint=checkpoint_payload,
-            )
+            if commit:
+                committed = self.store.commit_github_follow_up(
+                    run_id=run_id,
+                    repository=repository,
+                    pull_number=pull_number,
+                    previous_sequence=int(event_batch["previous_sequence"]),
+                    through_sequence=int(event_batch["through_sequence"]),
+                    batch_digest=str(event_batch["batch_digest"]),
+                    checkpoint=checkpoint_payload,
+                )
+            else:
+                committed = {
+                    "idempotent": False,
+                    "sequence": int(event_batch["through_sequence"]),
+                    "checkpoint": None,
+                }
         else:
             committed = {
                 "idempotent": True,
@@ -1431,16 +1496,17 @@ class Pipeline:
                 "checkpoint": None,
             }
 
-        details = {**details, "github_snapshot": snapshot}
-        self.store.update_run(
-            run_id,
-            status=str(run["status"]),
-            stage=str(run["stage"]),
-            worktree=str(run["worktree"]),
-            details=details,
-        )
+        if commit:
+            details = {**details, "github_snapshot": snapshot}
+            self.store.update_run(
+                run_id,
+                status=str(run["status"]),
+                stage=str(run["stage"]),
+                worktree=str(run["worktree"]),
+                details=details,
+            )
 
-        return {
+        result = {
             "run_id": run_id,
             "repository": repository,
             "trust_boundary": (
@@ -1452,6 +1518,7 @@ class Pipeline:
             "changed": bool(pending_events),
             "event_count": len(pending_events),
             "event_watermark": committed["sequence"],
+            "event_batch_digest": str(event_batch["batch_digest"]),
             "review_checkpoint_id": (
                 committed["checkpoint"]["id"]
                 if isinstance(committed.get("checkpoint"), dict)
@@ -1469,6 +1536,377 @@ class Pipeline:
             "changed_checks_omitted": max(0, len(changed_checks) - check_limit),
             "next_action": next_action,
         }
+        if not commit:
+            result["_previous_event_watermark"] = int(event_batch["previous_sequence"])
+            result["_checkpoint_payload"] = checkpoint_payload
+            result["_github_snapshot"] = snapshot
+        return result
+
+    def _commit_repair_event_preview(
+        self, source_run: dict[str, Any], preview: dict[str, Any]
+    ) -> dict[str, Any]:
+        committed = self.store.commit_github_follow_up(
+            run_id=str(source_run["id"]),
+            repository=str(source_run["repository"]),
+            pull_number=int(preview["pull_request"]["number"]),
+            previous_sequence=int(preview["_previous_event_watermark"]),
+            through_sequence=int(preview["event_watermark"]),
+            batch_digest=str(preview["event_batch_digest"]),
+            checkpoint=preview["_checkpoint_payload"],
+        )
+        details = {
+            **source_run.get("details", {}),
+            "github_snapshot": preview["_github_snapshot"],
+        }
+        self.store.update_run(
+            str(source_run["id"]),
+            status=str(source_run["status"]),
+            stage=str(source_run["stage"]),
+            worktree=str(source_run["worktree"]),
+            details=details,
+        )
+        return committed
+
+    def prepare_repair(self, source_run_id: str) -> dict[str, Any]:
+        """Prepare one contributor repair from newly committed PR activity."""
+        source_run = self.store.run(source_run_id)
+        if source_run is None:
+            raise KeyError(f"run not found: {source_run_id}")
+        repository = str(source_run["repository"])
+        policy = self.policy(repository)
+        if policy.mode != "contributor" or policy.submission_strategy != "fork":
+            raise PolicyError("repair is available only for contributor fork workflows")
+        if str(source_run.get("status")) != "submitted":
+            raise PolicyError("repair requires a submitted pull-request run")
+        details = source_run.get("details", {})
+        match = re.search(r"/pull/(\d+)/?$", str(details.get("pr_url", "")))
+        if not match:
+            raise PolicyError("the selected run has no submitted pull request")
+        pull_number = int(match.group(1))
+
+        follow = self._follow_up(source_run_id, commit=False)
+        if not follow["head_matches_verified_commit"]:
+            raise PolicyError("pull request head changed; re-adopt and verify it first")
+        if follow["next_action"] in {"complete", "inspect_closed_pull_request"}:
+            raise PolicyError("pull request is no longer open for a contributor repair")
+        if not follow["changed"]:
+            return {
+                "source_run_id": source_run_id,
+                "repair_prepared": False,
+                "harness_invoked": False,
+                "reason": "no_new_actionable_activity",
+                "next_action": follow["next_action"],
+                "public_write": False,
+            }
+        omitted = sum(
+            int(follow.get(name, 0))
+            for name in (
+                "new_comments_omitted",
+                "new_reviews_omitted",
+                "new_review_comments_omitted",
+                "changed_checks_omitted",
+            )
+        )
+        if omitted:
+            raise PolicyError(
+                "incremental activity exceeds the bounded repair input; "
+                "inspect the stored events before preparing a repair"
+            )
+        changed_files = tuple(str(value) for value in details.get("changed_files", ()))
+        repair_items, suggestions = _repair_feedback(follow, changed_files)
+        if not repair_items:
+            self._commit_repair_event_preview(source_run, follow)
+            return {
+                "source_run_id": source_run_id,
+                "repair_prepared": False,
+                "harness_invoked": False,
+                "reason": "no_in_scope_actionable_feedback",
+                "suggestions": suggestions,
+                "next_action": "review_suggestions"
+                if suggestions
+                else follow["next_action"],
+                "public_write": False,
+            }
+
+        worktree = Path(str(details.get("worktree", ""))).expanduser().resolve()
+        if not (worktree / ".git").exists():
+            raise PolicyError(f"prepared worktree is missing: {worktree}")
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=worktree,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if dirty:
+            raise PolicyError("repair worktree has uncommitted changes")
+        parent_commit = self._revision(worktree)
+        if parent_commit != str(details.get("commit_sha", "")):
+            raise PolicyError("repair worktree HEAD differs from the submitted commit")
+
+        source_context = self.store.context_bundle(source_run_id)
+        if source_context is None:
+            raise PolicyError("the submitted run has no verified context checkpoint")
+        project = source_context.get("context_pack", {}).get("project", {})
+        expected_policy_digest = str(project.get("policy_digest") or "")
+        current_policy_digest = repository_policy_digest(policy)
+        if expected_policy_digest != current_policy_digest:
+            raise PolicyError(
+                "repository policy changed after the submitted verification"
+            )
+
+        merge_snapshot = self.github.pull_request_merge_snapshot(
+            repository, pull_number
+        )
+        base_commit = str(details.get("base_commit") or "")
+        if str(merge_snapshot["head_sha"]) != parent_commit:
+            raise PolicyError("pull request head changed before repair preparation")
+        if str(merge_snapshot["base_sha"]) != base_commit:
+            raise PolicyError(
+                "base branch changed; refresh the branch before repairing"
+            )
+        if str(merge_snapshot["state"]).casefold() != "open":
+            raise PolicyError("pull request is no longer open")
+
+        candidate = self.store.candidate(repository, int(source_run["issue_number"]))
+        if candidate is None:
+            raise PolicyError("the original issue candidate is unavailable")
+        work_item = source_context.get("work_item")
+        previous_checkpoint = source_context.get("checkpoint")
+        if not isinstance(work_item, dict) or not isinstance(previous_checkpoint, dict):
+            raise PolicyError("the submitted run has no reusable review checkpoint")
+
+        run_id = self.store.start_run(repository, candidate.issue.number, "repair")
+        context: ContextPack | None = None
+        failure_details: dict[str, Any] = {
+            "source_run_id": source_run_id,
+            "worktree": str(worktree),
+            "base_branch": str(details.get("base_branch") or ""),
+            "base_commit": base_commit,
+            "branch": str(details.get("branch") or ""),
+            "commit_sha": parent_commit,
+            "pr_url": str(details["pr_url"]),
+            "repair_suggestions": list(suggestions),
+        }
+        try:
+            context = build_repair_context_pack(
+                candidate,
+                policy,
+                work_item_id=str(work_item["id"]),
+                run_id=run_id,
+                worktree=worktree,
+                base_commit=base_commit,
+                harness=self.harness.name,
+                model=self.config.agent.model,
+                previous_checkpoint=previous_checkpoint,
+                pull_request_url=str(details["pr_url"]),
+                head_commit=parent_commit,
+                event_watermark=int(follow["event_watermark"]),
+                event_batch_digest=str(follow["event_batch_digest"]),
+                repair_items=repair_items,
+            )
+            self.store.save_context_run(
+                pack_id=context.id,
+                work_item_id=context.work_item_id,
+                run_id=run_id,
+                schema_version=context.schema_version,
+                source_digest=context.source_digest,
+                base_commit=base_commit,
+                payload=context.to_dict(),
+                harness=self.harness.name,
+                model=self.config.agent.model,
+            )
+            self._save_checkpoint(
+                context,
+                status="running",
+                payload=running_checkpoint(
+                    context,
+                    head_commit=parent_commit,
+                    completed=("Recorded bounded incremental reviewer feedback.",),
+                    next_action="run_repair_harness",
+                ),
+            )
+            self.store.update_work_item_status(context.work_item_id, "active")
+            self.store.update_run(
+                run_id,
+                status="running",
+                stage="agent",
+                worktree=str(worktree),
+                details=failure_details,
+            )
+            run_dir = self.config.state_dir / "runs" / run_id
+            native_session_id = self.store.latest_harness_session(
+                context.work_item_id, self.harness.name
+            )
+            execution = self.harness.run(
+                HarnessRequest(
+                    worktree=worktree,
+                    run_dir=run_dir,
+                    context=context,
+                    native_session_id=native_session_id,
+                )
+            )
+            self.store.update_harness_run(
+                run_id,
+                harness=execution.harness or self.harness.name,
+                model=execution.model,
+                native_session_id=execution.native_session_id,
+            )
+            result = execution.result
+            failure_details.update(
+                {
+                    "agent_result": asdict(result),
+                    "agent_metrics": asdict(execution.metrics),
+                    "harness": {
+                        "name": execution.harness or self.harness.name,
+                        "model": execution.model,
+                        "native_session_id": execution.native_session_id,
+                        "context_pack_id": context.id,
+                    },
+                }
+            )
+            self.store.update_run(run_id, status="running", stage="verification")
+            verification = self.verifier.verify(
+                worktree, policy, result, run_dir=run_dir
+            )
+            failure_details["verification"] = asdict(verification)
+            base_ref = f"origin/{details['base_branch']}"
+            diff = enforce_change_policy(
+                worktree,
+                verification,
+                policy,
+                self.config,
+                base_ref=base_ref,
+            )
+            commit_sha = self.workspaces.commit(worktree, result.pr_title)
+            guard = {
+                "source_run_id": source_run_id,
+                "pull_number": pull_number,
+                "parent_commit": parent_commit,
+                "base_sha": str(merge_snapshot["base_sha"]),
+                "base_branch": str(details["base_branch"]),
+                "policy_digest": current_policy_digest,
+                "event_watermark": int(follow["event_watermark"]),
+                "event_batch_digest": str(follow["event_batch_digest"]),
+                "snapshot_digest": _canonical_digest(merge_snapshot),
+            }
+            ready_details = {
+                **failure_details,
+                "commit_sha": commit_sha,
+                "changed_files": list(diff.files),
+                "added_lines": diff.added_lines,
+                "deleted_lines": diff.deleted_lines,
+                "repair_guard": guard,
+            }
+            self.store.seed_github_pr_watermark(
+                run_id=run_id,
+                repository=repository,
+                pull_number=pull_number,
+                sequence=int(follow["event_watermark"]),
+                batch_digest=str(follow["event_batch_digest"]),
+            )
+            self._commit_repair_event_preview(source_run, follow)
+            self._save_checkpoint(
+                context,
+                status="ready",
+                payload=ready_checkpoint(
+                    context,
+                    head_commit=commit_sha,
+                    result=result,
+                    verification=verification,
+                    changed_files=diff.files,
+                ),
+            )
+            self.store.update_work_item_status(context.work_item_id, "ready")
+            self.store.update_run(
+                run_id,
+                status="ready",
+                stage="review",
+                worktree=str(worktree),
+                details=ready_details,
+            )
+            self.store.set_candidate_status(repository, candidate.issue.number, "ready")
+            return self.inspect_run(run_id)
+        except Exception as exc:
+            if context is not None:
+                try:
+                    self._save_checkpoint(
+                        context,
+                        status="failed",
+                        payload=failed_checkpoint(
+                            context,
+                            error=str(exc),
+                            head_commit=self._revision(worktree),
+                            details=failure_details,
+                        ),
+                    )
+                    self.store.update_work_item_status(context.work_item_id, "failed")
+                except (
+                    KeyError,
+                    OSError,
+                    RuntimeError,
+                    sqlite3.Error,
+                    subprocess.SubprocessError,
+                ) as checkpoint_error:
+                    failure_details["context_checkpoint_error"] = str(checkpoint_error)
+            self.store.update_run(
+                run_id,
+                status="failed",
+                stage="failed",
+                worktree=str(worktree),
+                details={**failure_details, "error": str(exc)},
+            )
+            raise
+
+    def _validate_repair_submission(
+        self,
+        *,
+        client: GitHubClient,
+        policy: RepositoryPolicy,
+        details: dict[str, Any],
+    ) -> None:
+        guard = details.get("repair_guard")
+        if not isinstance(guard, dict):
+            return
+        if policy.mode != "contributor" or policy.submission_strategy != "fork":
+            raise PolicyError("prepared contributor repair has an invalid policy mode")
+        source_run_id = str(guard.get("source_run_id") or "")
+        source_run = self.store.run(source_run_id)
+        if source_run is None or str(source_run.get("status")) != "submitted":
+            raise PolicyError("prepared repair source run is unavailable")
+        pull_number = int(guard.get("pull_number") or 0)
+        activity = client.pull_request_activity(policy.name, pull_number)
+        event_batch = self.store.ingest_github_pr_activity(
+            run_id=source_run_id,
+            repository=policy.name,
+            pull_number=pull_number,
+            activity=activity,
+        )
+        snapshot = client.pull_request_merge_snapshot(policy.name, pull_number)
+        pull = activity["pull_request"]
+        expected_sequence = int(guard.get("event_watermark") or 0)
+        stale: list[str] = []
+        if (
+            int(event_batch["previous_sequence"]) != expected_sequence
+            or int(event_batch["through_sequence"]) != expected_sequence
+        ):
+            stale.append("event_watermark")
+        if str(pull.get("head_sha") or "") != str(guard.get("parent_commit") or ""):
+            stale.append("head")
+        if str(pull.get("base_branch") or "") != str(guard.get("base_branch") or ""):
+            stale.append("base_branch")
+        if str(snapshot.get("base_sha") or "") != str(guard.get("base_sha") or ""):
+            stale.append("base")
+        if repository_policy_digest(policy) != str(guard.get("policy_digest") or ""):
+            stale.append("policy")
+        if _canonical_digest(snapshot) != str(guard.get("snapshot_digest") or ""):
+            stale.append("github_snapshot")
+        if stale:
+            raise PolicyError(
+                "prepared repair is stale ("
+                + ", ".join(dict.fromkeys(stale))
+                + "); run follow-up and prepare a new repair"
+            )
 
     def merge_decision(self, run_id: str) -> dict[str, Any]:
         """Evaluate and audit current merge eligibility without writing to GitHub."""
@@ -1606,6 +2044,11 @@ class Pipeline:
             raise PolicyError("publication branch must differ from the base branch")
 
         client = GitHubClient(self.config.github, token)
+        self._validate_repair_submission(
+            client=client,
+            policy=policy,
+            details=details,
+        )
         destination, head_owner = self._publication_target(client, policy)
         self._validate_contribution_contract(worktree, policy)
         body = self._pull_request_body(
