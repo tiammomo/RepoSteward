@@ -257,6 +257,44 @@ uv run reposteward portfolio inspect owner/repository \
 该命令不调用 Harness、不修改 workspace、不持久化快照，也不执行任何 GitHub 写操作。JSON 适合
 自动化消费，文本输出只展示紧凑的人类审阅摘要。
 
+需要表达权威依赖时，在 PR 正文中使用独立行；引用、代码块或普通句子中的相似文字不会生效：
+
+```text
+Depends on #123
+```
+
+生成依赖图、循环检测和确定性建议顺序：
+
+```bash
+uv run reposteward portfolio plan owner/repository --format text
+```
+
+PR 正文的显式声明和维护者确认属于权威边；changed-file 重叠只显示为无方向建议，不能单独阻止
+Ready 或 merge。缺失、跨仓库、未合并或循环依赖会进入 `ready_blockers`；已经合并的前置 PR 会进入
+`revalidation_recommended`，提示重新核验 base 和验证证据。`merge-decision` 同样读取当前 PR 的直接
+依赖，未满足或无法完整确认时失败关闭。
+
+正文声明绑定当前 head、PR 作者和稳定来源摘要，编辑历史仍由 GitHub 保存；`portfolio plan` 不把
+外部正文复制到本地数据库，因此保持只读。只有维护者 confirm/revoke 会写入本地追加审计表。
+
+当依赖不是由 PR 作者写入正文时，维护者可以追加一条只保存在本机审计数据库、并绑定当前 head 的
+确认；撤销会追加新事件，不覆盖历史：
+
+```bash
+REPOSTEWARD_ENABLE_DEPENDENCY_ATTESTATION=1 \
+  uv run reposteward portfolio dependency confirm owner/repository 124 123 \
+  --reviewed-by your-github-login
+
+REPOSTEWARD_ENABLE_DEPENDENCY_ATTESTATION=1 \
+  uv run reposteward portfolio dependency revoke owner/repository 124 123 \
+  --reviewed-by your-github-login
+
+uv run reposteward portfolio dependency list owner/repository --pull-number 124
+```
+
+该操作要求 Maintainer same-repository 配置，并同时核对配置身份、GitHub token 身份和仓库 push 权限；
+它不会修改 GitHub。PR head 改变后，旧确认自动失效并成为显式 blocker，必须重新确认或撤销。
+
 ## 审阅与日志
 
 `prepare` 和 `adopt` 返回紧凑 Review Packet，其中包括 commit SHA、diffstat、风险、验证

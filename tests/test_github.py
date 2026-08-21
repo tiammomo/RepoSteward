@@ -106,7 +106,10 @@ class GitHubPullRequestPaginationTests(unittest.TestCase):
                 "state": "open",
                 "draft": number == 2,
                 "title": f"Pull {number}",
+                "body": f"Depends on #{number + 1}",
                 "updated_at": "2026-08-22T00:00:00Z",
+                "user": {"login": "alice"},
+                "merged_at": None,
                 "head": {
                     "ref": f"change-{number}",
                     "sha": str(number) * 40,
@@ -128,6 +131,8 @@ class GitHubPullRequestPaginationTests(unittest.TestCase):
 
         self.assertEqual([value.number for value in pulls], [1, 2])
         self.assertEqual(pulls[1].base_sha, "b" * 40)
+        self.assertEqual(pulls[1].body, "Depends on #3")
+        self.assertEqual(pulls[1].author, "alice")
         self.assertEqual(request.call_count, 2)
         self.assertEqual(request.call_args_list[0].kwargs["query"]["state"], "open")
         self.assertEqual(request.call_args_list[0].kwargs["query"]["page"], 1)
@@ -400,6 +405,8 @@ class GitHubPullRequestTests(unittest.TestCase):
             "html_url": "https://example.test/pull/12",
             "state": "open",
             "draft": True,
+            "body": "Depends on #11",
+            "user": {"login": "contributor"},
             "updated_at": "2026-08-20T00:00:00Z",
             "head": {"sha": "a" * 40},
             "base": {"ref": "main"},
@@ -451,6 +458,8 @@ class GitHubPullRequestTests(unittest.TestCase):
             activity = client.pull_request_activity("owner/repo", 12)
 
         self.assertEqual(len(activity["comments"]), 101)
+        self.assertNotIn("body", activity["pull_request"])
+        self.assertNotIn("author", activity["pull_request"])
         self.assertEqual(request.call_args_list[1].kwargs["query"]["page"], 1)
         self.assertEqual(request.call_args_list[2].kwargs["query"]["page"], 2)
 
@@ -461,6 +470,8 @@ class GitHubPullRequestTests(unittest.TestCase):
             "html_url": "https://example.test/pull/12",
             "state": "open",
             "draft": True,
+            "body": "Depends on #11",
+            "user": {"login": "contributor"},
             "updated_at": "2026-08-20T00:00:00Z",
             "head": {"sha": "a" * 40},
             "base": {"ref": "main"},
@@ -526,9 +537,11 @@ class GitHubPullRequestTests(unittest.TestCase):
                 (checks, None),
             ],
         ):
-            activity = client.pull_request_activity("owner/repo", 12)
+            activity = client.pull_request_activity("owner/repo", 12, include_body=True)
 
         self.assertEqual(activity["pull_request"]["head_sha"], "a" * 40)
+        self.assertEqual(activity["pull_request"]["body"], "Depends on #11")
+        self.assertEqual(activity["pull_request"]["author"], "contributor")
         self.assertEqual(activity["comments"][0]["id"], 21)
         self.assertEqual(activity["reviews"][0]["state"], "CHANGES_REQUESTED")
         self.assertEqual(activity["reviews"][0]["association"], "MEMBER")

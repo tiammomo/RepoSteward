@@ -39,7 +39,10 @@ class PullRequest:
     state: str
     draft: bool
     title: str = ""
+    body: str = ""
     updated_at: str = ""
+    author: str = ""
+    merged: bool = False
     head_owner: str = ""
     head_branch: str = ""
     head_sha: str = ""
@@ -733,7 +736,10 @@ class GitHubClient:
             state=str(item["state"]),
             draft=bool(item.get("draft", False)),
             title=str(item.get("title") or ""),
+            body=str(item.get("body") or ""),
             updated_at=str(item.get("updated_at") or ""),
+            author=str((item.get("user") or {}).get("login") or ""),
+            merged=bool(item.get("merged_at")),
             head_owner=str(head_owner),
             head_branch=str(head.get("ref") or ""),
             head_sha=str(head.get("sha") or ""),
@@ -745,7 +751,9 @@ class GitHubClient:
         payload, _ = self._request("GET", f"/repos/{upstream}/pulls/{number}")
         return self._parse_pull_request(payload)
 
-    def pull_request_activity(self, upstream: str, number: int) -> dict[str, Any]:
+    def pull_request_activity(
+        self, upstream: str, number: int, *, include_body: bool = False
+    ) -> dict[str, Any]:
         pull, _ = self._request("GET", f"/repos/{upstream}/pulls/{number}")
         comments = self._paginated_rest_values(
             f"/repos/{upstream}/issues/{number}/comments"
@@ -761,20 +769,24 @@ class GitHubClient:
             f"/repos/{upstream}/commits/{head_sha}/check-runs",
             container="check_runs",
         )
+        pull_state = {
+            "number": int(pull["number"]),
+            "url": str(pull["html_url"]),
+            "state": str(pull["state"]),
+            "draft": bool(pull.get("draft", False)),
+            "updated_at": str(pull.get("updated_at") or ""),
+            "head_sha": head_sha,
+            "base_branch": str((pull.get("base") or {}).get("ref") or ""),
+            "base_sha": str((pull.get("base") or {}).get("sha") or ""),
+            "mergeable": pull.get("mergeable"),
+            "mergeable_state": str(pull.get("mergeable_state") or ""),
+            "merged": bool(pull.get("merged_at")),
+        }
+        if include_body:
+            pull_state["body"] = str(pull.get("body") or "")
+            pull_state["author"] = str((pull.get("user") or {}).get("login") or "")
         return {
-            "pull_request": {
-                "number": int(pull["number"]),
-                "url": str(pull["html_url"]),
-                "state": str(pull["state"]),
-                "draft": bool(pull.get("draft", False)),
-                "updated_at": str(pull.get("updated_at") or ""),
-                "head_sha": head_sha,
-                "base_branch": str((pull.get("base") or {}).get("ref") or ""),
-                "base_sha": str((pull.get("base") or {}).get("sha") or ""),
-                "mergeable": pull.get("mergeable"),
-                "mergeable_state": str(pull.get("mergeable_state") or ""),
-                "merged": bool(pull.get("merged_at")),
-            },
+            "pull_request": pull_state,
             "comments": [
                 {
                     "id": int(value["id"]),

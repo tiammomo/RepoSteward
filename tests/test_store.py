@@ -242,6 +242,112 @@ class StoreTests(unittest.TestCase):
             self.assertIsNotNone(table)
             self.assertIsNotNone(unique_stage)
 
+    def test_version_ten_database_receives_portfolio_dependency_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute("DROP TABLE portfolio_dependency_events")
+                connection.execute("PRAGMA user_version=10")
+
+            migrated = Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                table = connection.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE name='portfolio_dependency_events'"
+                ).fetchone()
+                index = connection.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE name='portfolio_dependency_events_for_pull'"
+                ).fetchone()
+                digest_index = connection.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE name='portfolio_dependency_events_digest'"
+                ).fetchone()
+
+            self.assertEqual(migrated.schema_version(), SCHEMA_VERSION)
+            self.assertIsNotNone(table)
+            self.assertIsNotNone(index)
+            self.assertIsNotNone(digest_index)
+
+    def test_dependency_attestations_are_append_only_idempotent_and_verified(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            store = Store(path)
+            confirmed = store.append_portfolio_dependency_event(
+                repository="Owner/Repo",
+                pull_number=12,
+                dependency_number=11,
+                head_sha="a" * 40,
+                action="confirm",
+                actor="alice",
+            )
+            repeated = store.append_portfolio_dependency_event(
+                repository="owner/repo",
+                pull_number=12,
+                dependency_number=11,
+                head_sha="a" * 40,
+                action="confirm",
+                actor="alice",
+            )
+            revoked = store.append_portfolio_dependency_event(
+                repository="owner/repo",
+                pull_number=12,
+                dependency_number=11,
+                head_sha="b" * 40,
+                action="revoke",
+                actor="alice",
+            )
+            repeated_revoke = store.append_portfolio_dependency_event(
+                repository="owner/repo",
+                pull_number=12,
+                dependency_number=11,
+                head_sha="b" * 40,
+                action="revoke",
+                actor="alice",
+            )
+            reconfirmed = store.append_portfolio_dependency_event(
+                repository="owner/repo",
+                pull_number=12,
+                dependency_number=11,
+                head_sha="a" * 40,
+                action="confirm",
+                actor="alice",
+            )
+            latest = store.latest_portfolio_dependency_events("OWNER/REPO")
+            history = store.portfolio_dependency_events("owner/repo", pull_number=12)
+            statistics = store.storage_statistics(repository="owner/repo")
+
+            self.assertEqual(confirmed["id"], repeated["id"])
+            self.assertTrue(repeated["idempotent"])
+            self.assertNotEqual(confirmed["id"], revoked["id"])
+            self.assertEqual(revoked["id"], repeated_revoke["id"])
+            self.assertTrue(repeated_revoke["idempotent"])
+            self.assertNotEqual(confirmed["id"], reconfirmed["id"])
+            self.assertEqual(latest[0]["action"], "confirm")
+            self.assertEqual(
+                [value["action"] for value in history],
+                ["confirm", "revoke", "confirm"],
+            )
+            self.assertEqual(
+                next(
+                    value["records"]
+                    for value in statistics
+                    if value["category"] == "portfolio_dependency_audit"
+                ),
+                3,
+            )
+
+            with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute(
+                    "UPDATE portfolio_dependency_events SET payload='{}' WHERE id=?",
+                    (reconfirmed["id"],),
+                )
+            with self.assertRaisesRegex(StoreError, "dependency audit was modified"):
+                store.latest_portfolio_dependency_events("owner/repo")
+
     def test_version_six_database_moves_event_payloads_without_data_loss(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"

@@ -166,6 +166,82 @@ class CliSetupTests(unittest.TestCase):
         self.assertIn("Portfolio: owner/repo", text_output.getvalue())
         pipeline.portfolio_snapshot.assert_called_with("owner/repo", expected_digest="")
 
+    def test_portfolio_plan_and_dependency_attestation_are_routed(self) -> None:
+        plan = {
+            "plan_digest": "a" * 64,
+            "expected_digest": "",
+            "matches_expected_digest": None,
+            "plan": {
+                "repository": "owner/repo",
+                "portfolio_snapshot_digest": "b" * 64,
+                "complete": True,
+                "suggested_merge_order": [1],
+                "authoritative_edges": [],
+                "ready_blockers": {},
+                "suggestions": [],
+            },
+        }
+        pipeline = MagicMock()
+        pipeline.portfolio_dependency_plan.return_value = plan
+        pipeline.attest_portfolio_dependency.return_value = {
+            "action": "confirm",
+            "public_write": False,
+        }
+        pipeline.portfolio_dependency_events.return_value = {
+            "events": [],
+            "public_write": False,
+        }
+        plan_output = io.StringIO()
+        dependency_output = io.StringIO()
+        list_output = io.StringIO()
+        with (
+            patch("reposteward.cli.load_config", return_value=object()),
+            patch("reposteward.cli.Pipeline", return_value=pipeline),
+        ):
+            with redirect_stdout(plan_output):
+                plan_code = main(
+                    ["portfolio", "plan", "owner/repo", "--format", "text"]
+                )
+            with redirect_stdout(dependency_output):
+                dependency_code = main(
+                    [
+                        "portfolio",
+                        "dependency",
+                        "confirm",
+                        "owner/repo",
+                        "2",
+                        "1",
+                        "--reviewed-by",
+                        "alice",
+                    ]
+                )
+            with redirect_stdout(list_output):
+                list_code = main(
+                    [
+                        "portfolio",
+                        "dependency",
+                        "list",
+                        "owner/repo",
+                        "--pull-number",
+                        "2",
+                    ]
+                )
+
+        self.assertEqual(plan_code, 0)
+        self.assertEqual(dependency_code, 0)
+        self.assertEqual(list_code, 0)
+        self.assertIn("Dependency plan: owner/repo", plan_output.getvalue())
+        pipeline.attest_portfolio_dependency.assert_called_once_with(
+            "owner/repo",
+            pull_number=2,
+            dependency_number=1,
+            action="confirm",
+            reviewed_by="alice",
+        )
+        pipeline.portfolio_dependency_events.assert_called_once_with(
+            "owner/repo", pull_number=2, limit=100
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

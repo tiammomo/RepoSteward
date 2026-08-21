@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from reposteward.config import RepositoryPolicy
 from reposteward.context import repository_policy_digest
-from reposteward.github import GitHubError
+from reposteward.github import GitHubError, PullRequest
 from reposteward.pipeline import Pipeline
 from reposteward.policy import PolicyError
 
@@ -18,6 +18,7 @@ class StubStore:
         self.audits: list[dict] = []
         self.decisions: dict[str, dict] = {}
         self.executions: list[dict] = []
+        self.dependency_events: list[dict] = []
 
     def run(self, run_id: str) -> dict:
         return {
@@ -68,6 +69,15 @@ class StubStore:
             "outcome": kwargs["outcome"],
         }
 
+    def latest_portfolio_dependency_events(
+        self, _repository: str, *, pull_number: int = 0
+    ) -> list[dict]:
+        return [
+            value
+            for value in self.dependency_events
+            if not pull_number or int(value["pull_number"]) == pull_number
+        ]
+
 
 class StubGitHub:
     def __init__(self) -> None:
@@ -80,17 +90,25 @@ class StubGitHub:
         self.activity_calls = 0
         self.mutate_on_activity_call = 0
         self.conversation_marker = "initial"
+        self.body = ""
+        self.dependency_target_merged = False
 
-    def pull_request_activity(self, repository: str, number: int) -> dict:
+    def pull_request_activity(
+        self, repository: str, number: int, *, include_body: bool = False
+    ) -> dict:
         self.activity_calls += 1
         if self.activity_calls == self.mutate_on_activity_call:
             self.activity_marker = "changed-during-execution"
+        pull = {
+            "number": number,
+            "head_sha": "a" * 40,
+            "marker": self.activity_marker,
+        }
+        if include_body:
+            pull["body"] = self.body
+            pull["author"] = "contributor"
         return {
-            "pull_request": {
-                "number": number,
-                "head_sha": "a" * 40,
-                "marker": self.activity_marker,
-            },
+            "pull_request": pull,
             "comments": [],
             "reviews": [],
             "review_comments": [],
@@ -125,6 +143,18 @@ class StubGitHub:
             "checks_complete": True,
             "merge_commit_sha": self.merge_commit_sha,
         }
+
+    def pull_request(self, _repository: str, number: int) -> PullRequest:
+        return PullRequest(
+            number=number,
+            url=f"https://example.test/pulls/{number}",
+            state="closed" if self.dependency_target_merged else "open",
+            draft=False,
+            merged=self.dependency_target_merged,
+            head_sha="e" * 40,
+            base_branch="main",
+            base_sha="b" * 40,
+        )
 
     def authenticated_login(self) -> str:
         return "alice"
@@ -193,6 +223,21 @@ class MergePipelineTests(unittest.TestCase):
             pipeline.store.audits[0]["decision"]["snapshot"]["head_sha"],
             "a" * 40,
         )
+
+    def test_open_declared_dependency_blocks_merge_until_it_is_merged(self) -> None:
+        pipeline = self.pipeline()
+        pipeline.github.body = "Depends on #11"
+
+        blocked = pipeline.merge_decision("run-1")
+        pipeline.github.dependency_target_merged = True
+        satisfied = pipeline.merge_decision("run-1")
+
+        self.assertFalse(blocked["eligible"])
+        self.assertIn(
+            "dependency_blocked", [value["code"] for value in blocked["reasons"]]
+        )
+        self.assertTrue(satisfied["eligible"])
+        self.assertNotEqual(blocked["decision_digest"], satisfied["decision_digest"])
 
     def test_opted_in_fresh_decision_merges_once_and_audits_intent_and_result(
         self,
