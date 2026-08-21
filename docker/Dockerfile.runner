@@ -1,7 +1,10 @@
 FROM ghcr.io/astral-sh/uv:0.11.32 AS uv
+FROM node:22.23.2-bookworm-slim AS node
 FROM python:3.12-bookworm
 
 COPY --from=uv /uv /uvx /bin/
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 
 ARG TEMURIN_8_URL=https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u502-b07/OpenJDK8U-jdk_x64_linux_hotspot_8u502b07.tar.gz
 ARG TEMURIN_8_SHA256=b8f5440f64f50193c01f67dacba55c9660caffe13b908baf6bd1955f4dd4c3ea
@@ -9,9 +12,15 @@ ARG MAVEN_VERSION=3.9.16
 ARG MAVEN_SHA512=831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6
 ARG PROTOC_VERSION=3.6.1
 ARG PROTOC_SHA256=6003de742ea3fcf703cfec1cd4a3380fd143081a2eb0e559065563496af27807
+ARG HELM_VERSION=3.21.0
+ARG HELM_SHA256=0093eb572e3d2380f094df162ddb525e219249de88957afe24cfbb19632acd36
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential ca-certificates curl git unzip \
+    && apt-get install -y --no-install-recommends \
+        aspell aspell-en build-essential ca-certificates curl git git-lfs unzip \
+        libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 \
+        libgbm1 libgtk-3-0 libnspr4 libnss3 libxcomposite1 libxdamage1 \
+        libxfixes3 libxkbcommon0 libxrandr2 \
     && curl --fail --location --silent --show-error "$TEMURIN_8_URL" --output /tmp/temurin.tar.gz \
     && echo "$TEMURIN_8_SHA256  /tmp/temurin.tar.gz" | sha256sum --check - \
     && curl --fail --location --silent --show-error \
@@ -22,11 +31,17 @@ RUN apt-get update \
         "https://github.com/protocolbuffers/protobuf/releases/download/v$PROTOC_VERSION/protoc-$PROTOC_VERSION-linux-x86_64.zip" \
         --output /tmp/protoc.zip \
     && echo "$PROTOC_SHA256  /tmp/protoc.zip" | sha256sum --check - \
+    && curl --fail --location --silent --show-error \
+        "https://get.helm.sh/helm-v$HELM_VERSION-linux-amd64.tar.gz" \
+        --output /tmp/helm.tar.gz \
+    && echo "$HELM_SHA256  /tmp/helm.tar.gz" | sha256sum --check - \
     && mkdir -p /opt/java/temurin-8u502-b07 /opt/maven/apache-maven-$MAVEN_VERSION \
         /opt/protobuf/protoc-$PROTOC_VERSION \
     && tar -xzf /tmp/temurin.tar.gz --strip-components=1 -C /opt/java/temurin-8u502-b07 \
     && tar -xzf /tmp/maven.tar.gz --strip-components=1 -C /opt/maven/apache-maven-$MAVEN_VERSION \
     && unzip -q /tmp/protoc.zip -d /opt/protobuf/protoc-$PROTOC_VERSION \
+    && tar -xzf /tmp/helm.tar.gz -C /tmp \
+    && install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm \
     && chmod -R a+rX /opt/protobuf/protoc-$PROTOC_VERSION \
     && ln -s /opt/java/temurin-8u502-b07 /opt/java/current \
     && ln -s /opt/maven/apache-maven-$MAVEN_VERSION /opt/maven/current \
@@ -36,11 +51,17 @@ RUN apt-get update \
     && ln -s /opt/java/current/bin/jar /usr/local/bin/jar \
     && ln -s /opt/maven/current/bin/mvn /usr/local/bin/mvn \
     && ln -s /opt/protobuf/current/bin/protoc /usr/local/bin/protoc \
-    && rm -f /tmp/temurin.tar.gz /tmp/maven.tar.gz /tmp/protoc.zip \
+    && ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && ln -s /usr/local/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
+    && npm install --global --no-audit --no-fund pnpm@10.33.2 \
+    && git lfs install --system \
+    && rm -f /tmp/temurin.tar.gz /tmp/maven.tar.gz /tmp/protoc.zip /tmp/helm.tar.gz \
+    && rm -rf /tmp/linux-amd64 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --gid 1000 starfix \
-    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash starfix
+RUN groupadd --gid 1000 reposteward \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash reposteward
 
 ENV JAVA_HOME=/opt/java/current \
     MAVEN_HOME=/opt/maven/current \

@@ -1,0 +1,414 @@
+config_version = 1
+
+[project]
+state_dir = ".starfix"
+namespace_state = false
+
+[github]
+login = "tiammomo"
+git_name = "tiammomo"
+git_email = "tiammomo@users.noreply.github.com"
+sign_commits = true
+signoff_commits = true
+api_url = "https://api.github.com"
+token_env = ["GITHUB_TOKEN", "GH_TOKEN"]
+gh_auth_command = ["gh", "auth", "token", "--hostname", "github.com"]
+
+[discovery]
+issues_per_repo = 100
+max_pages = 2
+competing_work_checks_per_repo = 10
+min_score = 30
+preferred_labels = ["good first issue", "help wanted", "bug", "documentation", "external"]
+blocked_labels = [
+  "security",
+  "in progress",
+  "inprogress",
+  "duplicate",
+  "invalid",
+  "wontfix",
+  "question",
+  "needs reproduction",
+  "needs confirmation",
+  "server issue",
+]
+
+[safety]
+max_files_changed = 18
+max_diff_lines = 700
+require_verification = true
+draft_pull_requests = true
+forbidden_paths = [".github/workflows/", ".git/", ".env", "credentials", "secrets"]
+
+[agent]
+harness = "codex-cli"
+executable = "codex"
+timeout_seconds = 1800
+# Leave blank to use the authenticated Codex CLI defaults.
+model = ""
+reasoning_effort = ""
+
+[runner]
+image = "starfix-runner:latest"
+timeout_seconds = 1800
+cpus = 4
+memory = "8g"
+pids_limit = 1024
+max_output_chars = 12000
+passed_output_chars = 2000
+max_log_chars = 2000000
+
+[repositories."langchain-ai/deepagents"]
+enabled = true
+auto_prepare = true
+min_stars = 5000
+preferred_labels = ["external", "bug", "deepagents"]
+blocked_labels = ["quickjs", "needs-maintainer-action"]
+require_assignment_before_submit = true
+require_no_competing_work = true
+required_contribution_files = ["AGENTS.md", "libs/DEVELOPMENT.md"]
+bootstrap_commands = ["cd libs/deepagents && uv sync --all-groups"]
+verification_prefixes = [
+  "cd libs/deepagents && uv run --group test pytest ",
+  "cd libs/deepagents && uv run --all-groups ruff check ",
+  "cd libs/deepagents && uv run --all-groups ruff format ",
+  "cd libs/deepagents && uv run --all-groups ty check",
+]
+required_verification_markers = ["pytest", "ruff check", "ruff format", "ty check"]
+branch_template = "{login}/{scope}/{slug}"
+default_scope = "sdk"
+max_files_changed = 10
+max_diff_lines = 500
+
+[repositories."bytedance/deer-flow"]
+enabled = true
+# DeerFlow is discovery-only until a non-conflicting issue has been selected and
+# its backend/frontend verification image is chosen explicitly.
+auto_prepare = false
+min_stars = 10000
+preferred_labels = ["help wanted", "bug", "documentation"]
+blocked_labels = [
+  "security",
+  "needs-triage",
+  "needs-validation",
+  "RFC",
+  "P1",
+  "risk:high",
+  "duplicate",
+  "AI Submitted",
+]
+require_no_competing_work = true
+required_contribution_files = [
+  "AGENTS.md",
+  "CONTRIBUTING.md",
+  ".github/pull_request_template.md",
+]
+pull_request_body_style = "deer-flow"
+pull_request_template_path = ".github/pull_request_template.md"
+pull_request_template_sha256 = "001208d279496a4a3475fe7df5c522555a8d6f55fd0b6627562fe0560e75259c"
+bootstrap_commands = [
+  "(cd backend && uv sync --all-groups)",
+  "(cd backend/.venv/lib/python3.12/site-packages/readabilipy/javascript && npm install --no-audit --no-fund)",
+  "(mkdir -p backend/.venv/starfix-pnpm-home && cd frontend && PNPM_HOME=/workspace/backend/.venv/starfix-pnpm-home pnpm --version)",
+]
+verification_prefixes = [
+  "cd backend && make lint",
+  "cd backend && make test",
+  "cd backend && uv run pytest ",
+  "cd frontend && pnpm format",
+  "cd frontend && pnpm lint",
+  "cd frontend && pnpm typecheck",
+  "cd frontend && BETTER_AUTH_SECRET=local-dev-secret pnpm build",
+  "cd frontend && make test",
+  "cd frontend && make test-e2e",
+]
+branch_template = "{login}/{scope}/{slug}"
+default_scope = "deer-flow"
+max_files_changed = 12
+max_diff_lines = 500
+
+[repositories."4paradigm/OpenMLDB"]
+enabled = true
+auto_prepare = false
+min_stars = 1000
+preferred_labels = ["good first issue", "help wanted", "bug", "enhancement", "batch-engine"]
+require_assignment_before_submit = true
+require_no_competing_work = true
+required_contribution_files = ["CONTRIBUTING.md", ".github/pull_request_template.md"]
+pull_request_body_style = "openmldb"
+pull_request_template_path = ".github/pull_request_template.md"
+pull_request_template_sha256 = "c1e4a04ddac54afdef797758351b9286b98bf0b4980175af29e9831d3cdbde57"
+bootstrap_commands = [
+  "mkdir -p .git/starfix-m2 .git/starfix-home .git/jansi .git/starfix-native-tmp",
+  "protoc -I hybridse/src/proto --java_out=java/hybridse-proto/src/main/java hybridse/src/proto/fe_type.proto hybridse/src/proto/fe_common.proto hybridse/src/proto/dbms.proto hybridse/src/proto/fe_tablet.proto hybridse/src/proto/batch.proto hybridse/src/proto/plan.proto",
+  "protoc -I src/proto --java_out=java/openmldb-common/src/main/java src/proto/type.proto src/proto/common.proto src/proto/tablet.proto src/proto/name_server.proto src/proto/sql_procedure.proto src/proto/api_server.proto src/proto/taskmanager.proto src/proto/data_sync.proto",
+  "(cd java && MAVEN_OPTS='-Djansi.tmpdir=/workspace/.git/jansi -Duser.home=/workspace/.git/starfix-home' mvn --batch-mode -Dmaven.repo.local=../.git/starfix-m2 -Dvariant.native.version=0.9.3 -pl hybridse-proto,hybridse-sdk,openmldb-common,openmldb-jdbc,openmldb-spark-connector,openmldb-batch test-compile)",
+  "(cd java && MAVEN_OPTS='-Djansi.tmpdir=/workspace/.git/jansi -Duser.home=/workspace/.git/starfix-home' mvn --batch-mode -Dmaven.repo.local=../.git/starfix-m2 -Dvariant.native.version=0.9.3 -Dgpg.skip=true -Dmaven.source.skip=true -Dmaven.javadoc.skip=true -Dscalatest.skip=true -Dmaven.test.skip=true -N install)",
+  "(cd java && MAVEN_OPTS='-Djansi.tmpdir=/workspace/.git/jansi -Duser.home=/workspace/.git/starfix-home' mvn --batch-mode -Dmaven.repo.local=../.git/starfix-m2 -Dvariant.native.version=0.9.3 -Dgpg.skip=true -Dmaven.source.skip=true -Dmaven.javadoc.skip=true -Dscalatest.skip=true -Dmaven.test.skip=true -pl hybridse-proto,hybridse-sdk,openmldb-common,openmldb-jdbc,openmldb-spark-connector install)",
+  "MAVEN_OPTS='-Djansi.tmpdir=/workspace/.git/jansi -Duser.home=/workspace/.git/starfix-home' mvn --offline --batch-mode -Dmaven.repo.local=.git/starfix-m2 org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file -Dfile=.git/starfix-m2/com/4paradigm/openmldb/hybridse-native/0.9.3/hybridse-native-0.9.3.jar -DgroupId=com.4paradigm.openmldb -DartifactId=hybridse-native -Dversion=0.9.3-SNAPSHOT -Dpackaging=jar -DgeneratePom=true",
+  "MAVEN_OPTS='-Djansi.tmpdir=/workspace/.git/jansi -Duser.home=/workspace/.git/starfix-home' mvn --offline --batch-mode -Dmaven.repo.local=.git/starfix-m2 org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file -Dfile=.git/starfix-m2/com/4paradigm/openmldb/openmldb-native/0.9.3/openmldb-native-0.9.3.jar -DgroupId=com.4paradigm.openmldb -DartifactId=openmldb-native -Dversion=0.9.3-SNAPSHOT -Dpackaging=jar -DgeneratePom=true",
+]
+verification_prefixes = [
+  "cd java && MAVEN_OPTS='-Djansi.tmpdir=/workspace/.git/jansi -Duser.home=/workspace/.git/starfix-home' mvn --offline --batch-mode ",
+  "cd java && SPARK_LOCAL_IP=127.0.0.1 SPARK_LOCAL_HOSTNAME=localhost SPARK_USER=starfix MAVEN_OPTS='-Djansi.tmpdir=/workspace/.git/jansi -Duser.home=/workspace/.git/starfix-home' mvn --offline --batch-mode ",
+  "cd java && SPARK_LOCAL_IP=127.0.0.1 SPARK_LOCAL_HOSTNAME=localhost SPARK_USER=starfix JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=/workspace/.git/starfix-native-tmp MAVEN_OPTS='-Djansi.tmpdir=/workspace/.git/jansi -Duser.home=/workspace/.git/starfix-home' mvn --offline --batch-mode ",
+]
+required_verification_markers = ["test-compile", "TestOpenmldbBatchConfig", "TestSparkPlanner"]
+branch_template = "{login}/{scope}/{slug}"
+default_scope = "batch"
+max_files_changed = 6
+max_diff_lines = 180
+
+[repositories."LazyAGI/LazyLLM"]
+enabled = true
+auto_prepare = false
+min_stars = 1000
+preferred_labels = ["good first issue", "help wanted", "bug", "enhancement"]
+require_no_competing_work = true
+required_contribution_files = [
+  "lazyllm/AGENTS.md",
+  "lazyllm/tools/AGENTS.md",
+  "lazyllm/tools/rag/AGENTS.md",
+  "lazyllm/module/AGENTS.md",
+  ".github/PULL_REQUEST_TEMPLATE/feature.md",
+]
+pull_request_body_style = "lazyllm-feature"
+pull_request_template_path = ".github/PULL_REQUEST_TEMPLATE/feature.md"
+pull_request_template_sha256 = "c1ea89e908905449c30cfa6bcaa67696c4153e3738547aa528bc4b1a5a74243a"
+bootstrap_commands = [
+  "test -x .venv/bin/python || uv venv --python 3.12 .venv",
+  "uv pip install --python .venv/bin/python toml pyyaml tqdm filelock packaging fastapi loguru pydantic requests uvicorn cloudpickle docstring-parser json5 pyjwt psutil deepdiff pytest pytest-order pandas openpyxl fsspec tiktoken pypdf docx2txt ebooklib html2text olefile python-pptx python-docx beautifulsoup4 spacy bm25s pystemmer nltk jieba sentencepiece psycopg2-binary sqlalchemy json_repair flake8 flake8-quotes flake8-bugbear",
+  "TIKTOKEN_CACHE_DIR=.git/starfix-tiktoken .venv/bin/python -c \"import tiktoken; tiktoken.get_encoding('gpt2')\"",
+]
+verification_prefixes = [
+  "TIKTOKEN_CACHE_DIR=.git/starfix-tiktoken .venv/bin/python -m pytest ",
+  "PATH=.venv/bin:/usr/local/bin:/usr/bin:/bin make lint-only-diff ",
+]
+required_verification_markers = ["pytest", "make lint-only-diff"]
+branch_template = "{login}/{scope}/{slug}"
+default_scope = "feat"
+max_files_changed = 5
+max_diff_lines = 120
+
+[repositories."IBM/mcp-context-forge"]
+enabled = true
+auto_prepare = false
+min_stars = 1000
+preferred_labels = ["documentation", "devops", "good first issue", "help wanted"]
+blocked_labels = ["triage"]
+require_no_competing_work = true
+required_contribution_files = [
+  "AGENTS.md",
+  "CONTRIBUTING.md",
+  "charts/AGENTS.md",
+  "charts/mcp-stack/CONTRIBUTING.md",
+  ".github/PULL_REQUEST_TEMPLATE/docs.md",
+]
+pull_request_body_style = "mcp-context-forge-docs"
+pull_request_template_path = ".github/PULL_REQUEST_TEMPLATE/docs.md"
+pull_request_template_sha256 = "75ee74cbe3f9597868e29aff4dd8371909f4a3c3bda00e14b851e18883b70984"
+bootstrap_commands = [
+  "npm install --prefix .git/starfix-node markdownlint-cli2@0.18.1",
+  "UV_TOOL_DIR=.git/starfix-uv-tools UV_CACHE_DIR=.git/starfix-uv-cache uv tool install --with 'lxml>=6.1.0' pyspelling==2.11",
+]
+verification_prefixes = [
+  "cd charts/mcp-stack && helm lint ",
+  "cd charts/mcp-stack && helm template ",
+  "PATH=.git/starfix-node/node_modules/.bin:/usr/local/bin:/usr/bin:/bin markdownlint-cli2 ",
+  "PATH=.git/starfix-node/node_modules/.bin:/usr/local/bin:/usr/bin:/bin UV_TOOL_DIR=.git/starfix-uv-tools UV_CACHE_DIR=.git/starfix-uv-cache make markdownlint spellcheck ",
+]
+required_verification_markers = ["helm lint", "helm template", "markdownlint-cli2", "make markdownlint spellcheck"]
+branch_template = "{login}/{scope}/{slug}"
+default_scope = "docs"
+max_files_changed = 5
+max_diff_lines = 180
+
+[repositories."boxlite-ai/boxlite"]
+enabled = true
+auto_prepare = false
+min_stars = 1000
+preferred_labels = ["bug", "rust"]
+require_no_competing_work = true
+required_contribution_files = [
+  "CONTRIBUTING.md",
+  "CLAUDE.md",
+  "src/CLAUDE.md",
+  "docs/development/rust-style.md",
+  ".github/pull_request_template.md",
+]
+pull_request_body_style = "boxlite"
+pull_request_template_path = ".github/pull_request_template.md"
+pull_request_template_sha256 = "931665f096b82273e65a46b7319dfee6968f768c55d16924a8f20189f5b1e497"
+bootstrap_commands = [
+  "git submodule update --init --recursive",
+  "CARGO_HOME=.git/starfix-cargo cargo fetch --locked",
+  "python3 -m venv .venv",
+  "UV_CACHE_DIR=.git/starfix-uv-cache uv pip install --python .venv/bin/python uv==0.11.32",
+  "cd sdks/python && UV_CACHE_DIR=../../.git/starfix-uv-cache uv pip install --python ../../.venv/bin/python --group dev --group sync",
+]
+verification_prefixes = [
+  "CARGO_HOME=.git/starfix-cargo CARGO_NET_OFFLINE=true UV_OFFLINE=1 make test:unit:rust",
+  "CARGO_HOME=.git/starfix-cargo CARGO_NET_OFFLINE=true UV_OFFLINE=1 make fmt:check",
+  "CARGO_HOME=.git/starfix-cargo CARGO_NET_OFFLINE=true UV_OFFLINE=1 make lint",
+]
+required_verification_markers = ["test:unit:rust", "fmt:check", "make lint"]
+branch_template = "{login}/{scope}/{slug}"
+default_scope = "runtime"
+max_files_changed = 4
+max_diff_lines = 160
+
+[repositories."Future-House/paper-qa"]
+enabled = true
+auto_prepare = false
+min_stars = 5000
+preferred_labels = ["bug"]
+require_no_competing_work = true
+required_contribution_files = ["CONTRIBUTING.md"]
+pull_request_body_style = "paperqa"
+bootstrap_commands = [
+  "UV_PYTHON=3.12 UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=.git/starfix-uv-cache uv sync --locked",
+  "PREK_HOME=.git/starfix-prek UV_PYTHON=3.12 UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=.git/starfix-uv-cache uv run prek run --all-files",
+]
+verification_prefixes = [
+  "UV_PYTHON=3.12 UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=.git/starfix-uv-cache UV_OFFLINE=1 uv run pytest ",
+  "PREK_HOME=.git/starfix-prek UV_PYTHON=3.12 UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=.git/starfix-uv-cache UV_OFFLINE=1 uv run prek run --all-files",
+  "UV_PYTHON=3.12 UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=.git/starfix-uv-cache UV_OFFLINE=1 uv run pylint ",
+  "UV_PYTHON=3.12 UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=.git/starfix-uv-cache UV_OFFLINE=1 uv run refurb ",
+]
+required_verification_markers = ["pytest", "prek run --all-files", "pylint", "refurb"]
+branch_template = "{login}/{scope}/{slug}"
+default_scope = "docs"
+max_files_changed = 3
+max_diff_lines = 100
+
+[repositories."NousResearch/hermes-agent"]
+enabled = true
+auto_prepare = false
+min_stars = 10000
+preferred_labels = ["type/bug", "P2", "P3"]
+blocked_labels = [
+  "security",
+  "duplicate",
+  "invalid",
+  "wontfix",
+  "question",
+  "needs-repro",
+  "needs-decision",
+  "blocked",
+  "stale",
+]
+require_no_competing_work = true
+required_contribution_files = [
+  "AGENTS.md",
+  "CONTRIBUTING.md",
+  ".github/PULL_REQUEST_TEMPLATE.md",
+]
+pull_request_body_style = "hermes-agent"
+pull_request_template_path = ".github/PULL_REQUEST_TEMPLATE.md"
+pull_request_template_sha256 = "f3bee0cc00c8d1e58b78e40900c4ded50e79bd579928c47a6bd6c8b093dd5dcb"
+bootstrap_commands = [
+  "test -x .git/starfix-venv/bin/python || UV_PYTHON=3.12 UV_CACHE_DIR=.git/starfix-uv-cache uv venv .git/starfix-venv --python 3.12",
+  "VIRTUAL_ENV=.git/starfix-venv UV_CACHE_DIR=.git/starfix-uv-cache uv sync --locked --extra dev --active",
+]
+verification_prefixes = [
+  "HERMES_PYTHON=.git/starfix-venv/bin/python UV_CACHE_DIR=.git/starfix-uv-cache UV_OFFLINE=1 scripts/run_tests.sh ",
+  ".git/starfix-venv/bin/ruff check ",
+  ".git/starfix-venv/bin/python scripts/check-windows-footguns.py ",
+]
+required_verification_markers = [
+  "scripts/run_tests.sh",
+  "ruff check",
+  "check-windows-footguns.py",
+]
+branch_template = "{login}/{scope}/{slug}"
+default_scope = "fix"
+max_files_changed = 2
+max_diff_lines = 100
+
+[repositories."makecindy/cindy"]
+enabled = true
+auto_prepare = false
+min_stars = 1000
+preferred_labels = ["bug"]
+blocked_labels = [
+  "security",
+  "duplicate",
+  "invalid",
+  "wontfix",
+  "question",
+  "inprogress",
+  "inprocess",
+  "done",
+  "awaiting-discussion",
+  "touches:security",
+  "touches:cold-update",
+  "touches:plugin-base",
+  "touches:redline",
+  "touches:core",
+  "touches:product-ui",
+  "touches:new-dependency",
+  "touches:rules",
+  "touches:large-diff",
+]
+require_no_competing_work = true
+required_contribution_files = [
+  "AGENTS.md",
+  "CONTRIBUTING.en.md",
+  ".github/PULL_REQUEST_TEMPLATE.md",
+  "docs/dev-rules/environment-setup.md",
+  "docs/dev-rules/development-workflow.md",
+]
+pull_request_body_style = "cindy"
+pull_request_template_path = ".github/PULL_REQUEST_TEMPLATE.md"
+pull_request_template_sha256 = "5b8444173839d19fecc12a0b372217529529c08b0d8144a501504c07d7f05f6f"
+bootstrap_commands = [
+  "git lfs fetch",
+  "XDT_SKIP_AGENT_BIN_INSTALL=1 pnpm install --frozen-lockfile --store-dir node_modules/.pnpm-store",
+  "pnpm install:ripgrep",
+]
+verification_prefixes = [
+  "pnpm --filter desktop exec vitest run ",
+  "pnpm --filter mobile exec vitest run ",
+  "pnpm --filter @cindy/responses-chat-bridge exec vitest run ",
+  "pnpm --filter @cindy/responses-chat-bridge run --if-present typecheck",
+  "pnpm --filter @cindy/maker-core exec vitest run ",
+  "pnpm --filter @cindy/maker-core run --if-present typecheck",
+  "pnpm --filter @cindy/mcps exec vitest run ",
+  "pnpm --filter @cindy/mcps run --if-present typecheck",
+  "pnpm test:unit",
+  "NODE_OPTIONS=--max-old-space-size=6144 pnpm --filter desktop run --if-present typecheck",
+  "pnpm --filter mobile run --if-present typecheck",
+  "pnpm check:dco",
+]
+required_verification_markers = ["test:unit", "typecheck", "check:dco"]
+branch_template = "{login}/{scope}/{slug}"
+default_scope = "desktop"
+max_files_changed = 18
+max_diff_lines = 500
+
+[repositories."SkillNerds/xskill"]
+enabled = true
+auto_prepare = false
+min_stars = 100
+preferred_labels = ["bug"]
+require_no_competing_work = true
+required_contribution_files = [
+  ".github/CONTRIBUTING.md",
+  ".github/PULL_REQUEST_TEMPLATE.md",
+]
+pull_request_body_style = "xskill"
+pull_request_template_path = ".github/PULL_REQUEST_TEMPLATE.md"
+pull_request_template_sha256 = "3859cbce845bd1121450fbc28824c10d097d61d883892867f6f0597825a193d1"
+bootstrap_commands = [
+  "test -x .venv/bin/python || UV_CACHE_DIR=/tmp/starfix-uv-cache uv venv --python 3.12 .venv",
+  "UV_CACHE_DIR=/tmp/starfix-uv-cache uv pip install --python .venv/bin/python -e '.[dev]' ruff==0.15.20",
+]
+verification_prefixes = [
+  ".venv/bin/python -m pytest ",
+  ".venv/bin/python -m ruff check ",
+]
+required_verification_markers = ["pytest", "ruff check"]
+branch_template = "{login}/{scope}/cluster-candidate-invariants"
+default_scope = "cluster-agent"
+max_files_changed = 8
+max_diff_lines = 700

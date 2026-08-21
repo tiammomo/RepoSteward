@@ -1,0 +1,307 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import subprocess
+import tempfile
+import unittest
+from contextlib import closing
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from reposteward.agent import CodexCliHarness
+from reposteward.config import AgentConfig, ConfigError, RepositoryPolicy, load_config
+from reposteward.context import (
+    MAX_HANDOFF_ITEM_CHARS,
+    MAX_TASK_DESCRIPTION_CHARS,
+    build_context_pack,
+    portable_bundle,
+)
+from reposteward.harness import create_harness
+from reposteward.models import (
+    AgentExecution,
+    AgentMetrics,
+    AgentResult,
+    Candidate,
+    Issue,
+    RepositoryInfo,
+    VerificationResult,
+)
+from reposteward.pipeline import Pipeline
+from reposteward.policy import DiffSummary
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _candidate(body: str = "Reproduce the bug") -> Candidate:
+    return Candidate(
+        issue=Issue(
+            repository="owner/repo",
+            number=7,
+            node_id=8,
+            title="Fix the edge case",
+            body=body,
+            url="https://github.com/owner/repo/issues/7",
+            labels=("bug",),
+            comments=0,
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-02T00:00:00Z",
+            author_login="reporter",
+            author_association="NONE",
+        ),
+        repository=RepositoryInfo(
+            full_name="owner/repo",
+            default_branch="main",
+            stars=1000,
+            forks=20,
+            open_issues=5,
+            pushed_at="2026-01-02T00:00:00Z",
+            archived=False,
+            is_fork=False,
+        ),
+        score=50,
+    )
+
+
+class ContextPackTests(unittest.TestCase):
+    def test_context_pack_is_bounded_versioned_and_source_fingerprinted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            worktree = Path(directory)
+            (worktree / "AGENTS.md").write_text("Run the tests.\n", encoding="utf-8")
+            body = "x" * (MAX_TASK_DESCRIPTION_CHARS + 120)
+            pack = build_context_pack(
+                _candidate(body),
+                RepositoryPolicy(
+                    name="owner/repo",
+                    verification_prefixes=("pytest ",),
+                    required_contribution_files=("AGENTS.md",),
+                ),
+                work_item_id="work-1",
+                run_id="run-1",
+                worktree=worktree,
+                base_commit="a" * 40,
+                harness="codex-cli",
+                model="gpt-example",
+            )
+
+        self.assertEqual(pack.schema_version, 1)
+        self.assertEqual(len(pack.task.description), MAX_TASK_DESCRIPTION_CHARS)
+        self.assertEqual(pack.task.description_omitted_chars, 120)
+        self.assertEqual(pack.project.instruction_sources, ("AGENTS.md",))
+        self.assertEqual(len(pack.source_digest), 64)
+        self.assertEqual(pack.sources[0].trust, "external_untrusted")
+        self.assertEqual(pack.sources[1].trust, "operator_trusted")
+
+    def test_previous_checkpoint_is_compacted_before_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            long_value = "x" * 20_000
+            pack = build_context_pack(
+                _candidate(),
+                RepositoryPolicy(name="owner/repo"),
+                work_item_id="work-1",
+                run_id="run-2",
+                worktree=Path(directory),
+                base_commit="a" * 40,
+                harness="codex-cli",
+                model="gpt-example",
+                previous_checkpoint={
+                    "id": "checkpoint-1",
+                    "status": "ready",
+                    "completed": [long_value] * 100,
+                    "implementation_notes": long_value,
+                    "decisions": [
+                        {
+                            "statement": long_value,
+                            "rationale": long_value,
+                            "evidence": [long_value] * 100,
+                        }
+                    ]
+                    * 100,
+                    "evidence": [
+                        {
+                            "kind": long_value,
+                            "locator": long_value,
+                            "status": long_value,
+                            "digest": long_value,
+                            "summary": long_value,
+                        }
+                    ]
+                    * 100,
+                },
+            )
+
+        self.assertIsNotNone(pack.handoff)
+        assert pack.handoff is not None
+        self.assertEqual(len(pack.handoff["completed"]), 8)
+        self.assertEqual(len(pack.handoff["completed"][0]), MAX_HANDOFF_ITEM_CHARS)
+        self.assertLess(len(json.dumps(pack.handoff)), 40_000)
+
+    def test_portable_bundle_does_not_depend_on_native_session(self) -> None:
+        raw = {
+            "work_item": {"id": "work-1", "status": "ready"},
+            "harness_run": {
+                "run_id": "run-1",
+                "harness": "codex-cli",
+                "native_session_id": "",
+            },
+            "context_metadata": {"id": "pack-1"},
+            "context_pack": {"schema_version": 1},
+            "checkpoint": {"status": "ready"},
+        }
+
+        bundle = portable_bundle(raw)
+
+        self.assertTrue(bundle["continuity"]["native_session_is_optional"])
+        self.assertFalse(bundle["continuity"]["credentials_included"])
+        self.assertEqual(len(bundle["bundle_digest"]), 64)
+        self.assertGreater(bundle["estimated_tokens"], 0)
+        self.assertNotIn(
+            "token", json.dumps(bundle).casefold().replace("estimated_tokens", "")
+        )
+
+
+class HarnessContractTests(unittest.TestCase):
+    def test_codex_cli_is_selected_through_the_harness_factory(self) -> None:
+        harness = create_harness(AgentConfig())
+
+        self.assertIsInstance(harness, CodexCliHarness)
+        self.assertEqual(harness.name, "codex-cli")
+
+    def test_unknown_harness_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "unsupported coding harness"):
+            create_harness(AgentConfig(harness="unknown"))
+
+    def test_prepare_persists_a_portable_checkpoint_around_the_harness(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=worktree, check=True)
+            subprocess.run(
+                ["git", "config", "user.name", "Test"], cwd=worktree, check=True
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "test@example.com"],
+                cwd=worktree,
+                check=True,
+            )
+            (worktree / "README.md").write_text("Example\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=worktree, check=True)
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "chore(repo): initialize"],
+                cwd=worktree,
+                check=True,
+            )
+            config = replace(
+                load_config(ROOT / "examples" / "tiammomo.toml"),
+                state_dir=root / "state",
+            )
+
+            class FakeHarness:
+                name = "fake-harness"
+
+                def __init__(self) -> None:
+                    self.request = None
+
+                def run(self, request):
+                    self.request = request
+                    return AgentExecution(
+                        AgentResult(
+                            summary="Fixed the edge case.",
+                            pr_title="fix(repo): handle edge case",
+                            implementation_notes="Changed one branch.",
+                            verification_commands=("pytest tests/test_edge.py",),
+                        ),
+                        AgentMetrics(input_tokens=100),
+                        harness=self.name,
+                        model="test-model",
+                        native_session_id="fake-thread",
+                    )
+
+            harness = FakeHarness()
+            pipeline = Pipeline(config, harness=harness)
+            candidate = _candidate()
+            candidate = replace(
+                candidate,
+                issue=replace(candidate.issue, repository="skillnerds/xskill"),
+                repository=replace(candidate.repository, full_name="skillnerds/xskill"),
+            )
+            pipeline.store.upsert_candidate(candidate)
+            pipeline.ensure_candidate = Mock(return_value=candidate)
+            pipeline._ensure_no_competing_work = Mock()
+            pipeline._validate_contribution_contract = Mock()
+            pipeline.workspaces = Mock()
+            pipeline.workspaces.clone.return_value = worktree
+            pipeline.workspaces.create_branch.return_value = "alice/repo/edge-case"
+            pipeline.workspaces.commit.return_value = "b" * 40
+            pipeline.verifier = Mock()
+            pipeline.verifier.verify.return_value = VerificationResult(True, ())
+
+            with patch(
+                "reposteward.pipeline.enforce_change_policy",
+                return_value=DiffSummary(("src/example.py",), 3, 1),
+            ):
+                first_packet = pipeline.prepare("skillnerds/xskill", 7)
+                packet = pipeline.prepare("skillnerds/xskill", 7)
+            bundle = pipeline.context_bundle(packet["run_id"])
+            output = root / "handoff.json"
+            exported = pipeline.export_context(packet["run_id"], output)
+            export_exists = output.is_file()
+            imported_pipeline = Pipeline(
+                replace(config, state_dir=root / "imported-state"),
+                harness=FakeHarness(),
+            )
+            existing_work_item = imported_pipeline.store.ensure_work_item(
+                "skillnerds/xskill",
+                kind="github_issue",
+                external_id="7",
+                title="Locally refreshed issue title",
+                payload={"state": "open", "updated_at": "2026-01-03T00:00:00Z"},
+            )
+            imported = imported_pipeline.import_context(output)
+            imported_again = imported_pipeline.import_context(output)
+            restored_checkpoint = (
+                imported_pipeline.store.latest_checkpoint_for_work_item(
+                    imported["work_item_id"]
+                )
+            )
+            restored_session = imported_pipeline.store.latest_harness_session(
+                imported["work_item_id"], "fake-harness"
+            )
+            with closing(
+                sqlite3.connect(imported_pipeline.store.path)
+            ) as imported_connection:
+                retained_work_item = imported_connection.execute(
+                    "SELECT title, payload FROM work_items WHERE id=?",
+                    (existing_work_item["id"],),
+                ).fetchone()
+
+        self.assertIsNotNone(harness.request)
+        self.assertEqual(harness.request.context.task.title, "Fix the edge case")
+        self.assertIsNotNone(harness.request.context.handoff)
+        self.assertEqual(harness.request.context.handoff["status"], "ready")
+        self.assertEqual(harness.request.native_session_id, "fake-thread")
+        self.assertNotEqual(first_packet["run_id"], packet["run_id"])
+        self.assertEqual(bundle["harness_run"]["harness"], "fake-harness")
+        self.assertEqual(bundle["checkpoint"]["status"], "ready")
+        self.assertEqual(bundle["checkpoint"]["next_action"], "human_review")
+        self.assertEqual(exported["bundle_digest"], bundle["bundle_digest"])
+        self.assertTrue(export_exists)
+        self.assertTrue(imported["imported"])
+        self.assertFalse(imported_again["imported"])
+        self.assertEqual(imported["id"], imported_again["id"])
+        self.assertEqual(imported["work_item_id"], existing_work_item["id"])
+        self.assertEqual(retained_work_item[0], "Locally refreshed issue title")
+        self.assertEqual(
+            json.loads(retained_work_item[1])["updated_at"],
+            "2026-01-03T00:00:00Z",
+        )
+        self.assertIsNotNone(restored_checkpoint)
+        assert restored_checkpoint is not None
+        self.assertEqual(restored_checkpoint["status"], "ready")
+        self.assertEqual(restored_session, "fake-thread")
+
+
+if __name__ == "__main__":
+    unittest.main()

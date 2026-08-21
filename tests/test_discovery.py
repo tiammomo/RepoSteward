@@ -4,16 +4,16 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from starfix.config import load_config
-from starfix.discovery import score_issue
-from starfix.models import Issue, RepositoryInfo
+from reposteward.config import load_config
+from reposteward.discovery import score_issue
+from reposteward.models import Issue, RepositoryInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class DiscoveryTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.config = load_config(ROOT / "starfix.toml")
+        self.config = load_config(ROOT / "examples" / "tiammomo.toml")
         self.policy = self.config.repositories["langchain-ai/deepagents"]
         self.repository = RepositoryInfo(
             full_name="langchain-ai/deepagents",

@@ -3,17 +3,46 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "starfix"
+name = "reposteward"
 version = "0.1.0"
-description = "A policy-gated pipeline for turning suitable GitHub issues into reviewed pull requests."
+description = "A local-first, policy-gated Issue-to-PR workbench for repository maintainers and contributors."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
-authors = [{ name = "tiammomo", email = "pearfl@qq.com" }]
-dependencies = []
+license = "MIT"
+authors = [{ name = "tiammomo", email = "tiammomo@users.noreply.github.com" }]
+dependencies = ["jsonschema>=4.23,<5"]
+
+[project.urls]
+Homepage = "https://github.com/tiammomo/RepoSteward"
+Repository = "https://github.com/tiammomo/RepoSteward.git"
+Issues = "https://github.com/tiammomo/RepoSteward/issues"
+
+[project.optional-dependencies]
+codex-sdk = ["openai-codex>=0.147,<0.148"]
 
 [project.scripts]
-starfix = "starfix.cli:main"
+reposteward = "reposteward.cli:main"
+
+[tool.hatch.build]
+exclude = ["/.git", "/.starfix", "/.reposteward", "/.venv", "/dist", "/notes"]
+skip-excluded-dirs = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/starfix"]
+packages = ["src/reposteward"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"docker/Dockerfile.runner" = "reposteward/data/Dockerfile.runner"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/docker/Dockerfile.runner",
+  "/docs",
+  "/tests",
+  "/examples",
+  "/README.md",
+  "/LICENSE",
+  "/reposteward.example.toml",
+  "/pyproject.toml",
+  "/uv.lock",
+]

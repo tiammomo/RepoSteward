@@ -27,18 +27,31 @@ SENSITIVE_ENV_NAMES = {
     "GOOGLE_APPLICATION_CREDENTIALS",
     "NPM_TOKEN",
     "PYPI_TOKEN",
+    "SSH_AUTH_SOCK",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "GIT_SSH_COMMAND",
+    "NETRC",
 }
 
 
-def sanitized_environment(*, keep_codex_credentials: bool = True) -> dict[str, str]:
+def sanitized_environment(
+    *,
+    keep_codex_credentials: bool = True,
+    keep_ssh_credentials: bool = False,
+) -> dict[str, str]:
     result: dict[str, str] = {}
     for key, value in os.environ.items():
         upper = key.upper()
         if upper in SENSITIVE_ENV_NAMES:
-            if keep_codex_credentials and upper == "CODEX_API_KEY":
+            if (keep_codex_credentials and upper == "CODEX_API_KEY") or (
+                keep_ssh_credentials and upper == "SSH_AUTH_SOCK"
+            ):
                 result[key] = value
             continue
-        if upper.endswith(("_TOKEN", "_API_KEY", "_SECRET")):
+        if upper.startswith("GIT_CONFIG_") or upper.endswith(
+            ("_TOKEN", "_API_KEY", "_SECRET", "_PASSWORD", "_CREDENTIAL")
+        ):
             continue
         result[key] = value
     result["GIT_TERMINAL_PROMPT"] = "0"
@@ -127,17 +140,21 @@ class WorkspaceManager:
             )
             if result.returncode:
                 raise WorkspaceError(f"could not stage {path}: {result.stderr.strip()}")
+        command = [
+            "git",
+            "-c",
+            f"user.name={self.config.github.git_name}",
+            "-c",
+            f"user.email={self.config.github.git_email}",
+            "commit",
+        ]
+        if self.config.github.sign_commits:
+            command.append("-S")
+        if self.config.github.signoff_commits:
+            command.append("-s")
+        command.extend(["-m", title])
         result = subprocess.run(
-            [
-                "git",
-                "-c",
-                f"user.name={self.config.github.git_name}",
-                "-c",
-                f"user.email={self.config.github.git_email}",
-                "commit",
-                "-m",
-                title,
-            ],
+            command,
             cwd=worktree,
             check=False,
             capture_output=True,
@@ -154,8 +171,16 @@ class WorkspaceManager:
             text=True,
         ).stdout.strip()
 
-    def push(self, worktree: Path, fork: str, branch: str) -> None:
-        fork_url = f"git@github.com:{fork}.git"
+    def push(
+        self,
+        worktree: Path,
+        destination: str,
+        branch: str,
+        *,
+        expected_remote_sha: str = "",
+    ) -> None:
+        destination_url = f"git@github.com:{destination}.git"
+        remote_name = "publish"
         remotes = subprocess.run(
             ["git", "remote"],
             cwd=worktree,
@@ -164,25 +189,28 @@ class WorkspaceManager:
             text=True,
         ).stdout.split()
         remote_command = (
-            ["git", "remote", "set-url", "fork", fork_url]
-            if "fork" in remotes
-            else ["git", "remote", "add", "fork", fork_url]
+            ["git", "remote", "set-url", remote_name, destination_url]
+            if remote_name in remotes
+            else ["git", "remote", "add", remote_name, destination_url]
         )
         subprocess.run(remote_command, cwd=worktree, check=True, capture_output=True)
 
+        command = ["git", "push", "--no-verify"]
+        if expected_remote_sha:
+            command.append(
+                f"--force-with-lease=refs/heads/{branch}:{expected_remote_sha}"
+            )
+        command.extend([remote_name, f"HEAD:refs/heads/{branch}"])
         result = subprocess.run(
-            [
-                "git",
-                "push",
-                "--no-verify",
-                "fork",
-                f"HEAD:refs/heads/{branch}",
-            ],
+            command,
             cwd=worktree,
             check=False,
             capture_output=True,
             text=True,
-            env=sanitized_environment(keep_codex_credentials=False),
+            env=sanitized_environment(
+                keep_codex_credentials=False,
+                keep_ssh_credentials=True,
+            ),
         )
         if result.returncode:
             raise WorkspaceError(f"git push failed: {result.stderr.strip()}")

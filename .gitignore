@@ -5,6 +5,12 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .starfix/
+.reposteward/
 dist/
 build/
 *.egg-info/
+notes/
+.env
+.env.*
+*.sqlite
+*.sqlite3

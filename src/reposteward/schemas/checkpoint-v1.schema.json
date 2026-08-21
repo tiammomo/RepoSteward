@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:reposteward:schema:checkpoint:1",
+  "title": "RepoSteward Checkpoint v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "work_item_id",
+    "run_id",
+    "context_pack_id",
+    "status",
+    "head_commit",
+    "completed",
+    "remaining",
+    "next_action",
+    "blockers",
+    "decisions",
+    "evidence"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "sequence": {"type": "integer", "minimum": 1},
+    "created_at": {"type": "string", "maxLength": 100},
+    "work_item_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "context_pack_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "status": {"enum": ["running", "ready", "failed", "submitted"]},
+    "head_commit": {"type": "string", "maxLength": 128},
+    "completed": {"$ref": "#/$defs/stringList"},
+    "implementation_notes": {"type": "string", "maxLength": 100000},
+    "tests_observed": {"$ref": "#/$defs/stringList"},
+    "risks": {"$ref": "#/$defs/stringList"},
+    "remaining": {"$ref": "#/$defs/stringList"},
+    "next_action": {"type": "string", "maxLength": 2000},
+    "blockers": {"$ref": "#/$defs/stringList"},
+    "decisions": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/decision"}
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {"$ref": "#/$defs/evidence"}
+    }
+  },
+  "$defs": {
+    "stringList": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {"type": "string", "maxLength": 20000}
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "rationale", "evidence"],
+      "properties": {
+        "statement": {"type": "string", "maxLength": 2000},
+        "rationale": {"type": "string", "maxLength": 4000},
+        "evidence": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {"type": "string", "maxLength": 2000}
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "locator", "status", "digest", "summary"],
+      "properties": {
+        "kind": {"type": "string", "maxLength": 200},
+        "locator": {"type": "string", "maxLength": 4000},
+        "status": {"type": "string", "maxLength": 200},
+        "digest": {"type": "string", "maxLength": 256},
+        "summary": {"type": "string", "maxLength": 4000}
+      }
+    }
+  }
+}

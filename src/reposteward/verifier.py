@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
@@ -14,6 +15,7 @@ DANGEROUS_COMMAND = re.compile(
     r"\bprintenv\b|/proc/|/run/secrets|`|\$\()",
     re.IGNORECASE,
 )
+MAX_VERIFICATION_COMMANDS = 12
 
 
 class VerificationError(RuntimeError):
@@ -46,13 +48,19 @@ class DockerVerifier:
         worktree: Path,
         policy: RepositoryPolicy,
         agent_result: AgentResult,
+        *,
+        run_dir: Path | None = None,
     ) -> VerificationResult:
         if not self.image_available():
             raise VerificationError(
                 f"runner image {self.config.runner.image!r} is missing; "
-                "run 'starfix image build'"
+                "run 'reposteward image build'"
             )
         commands = agent_result.verification_commands
+        if len(commands) > MAX_VERIFICATION_COMMANDS:
+            raise VerificationError(
+                f"at most {MAX_VERIFICATION_COMMANDS} verification commands are allowed"
+            )
         if self.config.safety.require_verification and not commands:
             return VerificationResult(
                 False, (), "agent supplied no verification commands"
@@ -72,16 +80,35 @@ class DockerVerifier:
             )
 
         results: list[CommandResult] = []
+        verification_dir = run_dir / "verification" if run_dir is not None else None
         if policy.bootstrap_commands:
             bootstrap = " && ".join(policy.bootstrap_commands)
-            result = self._run_container(worktree, bootstrap, network=True)
+            result = self._run_container(
+                worktree,
+                bootstrap,
+                network=True,
+                log_path=(
+                    verification_dir / "00-bootstrap.log"
+                    if verification_dir is not None
+                    else None
+                ),
+            )
             results.append(result)
             if result.exit_code:
                 return VerificationResult(
                     False, tuple(results), "dependency bootstrap failed"
                 )
-        for command in commands:
-            result = self._run_container(worktree, command, network=False)
+        for index, command in enumerate(commands, start=1):
+            result = self._run_container(
+                worktree,
+                command,
+                network=False,
+                log_path=(
+                    verification_dir / f"{index:02d}-command.log"
+                    if verification_dir is not None
+                    else None
+                ),
+            )
             results.append(result)
             if result.exit_code:
                 return VerificationResult(
@@ -107,7 +134,12 @@ class DockerVerifier:
             )
 
     def _run_container(
-        self, worktree: Path, command: str, *, network: bool
+        self,
+        worktree: Path,
+        command: str,
+        *,
+        network: bool,
+        log_path: Path | None = None,
     ) -> CommandResult:
         runner = self.config.runner
         shell_command = f'mkdir -p "$HOME" && {command}'
@@ -130,9 +162,9 @@ class DockerVerifier:
             "--user",
             f"{os.getuid()}:{os.getgid()}",
             "--tmpfs",
-            "/tmp:rw,nosuid,nodev,size=2g",
+            "/tmp:rw,exec,nosuid,nodev,size=2g",
             "-e",
-            "HOME=/tmp/starfix-home",
+            "HOME=/tmp/reposteward-home",
             "-e",
             "CI=1",
             "-v",
@@ -154,16 +186,37 @@ class DockerVerifier:
                 timeout=runner.timeout_seconds,
                 env={"PATH": os.environ.get("PATH", "")},
             )
-            output = (result.stdout + result.stderr)[-runner.max_output_chars :]
+            full_output = result.stdout + result.stderr
             exit_code = result.returncode
         except subprocess.TimeoutExpired as exc:
-            output = (_output_text(exc.stdout) + _output_text(exc.stderr))[
-                -runner.max_output_chars :
-            ]
+            full_output = _output_text(exc.stdout) + _output_text(exc.stderr)
             exit_code = 124
+        encoded_output = full_output.encode("utf-8", errors="replace")
+        log_truncated = len(full_output) > runner.max_log_chars
+        if log_path is not None:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            stored_output = full_output[-runner.max_log_chars :]
+            if log_truncated:
+                omitted = len(full_output) - len(stored_output)
+                stored_output = (
+                    f"[reposteward omitted {omitted} earlier characters; "
+                    "the retained log is the configured tail]\n"
+                    f"{stored_output}"
+                )
+            log_path.write_text(stored_output, encoding="utf-8")
+        output_limit = (
+            runner.passed_output_chars if exit_code == 0 else runner.max_output_chars
+        )
+        output = full_output[-output_limit:]
         return CommandResult(
             command=command,
             exit_code=exit_code,
             output=output,
             duration_seconds=round(time.monotonic() - start, 3),
+            log_path=str(log_path or ""),
+            output_chars=len(full_output),
+            output_bytes=len(encoded_output),
+            output_sha256=hashlib.sha256(encoded_output).hexdigest(),
+            output_truncated=len(full_output) > output_limit,
+            log_truncated=log_truncated,
         )

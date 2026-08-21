@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:reposteward:schema:context-bundle:1",
+  "title": "RepoSteward Portable Context Bundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "bundle_schema_version",
+    "work_item",
+    "harness_run",
+    "context_metadata",
+    "context_pack",
+    "checkpoint",
+    "continuity",
+    "bundle_digest",
+    "estimated_tokens"
+  ],
+  "properties": {
+    "bundle_schema_version": {"const": 1},
+    "work_item": {"$ref": "#/$defs/workItem"},
+    "harness_run": {"$ref": "#/$defs/harnessRun"},
+    "context_metadata": {"$ref": "#/$defs/contextMetadata"},
+    "context_pack": {"$ref": "urn:reposteward:schema:context-pack:1"},
+    "checkpoint": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "urn:reposteward:schema:checkpoint:1"}
+      ]
+    },
+    "continuity": {"$ref": "#/$defs/continuity"},
+    "bundle_digest": {"$ref": "#/$defs/sha256"},
+    "estimated_tokens": {"type": "integer", "minimum": 1}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "workItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "repository", "kind", "external_id", "title", "status", "payload"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "maxLength": 300
+        },
+        "kind": {"const": "github_issue"},
+        "external_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$",
+          "maxLength": 20
+        },
+        "title": {"type": "string", "maxLength": 1000},
+        "status": {"type": "string", "maxLength": 100},
+        "payload": {"type": "object", "maxProperties": 32}
+      }
+    },
+    "harnessRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "harness", "model", "native_session_id", "created_at"],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "harness": {"type": "string", "minLength": 1, "maxLength": 100},
+        "model": {"type": "string", "maxLength": 200},
+        "native_session_id": {"type": "string", "maxLength": 500},
+        "created_at": {"type": "string", "maxLength": 100}
+      }
+    },
+    "contextMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "schema_version", "source_digest", "base_commit", "created_at"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "schema_version": {"const": 1},
+        "source_digest": {"$ref": "#/$defs/sha256"},
+        "base_commit": {"type": "string", "maxLength": 128},
+        "created_at": {"type": "string", "maxLength": 100}
+      }
+    },
+    "continuity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonical", "native_session_is_optional", "credentials_included"],
+      "properties": {
+        "canonical": {"const": "context_pack_and_checkpoint"},
+        "native_session_is_optional": {"const": true},
+        "credentials_included": {"const": false}
+      }
+    }
+  }
+}

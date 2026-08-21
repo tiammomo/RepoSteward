@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import shutil
 import subprocess
 from typing import Any
@@ -10,25 +11,38 @@ from .verifier import DockerVerifier
 
 
 def run_doctor(config: AppConfig) -> tuple[dict[str, Any], bool]:
-    report: dict[str, Any] = {"tools": {}, "github": {}, "runner": {}}
+    report: dict[str, Any] = {
+        "harness": {"name": config.agent.harness},
+        "tools": {},
+        "github": {},
+        "runner": {},
+    }
     ok = True
-    for tool in ("git", config.agent.executable, "docker"):
+    tools = ["git", "docker"]
+    if config.agent.harness == "codex-cli":
+        tools.append(config.agent.executable)
+    for tool in tools:
         path = shutil.which(tool)
         report["tools"][tool] = path or "missing"
         ok = ok and path is not None
-    if shutil.which(config.agent.executable):
-        codex = subprocess.run(
+    if config.agent.harness == "codex-cli" and shutil.which(config.agent.executable):
+        harness_auth = subprocess.run(
             [config.agent.executable, "login", "status"],
             check=False,
             capture_output=True,
             text=True,
         )
-        report["tools"]["codex_auth"] = (
-            (codex.stdout + codex.stderr).strip()
-            if codex.returncode == 0
+        report["harness"]["authentication"] = (
+            (harness_auth.stdout + harness_auth.stderr).strip()
+            if harness_auth.returncode == 0
             else "not authenticated"
         )
-        ok = ok and codex.returncode == 0
+        ok = ok and harness_auth.returncode == 0
+    if config.agent.harness == "codex-sdk":
+        sdk_available = importlib.util.find_spec("openai_codex") is not None
+        report["harness"]["sdk_available"] = sdk_available
+        report["harness"]["install_hint"] = "uv sync --extra codex-sdk"
+        ok = ok and sdk_available
     if shutil.which("docker"):
         docker = subprocess.run(
             ["docker", "info", "--format", "{{.ServerVersion}}"],

@@ -1,0 +1,49 @@
+config_version = 1
+
+[project]
+state_dir = ".reposteward"
+namespace_state = true
+
+[github]
+login = "your-github-login"
+git_name = "Your Name"
+git_email = "your-github-login@users.noreply.github.com"
+sign_commits = false
+signoff_commits = true
+
+[discovery]
+min_score = 30
+preferred_labels = ["good first issue", "help wanted", "bug", "documentation"]
+
+[safety]
+max_files_changed = 18
+max_diff_lines = 700
+require_verification = true
+draft_pull_requests = true
+
+[agent]
+harness = "codex-cli"
+executable = "codex"
+timeout_seconds = 1800
+
+[runner]
+image = "reposteward-runner:latest"
+timeout_seconds = 1800
+cpus = 4
+memory = "8g"
+
+[repositories."owner/repository"]
+enabled = true
+auto_prepare = false
+mode = "contributor"
+submission_strategy = "fork"
+require_no_competing_work = true
+bootstrap_commands = ["uv sync"]
+verification_prefixes = [
+  "uv run pytest ",
+  "uvx ruff check ",
+]
+required_verification_markers = ["pytest", "ruff check"]
+pull_request_body_style = "generic"
+branch_template = "{login}/{scope}/{slug}"
+default_scope = "repo"

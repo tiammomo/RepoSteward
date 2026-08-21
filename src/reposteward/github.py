@@ -28,6 +28,10 @@ class PullRequest:
     url: str
     state: str
     draft: bool
+    head_owner: str = ""
+    head_branch: str = ""
+    head_sha: str = ""
+    base_branch: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +96,7 @@ class GitHubClient:
         body = json.dumps(data).encode("utf-8") if data is not None else None
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": "starfix/0.1",
+            "User-Agent": "reposteward/0.1",
             "X-GitHub-Api-Version": "2022-11-28",
         }
         if self.token:
@@ -143,6 +147,7 @@ class GitHubClient:
             archived=bool(payload["archived"]),
             is_fork=bool(payload["fork"]),
             license_spdx=(str(license_info["spdx_id"]) if license_info else None),
+            can_push=bool((payload.get("permissions") or {}).get("push", False)),
         )
 
     def issues(
@@ -176,6 +181,31 @@ class GitHubClient:
         if "pull_request" in payload:
             raise GitHubError(f"{full_name}#{number} is a pull request, not an issue")
         return self._parse_issue(full_name, payload)
+
+    def similar_issues(
+        self, full_name: str, title: str, *, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        terms = re.findall(r"[\w.-]{2,}", title, flags=re.UNICODE)[:12]
+        if not terms:
+            return []
+        payload, _ = self._request(
+            "GET",
+            "/search/issues",
+            query={
+                "q": f"repo:{full_name} is:issue {' '.join(terms)}",
+                "per_page": min(max(limit, 1), 20),
+            },
+        )
+        items = payload.get("items", ()) if isinstance(payload, dict) else ()
+        return [
+            {
+                "number": int(value["number"]),
+                "title": str(value.get("title") or "")[:200],
+                "state": str(value.get("state") or ""),
+                "url": str(value.get("html_url") or ""),
+            }
+            for value in items[:limit]
+        ]
 
     @staticmethod
     def _parse_issue(full_name: str, item: dict[str, Any]) -> Issue:
@@ -350,13 +380,162 @@ class GitHubClient:
         )
         if not payload:
             return None
-        item = payload[0]
+        return self._parse_pull_request(payload[0])
+
+    @staticmethod
+    def _parse_pull_request(item: dict[str, Any]) -> PullRequest:
+        head = item.get("head") or {}
+        base = item.get("base") or {}
+        head_owner = ((head.get("repo") or {}).get("owner") or {}).get("login") or ""
         return PullRequest(
             number=int(item["number"]),
             url=str(item["html_url"]),
             state=str(item["state"]),
             draft=bool(item.get("draft", False)),
+            head_owner=str(head_owner),
+            head_branch=str(head.get("ref") or ""),
+            head_sha=str(head.get("sha") or ""),
+            base_branch=str(base.get("ref") or ""),
         )
+
+    def pull_request(self, upstream: str, number: int) -> PullRequest:
+        payload, _ = self._request("GET", f"/repos/{upstream}/pulls/{number}")
+        return self._parse_pull_request(payload)
+
+    def pull_request_activity(self, upstream: str, number: int) -> dict[str, Any]:
+        pull, _ = self._request("GET", f"/repos/{upstream}/pulls/{number}")
+        comments, _ = self._request(
+            "GET",
+            f"/repos/{upstream}/issues/{number}/comments",
+            query={"per_page": 100},
+        )
+        reviews, _ = self._request(
+            "GET",
+            f"/repos/{upstream}/pulls/{number}/reviews",
+            query={"per_page": 100},
+        )
+        review_comments, _ = self._request(
+            "GET",
+            f"/repos/{upstream}/pulls/{number}/comments",
+            query={"per_page": 100},
+        )
+        head_sha = str((pull.get("head") or {}).get("sha") or "")
+        checks, _ = self._request(
+            "GET",
+            f"/repos/{upstream}/commits/{head_sha}/check-runs",
+            query={"per_page": 100},
+        )
+        if not all(
+            isinstance(value, list) for value in (comments, reviews, review_comments)
+        ):
+            raise GitHubError(
+                f"pull request activity for {upstream}#{number} is invalid"
+            )
+        check_runs = checks.get("check_runs", ()) if isinstance(checks, dict) else ()
+        return {
+            "pull_request": {
+                "number": int(pull["number"]),
+                "url": str(pull["html_url"]),
+                "state": str(pull["state"]),
+                "draft": bool(pull.get("draft", False)),
+                "updated_at": str(pull.get("updated_at") or ""),
+                "head_sha": head_sha,
+                "base_branch": str((pull.get("base") or {}).get("ref") or ""),
+                "mergeable": pull.get("mergeable"),
+                "mergeable_state": str(pull.get("mergeable_state") or ""),
+                "merged": bool(pull.get("merged_at")),
+            },
+            "comments": [
+                {
+                    "id": int(value["id"]),
+                    "author": str((value.get("user") or {}).get("login") or ""),
+                    "association": str(value.get("author_association") or ""),
+                    "created_at": str(value.get("created_at") or ""),
+                    "updated_at": str(value.get("updated_at") or ""),
+                    "url": str(value.get("html_url") or ""),
+                    "body": str(value.get("body") or ""),
+                }
+                for value in comments
+            ],
+            "reviews": [
+                {
+                    "id": int(value["id"]),
+                    "author": str((value.get("user") or {}).get("login") or ""),
+                    "association": str(value.get("author_association") or ""),
+                    "state": str(value.get("state") or ""),
+                    "submitted_at": str(value.get("submitted_at") or ""),
+                    "url": str(value.get("html_url") or ""),
+                    "body": str(value.get("body") or ""),
+                }
+                for value in reviews
+            ],
+            "review_comments": [
+                {
+                    "id": int(value["id"]),
+                    "author": str((value.get("user") or {}).get("login") or ""),
+                    "association": str(value.get("author_association") or ""),
+                    "created_at": str(value.get("created_at") or ""),
+                    "updated_at": str(value.get("updated_at") or ""),
+                    "url": str(value.get("html_url") or ""),
+                    "path": str(value.get("path") or ""),
+                    "line": value.get("line") or value.get("original_line"),
+                    "body": str(value.get("body") or ""),
+                }
+                for value in review_comments
+            ],
+            "checks": [
+                {
+                    "id": int(value["id"]),
+                    "name": str(value.get("name") or ""),
+                    "status": str(value.get("status") or ""),
+                    "conclusion": str(value.get("conclusion") or ""),
+                    "url": str(value.get("details_url") or ""),
+                }
+                for value in check_runs
+            ],
+        }
+
+    def reopen_pull_request(
+        self,
+        upstream: str,
+        number: int,
+        *,
+        owner: str,
+        branch: str,
+        base: str,
+        title: str,
+        body: str,
+    ) -> PullRequest:
+        current = self.pull_request(upstream, number)
+        if current.state not in {"closed", "open"}:
+            raise GitHubError(
+                f"pull request {upstream}#{number} cannot be reopened from {current.state!r}"
+            )
+        expected = (owner.casefold(), branch, base)
+        actual = (
+            current.head_owner.casefold(),
+            current.head_branch,
+            current.base_branch,
+        )
+        if actual != expected:
+            raise GitHubError(
+                f"pull request {upstream}#{number} does not match "
+                f"{owner}:{branch} -> {base}"
+            )
+        payload, _ = self._request(
+            "PATCH",
+            f"/repos/{upstream}/pulls/{number}",
+            data={"title": title, "body": body, "state": "open"},
+        )
+        return self._parse_pull_request(payload)
+
+    def close_pull_request(self, upstream: str, number: int) -> PullRequest:
+        payload, _ = self._request(
+            "PATCH",
+            f"/repos/{upstream}/pulls/{number}",
+            data={"state": "closed"},
+        )
+        return self._parse_pull_request(payload)
 
     def create_pull_request(
         self,
@@ -385,9 +564,4 @@ class GitHubClient:
             },
             expected=(201,),
         )
-        return PullRequest(
-            number=int(payload["number"]),
-            url=str(payload["html_url"]),
-            state=str(payload["state"]),
-            draft=bool(payload.get("draft", False)),
-        )
+        return self._parse_pull_request(payload)

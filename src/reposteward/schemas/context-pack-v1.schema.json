@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:reposteward:schema:context-pack:1",
+  "title": "RepoSteward Context Pack v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "schema_version",
+    "work_item_id",
+    "project",
+    "task",
+    "constraints",
+    "sources",
+    "handoff",
+    "source_digest",
+    "provenance"
+  ],
+  "properties": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "schema_version": {"const": 1},
+    "work_item_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "project": {"$ref": "#/$defs/project"},
+    "task": {"$ref": "#/$defs/task"},
+    "constraints": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {"type": "string", "maxLength": 2000}
+    },
+    "sources": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/source"}
+    },
+    "handoff": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/handoff"}
+      ]
+    },
+    "source_digest": {"$ref": "#/$defs/sha256"},
+    "provenance": {"$ref": "#/$defs/provenance"}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "stringList": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {"type": "string", "maxLength": 2000}
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "default_branch",
+        "base_commit",
+        "policy_digest",
+        "verification_prefixes",
+        "required_verification_markers",
+        "instruction_sources"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "maxLength": 300
+        },
+        "default_branch": {"type": "string", "minLength": 1, "maxLength": 300},
+        "base_commit": {"type": "string", "minLength": 1, "maxLength": 128},
+        "policy_digest": {"$ref": "#/$defs/sha256"},
+        "verification_prefixes": {"$ref": "#/$defs/stringList"},
+        "required_verification_markers": {"$ref": "#/$defs/stringList"},
+        "instruction_sources": {
+          "type": "array",
+          "maxItems": 61,
+          "items": {"type": "string", "maxLength": 2000}
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "external_id",
+        "title",
+        "description",
+        "description_omitted_chars",
+        "url",
+        "updated_at",
+        "acceptance_criteria"
+      ],
+      "properties": {
+        "kind": {"const": "github_issue"},
+        "external_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$",
+          "maxLength": 20
+        },
+        "title": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "description": {"type": "string", "maxLength": 20000},
+        "description_omitted_chars": {"type": "integer", "minimum": 0},
+        "url": {"type": "string", "maxLength": 4000},
+        "updated_at": {"type": "string", "maxLength": 100},
+        "acceptance_criteria": {"$ref": "#/$defs/stringList"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "locator", "digest", "trust", "updated_at"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "github_issue",
+            "repository_policy",
+            "repository_guidance",
+            "reposteward_checkpoint"
+          ]
+        },
+        "locator": {"type": "string", "maxLength": 4000},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "trust": {
+          "enum": [
+            "external_untrusted",
+            "operator_trusted",
+            "repository_untrusted",
+            "derived_review_required"
+          ]
+        },
+        "updated_at": {"type": "string", "maxLength": 100}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "rationale", "evidence"],
+      "properties": {
+        "statement": {"type": "string", "maxLength": 500},
+        "rationale": {"type": "string", "maxLength": 700},
+        "evidence": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {"type": "string", "maxLength": 300}
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "locator", "status", "digest", "summary"],
+      "properties": {
+        "kind": {"type": "string", "maxLength": 100},
+        "locator": {"type": "string", "maxLength": 500},
+        "status": {"type": "string", "maxLength": 100},
+        "digest": {"type": "string", "maxLength": 128},
+        "summary": {"type": "string", "maxLength": 500}
+      }
+    },
+    "handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "head_commit",
+        "completed",
+        "implementation_notes",
+        "implementation_notes_omitted_chars",
+        "tests_observed",
+        "risks",
+        "remaining",
+        "next_action",
+        "blockers",
+        "decisions",
+        "evidence",
+        "created_at"
+      ],
+      "properties": {
+        "id": {"type": "string", "maxLength": 128},
+        "status": {"type": "string", "maxLength": 64},
+        "head_commit": {"type": "string", "maxLength": 128},
+        "completed": {"$ref": "#/$defs/handoffStrings"},
+        "implementation_notes": {"type": "string", "maxLength": 4000},
+        "implementation_notes_omitted_chars": {"type": "integer", "minimum": 0},
+        "tests_observed": {"$ref": "#/$defs/handoffStrings"},
+        "risks": {"$ref": "#/$defs/handoffStrings"},
+        "remaining": {"$ref": "#/$defs/handoffStrings"},
+        "next_action": {"type": "string", "maxLength": 500},
+        "blockers": {"$ref": "#/$defs/handoffStrings"},
+        "decisions": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {"$ref": "#/$defs/decision"}
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {"$ref": "#/$defs/evidence"}
+        },
+        "created_at": {"type": "string", "maxLength": 64}
+      }
+    },
+    "handoffStrings": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {"type": "string", "maxLength": 500}
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "harness", "model", "created_at", "generator"],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "harness": {"type": "string", "minLength": 1, "maxLength": 100},
+        "model": {"type": "string", "maxLength": 200},
+        "created_at": {"type": "string", "maxLength": 100},
+        "generator": {"const": "reposteward"}
+      }
+    }
+  }
+}
