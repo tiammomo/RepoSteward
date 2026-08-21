@@ -13,7 +13,7 @@ from typing import Any
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -301,6 +301,23 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         """
         CREATE INDEX IF NOT EXISTS github_pr_watermarks_for_pull
         ON github_pr_watermarks(repository, pull_number, sequence)
+        """,
+    ),
+    9: (
+        """
+        CREATE TABLE IF NOT EXISTS storage_gc_runs (
+            id TEXT PRIMARY KEY,
+            repository TEXT NOT NULL DEFAULT '',
+            actor TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            plan_digest TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS storage_gc_runs_recent
+        ON storage_gc_runs(created_at DESC)
         """,
     ),
 }
@@ -1329,6 +1346,18 @@ class Store:
                 GROUP BY repository
                 """,
             ),
+            (
+                "storage_gc_audit",
+                """
+                SELECT CASE WHEN repository='' THEN '*' ELSE repository END AS repository,
+                       COUNT(*) AS records,
+                       COALESCE(SUM(length(CAST(payload AS BLOB))), 0) AS bytes,
+                       MIN(created_at) AS oldest_at, MAX(created_at) AS newest_at
+                FROM storage_gc_runs
+                WHERE (?='' OR repository=?) AND (?='' OR created_at>=?)
+                GROUP BY repository
+                """,
+            ),
         )
         result: list[dict[str, Any]] = []
         parameters = (repository, repository, cutoff, cutoff)
@@ -1353,6 +1382,73 @@ class Store:
         with self._connection() as connection:
             rows = connection.execute("SELECT id, repository FROM runs").fetchall()
         return {str(row["id"]): str(row["repository"]) for row in rows}
+
+    def run_gc_safety(self) -> dict[str, dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT r.id, r.repository,
+                       EXISTS(
+                           SELECT 1 FROM checkpoints c
+                           WHERE c.run_id=r.id
+                             AND c.status IN ('ready', 'submitted', 'failed')
+                       ) AS terminal_checkpoint
+                FROM runs r
+                """
+            ).fetchall()
+        return {
+            str(row["id"]): {
+                "repository": str(row["repository"]),
+                "terminal_checkpoint": bool(row["terminal_checkpoint"]),
+            }
+            for row in rows
+        }
+
+    def record_storage_gc(
+        self,
+        *,
+        repository: str,
+        actor: str,
+        stage: str,
+        plan_digest: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if stage not in {"applying", "completed"}:
+            raise ValueError("storage GC stage must be applying or completed")
+        record_id = uuid.uuid4().hex
+        created_at = utc_now()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO storage_gc_runs(
+                    id, repository, actor, stage, plan_digest, payload, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record_id,
+                    repository.casefold(),
+                    actor,
+                    stage,
+                    plan_digest,
+                    _canonical_json(payload),
+                    created_at,
+                ),
+            )
+        return {"id": record_id, "stage": stage, "created_at": created_at}
+
+    def storage_gc_runs(self, *, limit: int = 30) -> list[dict[str, Any]]:
+        limit = min(max(limit, 1), 100)
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM storage_gc_runs ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            value["payload"] = json.loads(value["payload"])
+            result.append(value)
+        return result
 
     @staticmethod
     def _event_payload_gc_inventory(

@@ -317,6 +317,38 @@ class StoreTests(unittest.TestCase):
             self.assertIsNotNone(table)
             self.assertIsNotNone(index)
 
+    def test_version_eight_database_receives_append_only_gc_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute("DROP TABLE storage_gc_runs")
+                connection.execute("PRAGMA user_version=8")
+
+            store = Store(path)
+            first = store.record_storage_gc(
+                repository="owner/repo",
+                actor="operator",
+                stage="applying",
+                plan_digest="a" * 64,
+                payload={"candidates": ["blob"]},
+            )
+            second = store.record_storage_gc(
+                repository="owner/repo",
+                actor="operator",
+                stage="completed",
+                plan_digest="a" * 64,
+                payload={"deleted": ["blob"]},
+            )
+            records = store.storage_gc_runs()
+            schema_version = store.schema_version()
+
+        self.assertEqual(schema_version, SCHEMA_VERSION)
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(
+            [value["stage"] for value in records], ["completed", "applying"]
+        )
+
     def test_event_payload_gc_requires_retention_and_every_run_watermark(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")

@@ -110,6 +110,12 @@ class RunnerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class StorageConfig:
+    cache_retention_days: int = 30
+    max_gc_items: int = 1_000
+
+
+@dataclass(frozen=True, slots=True)
 class RepositoryPolicy:
     name: str
     enabled: bool = True
@@ -155,6 +161,7 @@ class AppConfig:
     safety: SafetyConfig
     agent: AgentConfig
     runner: RunnerConfig
+    storage: StorageConfig
     repositories: dict[str, RepositoryPolicy] = field(default_factory=dict)
 
 
@@ -296,6 +303,12 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
         result["issue_review"] = dict(user_issue_review)
     else:
         result.pop("issue_review", None)
+
+    user_storage = user.get("storage")
+    if isinstance(user_storage, dict):
+        result["storage"] = dict(user_storage)
+    else:
+        result.pop("storage", None)
 
     user_agent = user.get("agent")
     project_agent = project.get("agent")
@@ -532,6 +545,12 @@ def load_config(
         max_log_chars=int(runner_raw.get("max_log_chars", 2_000_000)),
     )
 
+    storage_raw = _section(raw, "storage")
+    storage = StorageConfig(
+        cache_retention_days=int(storage_raw.get("cache_retention_days", 30)),
+        max_gc_items=int(storage_raw.get("max_gc_items", 1_000)),
+    )
+
     repositories_raw = _section(raw, "repositories")
     repositories: dict[str, RepositoryPolicy] = {}
     for name, repo_value in repositories_raw.items():
@@ -634,6 +653,10 @@ def load_config(
         raise ConfigError(
             "runner.max_log_chars must be at least runner.max_output_chars"
         )
+    if not 1 <= storage.cache_retention_days <= 36_500:
+        raise ConfigError("storage.cache_retention_days must be between 1 and 36500")
+    if not 1 <= storage.max_gc_items <= 10_000:
+        raise ConfigError("storage.max_gc_items must be between 1 and 10000")
     if not agent.harness:
         raise ConfigError("agent.harness must not be empty")
     for repository in repositories.values():
@@ -697,5 +720,6 @@ def load_config(
         safety=safety,
         agent=agent,
         runner=runner,
+        storage=storage,
         repositories=repositories,
     )

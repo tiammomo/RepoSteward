@@ -183,6 +183,11 @@ def _parser() -> argparse.ArgumentParser:
     storage_stats.add_argument(
         "--since-days", type=int, default=0, help="include only newer records"
     )
+    storage_gc = storage_commands.add_parser(
+        "gc", help="plan safe local cleanup; dry-run unless --apply is set"
+    )
+    storage_gc.add_argument("--repo", default="", help="limit to owner/name")
+    storage_gc.add_argument("--apply", action="store_true")
 
     follow_up = subparsers.add_parser(
         "follow-up",
@@ -414,6 +419,9 @@ def main(argv: list[str] | None = None) -> int:
                         repository=args.repo, since_days=args.since_days
                     )
                 )
+                return 0
+            if args.storage_command == "gc":
+                _json(pipeline.storage_gc(repository=args.repo, apply=args.apply))
                 return 0
             raise AssertionError(f"unhandled storage command: {args.storage_command}")
         if args.command == "follow-up":

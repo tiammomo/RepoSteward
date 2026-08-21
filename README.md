@@ -322,6 +322,27 @@ uv run reposteward storage stats --repo owner/repository --since-days 30
 寻址 Blob 会在各仓库行中显示引用字节，并在说明字段中明确其可能重复计算，避免把逻辑引用误当成
 全局物理占用。
 
+清理命令默认只生成精确计划，不写数据库或删除文件：
+
+```bash
+uv run reposteward storage gc --repo owner/repository
+```
+
+默认候选只有超过用户级 `cache_retention_days` 且已有终态 Checkpoint 的验证日志。原始 GitHub
+事件正文没有默认期限；只有仓库显式配置 `event_payload_retention_days` 后，超过期限且每个 run 水位
+都已覆盖的正文才进入候选。计划会列出每个候选、预计可回收字节及保留原因汇总，并始终保护事件
+索引、Checkpoint、Merge Decision 和 GC 审计。
+
+实际应用需要命令参数和独立环境开关同时存在：
+
+```bash
+REPOSTEWARD_ENABLE_GC=1 uv run reposteward storage gc \
+  --repo owner/repository --apply
+```
+
+apply 前会追加 `applying` 审计，删除后再追加 `completed` 审计；中断后可从未完成记录识别并安全
+重跑。SQLite Blob 删除释放的是可复用数据库页，不会自动执行 `VACUUM` 或承诺立即缩小数据库文件。
+
 ## 安全约束
 
 - GitHub 凭据不会传给 Agent、测试、仓库 hooks、Git push 或 Docker 容器。

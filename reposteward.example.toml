@@ -39,6 +39,10 @@ timeout_seconds = 1800
 cpus = 4
 memory = "8g"
 
+[storage]
+cache_retention_days = 30
+max_gc_items = 1000
+
 [repositories."owner/repository"]
 enabled = true
 auto_prepare = false
@@ -54,3 +58,5 @@ required_verification_markers = ["pytest", "ruff check"]
 pull_request_body_style = "generic"
 branch_template = "{login}/{scope}/{slug}"
 default_scope = "repo"
+# Raw GitHub event bodies are retained indefinitely unless explicitly enabled:
+# event_payload_retention_days = 90
