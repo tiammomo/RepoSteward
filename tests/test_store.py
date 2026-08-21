@@ -197,7 +197,56 @@ class StoreTests(unittest.TestCase):
 
             self.assertEqual(migrated.schema_version(), SCHEMA_VERSION)
             self.assertIn("github_pr_events", tables)
-            self.assertIn("github_pr_watermarks", tables)
+        self.assertIn("github_pr_watermarks", tables)
+
+    def test_version_five_database_receives_merge_decision_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute("DROP TABLE merge_decisions")
+                connection.execute("PRAGMA user_version=5")
+
+            migrated = Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                table = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE name='merge_decisions'"
+                ).fetchone()
+
+            self.assertEqual(migrated.schema_version(), SCHEMA_VERSION)
+            self.assertIsNotNone(table)
+
+    def test_merge_decision_audit_is_append_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            decision = {
+                "eligible": True,
+                "snapshot_digest": "a" * 64,
+                "decision_digest": "b" * 64,
+                "reasons": [],
+            }
+
+            first = store.append_merge_decision(
+                repository="Owner/Repo",
+                pull_number=12,
+                head_sha="c" * 40,
+                base_sha="d" * 40,
+                policy_digest="e" * 64,
+                decision=decision,
+            )
+            second = store.append_merge_decision(
+                repository="Owner/Repo",
+                pull_number=12,
+                head_sha="c" * 40,
+                base_sha="d" * 40,
+                policy_digest="e" * 64,
+                decision=decision,
+            )
+            audit = store.merge_decisions("owner/repo", 12)
+
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(len(audit), 2)
+        self.assertTrue(all(value["eligible"] for value in audit))
 
     def test_candidate_round_trip_and_status_preservation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

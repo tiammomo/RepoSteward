@@ -138,6 +138,7 @@ class RepositoryPolicy:
     default_scope: str = "repo"
     max_files_changed: int | None = None
     max_diff_lines: int | None = None
+    merge_risk_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -590,6 +591,7 @@ def load_config(
                 if "max_diff_lines" in repo_value
                 else None
             ),
+            merge_risk_paths=_tuple(repo_value.get("merge_risk_paths")),
         )
 
     if not github.login:
