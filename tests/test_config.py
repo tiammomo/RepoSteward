@@ -139,6 +139,7 @@ forbidden_paths = []
 [repositories."owner/repo"]
 max_diff_lines = 99
 merge_risk_paths = ["docs/operator/**"]
+event_payload_retention_days = 45
 """,
                 encoding="utf-8",
             )
@@ -184,6 +185,25 @@ merge_risk_paths = ["docs/operator/**"]
             config.repositories["owner/repo"].merge_risk_paths,
             ("docs/operator/**",),
         )
+        self.assertEqual(
+            config.repositories["owner/repo"].event_payload_retention_days, 45
+        )
+
+    def test_event_payload_retention_must_be_explicit_and_positive(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+event_payload_retention_days = 0
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "must be positive"):
+                load_config(path)
 
     def test_configuration_is_not_pinned_to_one_github_login(self) -> None:
         with TemporaryDirectory() as directory:

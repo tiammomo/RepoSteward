@@ -139,6 +139,7 @@ class RepositoryPolicy:
     max_files_changed: int | None = None
     max_diff_lines: int | None = None
     merge_risk_paths: tuple[str, ...] = ()
+    event_payload_retention_days: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -592,6 +593,11 @@ def load_config(
                 else None
             ),
             merge_risk_paths=_tuple(repo_value.get("merge_risk_paths")),
+            event_payload_retention_days=(
+                int(repo_value["event_payload_retention_days"])
+                if "event_payload_retention_days" in repo_value
+                else None
+            ),
         )
 
     if not github.login:
@@ -670,6 +676,13 @@ def load_config(
             raise ConfigError(
                 f"{repository.name} must configure both pull_request_template_path "
                 "and pull_request_template_sha256"
+            )
+        if (
+            repository.event_payload_retention_days is not None
+            and repository.event_payload_retention_days < 1
+        ):
+            raise ConfigError(
+                f"{repository.name} event_payload_retention_days must be positive"
             )
 
     return AppConfig(

@@ -79,8 +79,14 @@ SQLite 使用显式 `PRAGMA user_version` 迁移。现有用户的未版本化�
   内容摘要，原始正文显式标记为 GitHub 不可信输入。
 - `content_blobs`：按 SHA-256 对较大的 GitHub 事件载荷做内容寻址和跨引用去重；事件索引通过摘要
   引用 Blob，事务会同时写入并校验内容，旧版内联正文原地无损迁移。
+- `content_blob_tombstones`：记录经显式保留策略删除的载荷摘要、原大小、原因和时间，防止后续完整
+  GitHub 轮询把已到期正文静默恢复；事件轻量索引和水位仍永久保留。
 - `github_pr_watermarks`：保存每个 run 已经形成 Review Checkpoint 的事件序号。事件先幂等入库，
-  Checkpoint 与水位再在同一事务中提交，因此中断后可以安全重试。
+Checkpoint 与水位再在同一事务中提交，因此中断后可以安全重试。
+
+事件正文默认没有清理期限。只有仓库策略显式设置正整数 `event_payload_retention_days`，且同一 PR
+的每个 run 水位都已经越过该事件时，正文才可成为 GC 候选。候选在删除事务内重新计算；删除会先
+写 tombstone，再移除 Blob。无配置、保留期内或任一 run 尚未形成 Checkpoint 的正文都必须保留。
 - `merge_decisions`：追加保存每次合并评估的 head/base、policy、GitHub 快照与决策摘要；重复评估
   不覆盖旧结果，便于解释状态变化。
 

@@ -250,6 +250,18 @@ class StoreTests(unittest.TestCase):
                 )
                 connection.execute(
                     """
+                    CREATE TABLE github_pr_watermarks (
+                        run_id TEXT PRIMARY KEY,
+                        repository TEXT NOT NULL,
+                        pull_number INTEGER NOT NULL,
+                        sequence INTEGER NOT NULL DEFAULT 0,
+                        batch_digest TEXT NOT NULL DEFAULT '',
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
                     INSERT INTO github_pr_events(
                         repository, pull_number, event_type, external_id,
                         version_digest, payload, ingested_at
@@ -276,6 +288,117 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(events[0]["payload"]["body"], "keep me")
             self.assertTrue(events[0]["payload_available"])
             self.assertEqual(stored, ("", digest, "reviewer", len(payload.encode())))
+
+    def test_version_seven_database_receives_gc_tombstones(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute("DROP TABLE content_blob_tombstones")
+                connection.execute("DROP INDEX github_pr_watermarks_for_pull")
+                connection.execute("PRAGMA user_version=7")
+
+            migrated = Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                table = connection.execute(
+                    """
+                    SELECT name FROM sqlite_master
+                    WHERE type='table' AND name='content_blob_tombstones'
+                    """
+                ).fetchone()
+                index = connection.execute(
+                    """
+                    SELECT name FROM sqlite_master
+                    WHERE type='index' AND name='github_pr_watermarks_for_pull'
+                    """
+                ).fetchone()
+
+            self.assertEqual(migrated.schema_version(), SCHEMA_VERSION)
+            self.assertIsNotNone(table)
+            self.assertIsNotNone(index)
+
+    def test_event_payload_gc_requires_retention_and_every_run_watermark(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            activity = {
+                "pull_request": {
+                    "number": 12,
+                    "head_sha": "a" * 40,
+                    "state": "open",
+                },
+                "comments": [],
+                "reviews": [],
+                "review_comments": [],
+                "checks": [],
+            }
+
+            def new_run() -> tuple[str, dict]:
+                run_id = store.start_run("owner/repo", 7, "pull_request")
+                store.update_run(
+                    run_id,
+                    status="submitted",
+                    details={"pr_url": "https://github.com/owner/repo/pull/12"},
+                )
+                batch = store.ingest_github_pr_activity(
+                    run_id=run_id,
+                    repository="owner/repo",
+                    pull_number=12,
+                    activity=activity,
+                )
+                return run_id, batch
+
+            first_run, first = new_run()
+            store.commit_github_follow_up(
+                run_id=first_run,
+                repository="owner/repo",
+                pull_number=12,
+                previous_sequence=first["previous_sequence"],
+                through_sequence=first["through_sequence"],
+                batch_digest=first["batch_digest"],
+            )
+            no_policy = store.event_payload_gc_inventory({})
+            second_run, second = new_run()
+            blocked = store.event_payload_gc_inventory(
+                {"owner/repo": "2099-01-01T00:00:00Z"}
+            )
+            store.commit_github_follow_up(
+                run_id=second_run,
+                repository="owner/repo",
+                pull_number=12,
+                previous_sequence=second["previous_sequence"],
+                through_sequence=second["through_sequence"],
+                batch_digest=second["batch_digest"],
+            )
+            eligible = store.event_payload_gc_inventory(
+                {"owner/repo": "2099-01-01T00:00:00Z"}
+            )
+            digest = eligible["candidates"][0]["digest"]
+            deleted = store.delete_event_payloads(
+                (digest,),
+                retention_cutoffs={"owner/repo": "2099-01-01T00:00:00Z"},
+            )
+            repeated = store.delete_event_payloads(
+                (digest,),
+                retention_cutoffs={"owner/repo": "2099-01-01T00:00:00Z"},
+            )
+            _third_run, third = new_run()
+            events = store.github_pr_events("owner/repo", 12)
+            blob = store.content_blob(digest)
+
+        self.assertEqual(
+            no_policy["retained"][0]["reasons"],
+            ["no_explicit_event_retention"],
+        )
+        self.assertIn(
+            "not_checkpointed_by_every_run", blocked["retained"][0]["reasons"]
+        )
+        self.assertEqual(len(eligible["candidates"]), 1)
+        self.assertEqual(len(deleted["deleted"]), 1)
+        self.assertEqual(repeated["skipped"], [digest])
+        self.assertFalse(third["events"][0]["payload_available"])
+        self.assertTrue(third["events"][0]["payload"]["payload_unavailable"])
+        self.assertFalse(events[0]["payload_available"])
+        self.assertIsNone(blob)
 
     def test_merge_decision_audit_is_append_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
