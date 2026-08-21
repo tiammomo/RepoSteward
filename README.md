@@ -9,6 +9,37 @@ RepoSteward 是运行在 GitHub 和 Coding Harness 之间的本地维护控制�
 RepoSteward 适合需要长期维护 GitHub 项目、在多个 Coding Harness 或账号之间切换，又希望保留
 统一审阅记录的维护者和贡献者。它不是批量 PR 机器人，也不会让模型直接持有 GitHub 凭据。
 
+<p align="center">
+  <img src="docs/assets/reposteward-lifecycle.svg" width="100%" alt="RepoSteward 工作流：GitHub Issue 经过策略门禁进入 RepoSteward，Coding Harness 在无凭据工作区实现修改，隔离 Runner 完成验证，人工审阅后创建 Draft PR，CI 与 Reviewer 反馈再增量回流。">
+</p>
+
+<p align="center"><sub>技术图提供可编辑的 <a href="docs/assets/reposteward-lifecycle.excalidraw">Excalidraw 源文件</a>。</sub></p>
+
+## 一分钟理解
+
+RepoSteward 把一次代码维护任务拆成八个可审计步骤：
+
+1. 从 GitHub Issue 冻结目标、范围和讨论事实；
+2. 检查重复项、权限、贡献规则和竞争工作；
+3. 由 RepoSteward 保存策略、状态、上下文、审计和 GitHub 写入门禁；
+4. 让 Coding Harness 只在隔离 workspace 中推理和编辑，不向它暴露 GitHub 凭据；
+5. 在无凭据、无网络的 Runner 中执行允许的验证命令；
+6. 由用户审阅最终 diff、验证证据和风险；
+7. 通过独立命令显式创建 Draft PR；
+8. 增量采集 CI 与 Reviewer 反馈，重新进入同一个受审计流程。
+
+这套路径的重点不是替代 Codex、Claude Code 或其他 Harness，而是让不同 Harness、账号和机器
+共享同一份任务事实，同时把公开写入和安全边界留在确定性的控制面中。
+
+## 从这里开始
+
+| 目标 | 建议入口 |
+| --- | --- |
+| 第一次试用 | [安装](#安装) → [添加项目](#添加项目) → [基本工作流](#基本工作流) |
+| 评估产品边界 | [产品边界](#产品边界) → [架构文档](docs/architecture.md) |
+| 切换 Harness、账号或机器 | [上下文与跨 Harness 交接](#上下文与跨-harness-交接) |
+| 参与开发 | [贡献指南](CONTRIBUTING.md) → [安全报告说明](SECURITY.md) |
+
 ## 当前状态
 
 项目仍处于 0.x 早期开发阶段。已经实现的主流程包括：
@@ -22,13 +53,6 @@ RepoSteward 适合需要长期维护 GitHub 项目、在多个 Coding Harness �
 Claude Code、DeepSeek 等 Harness 目前只有统一接入契约，尚未提供内置适配器。配置格式和公开
 接口在稳定版本发布前仍可能调整。
 
-## 快速导航
-
-- 准备试用：从[安装](#安装)、[添加项目](#添加项目)和[基本工作流](#基本工作流)开始。
-- 了解边界：阅读[产品边界](#产品边界)和[架构文档](docs/architecture.md)。
-- 切换 Harness 或账号：阅读[上下文与跨 Harness 交接](#上下文与跨-harness-交接)。
-- 参与开发：阅读[贡献指南](CONTRIBUTING.md)和[安全报告说明](SECURITY.md)。
-
 ## 产品边界
 
 | 组件 | 职责 |
@@ -40,23 +64,8 @@ Claude Code、DeepSeek 等 Harness 目前只有统一接入契约，尚未提供
 
 Harness 的原生会话只用于加速恢复。版本化 Context Pack 与 Checkpoint 才是任务连续性的记录。
 组件设计、持久数据模型和跨账号恢复约束见
-[`docs/architecture.md`](docs/architecture.md)。默认工作流如下：
-
-```text
-发现/选择 Issue
-      ↓
-贡献门禁与竞争工作检查
-      ↓
-独立 clone + Agent 实现
-      ↓
-无凭据容器验证 + diff 策略
-      ↓
-紧凑 Review Packet
-      ↓ 人工确认
-显式创建 Draft PR
-      ↓
-增量跟踪 CI 与 Reviewer 反馈
-```
+[`docs/architecture.md`](docs/architecture.md)。README 顶部流程图描述稳定的产品路径；内部组件和
+持久化细节以架构文档为准。
 
 ## 安装
 

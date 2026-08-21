@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">RepoSteward workflow from reviewed Issue to verified Pull Request</title>
+  <desc id="desc">A GitHub Issue passes a policy gate into RepoSteward. A coding harness edits an isolated workspace without GitHub credentials. A network-free runner verifies the change. A human reviews the evidence before a Draft PR is created. CI and reviewer feedback return to RepoSteward.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10z" fill="#343a40"/>
+    </marker>
+    <marker id="feedback-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10z" fill="#0b7285"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#212529" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="760" rx="30" fill="#f8f9fa"/>
+  <text x="55" y="62" fill="#212529" font-family="system-ui, -apple-system, sans-serif" font-size="34" font-weight="750">RepoSteward — reviewed Issue to verified PR</text>
+  <text x="55" y="98" fill="#6c757d" font-family="system-ui, -apple-system, sans-serif" font-size="18">The control plane owns state and public writes. The coding harness only reasons and edits.</text>
+
+  <path d="M50 517 C25 517 25 495 25 470 V150 C25 128 45 122 70 122 H690 C720 122 720 148 720 178" fill="none" stroke="#0b7285" stroke-width="3" stroke-dasharray="9 9" stroke-linecap="round" marker-end="url(#feedback-arrow)"/>
+  <rect x="280" y="111" width="315" height="30" rx="15" fill="#e3fafc" stroke="#66d9e8" stroke-width="2"/>
+  <text x="438" y="132" text-anchor="middle" fill="#0b7285" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="700">CI + reviewer feedback returns incrementally</text>
+
+  <g font-family="system-ui, -apple-system, sans-serif">
+    <text x="55" y="176" fill="#868e96" font-size="15" font-weight="750" letter-spacing="1.5">PREPARE + IMPLEMENT</text>
+    <line x1="55" y1="187" x2="1145" y2="187" stroke="#dee2e6" stroke-width="2" stroke-dasharray="7 9"/>
+    <text x="55" y="430" fill="#868e96" font-size="15" font-weight="750" letter-spacing="1.5">VERIFY + REVIEW + PUBLISH</text>
+    <line x1="55" y1="441" x2="1145" y2="441" stroke="#dee2e6" stroke-width="2" stroke-dasharray="7 9"/>
+  </g>
+
+  <g fill="none" stroke="#343a40" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)">
+    <path d="M270 282 C286 274 299 274 315 282"/>
+    <path d="M535 282 C551 274 564 274 580 282"/>
+    <path d="M830 282 C846 274 859 274 875 282"/>
+    <path d="M985 344 C985 374 985 400 985 455"/>
+    <path d="M875 517 C859 525 846 525 830 517"/>
+    <path d="M580 517 C564 525 551 525 535 517"/>
+    <path d="M315 517 C299 525 286 525 270 517"/>
+  </g>
+
+  <g filter="url(#shadow)" font-family="system-ui, -apple-system, sans-serif">
+    <g>
+      <rect x="50" y="220" width="220" height="124" rx="20" fill="#e7f5ff" stroke="#1971c2" stroke-width="3"/>
+      <circle cx="78" cy="247" r="17" fill="#1971c2"/>
+      <text x="78" y="253" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="800">1</text>
+      <path d="M213 241h24l11 11v28h-35zM237 241v11h11" fill="none" stroke="#1971c2" stroke-width="3" stroke-linejoin="round"/>
+      <text x="75" y="291" fill="#1864ab" font-size="22" font-weight="800">GitHub Issue</text>
+      <text x="75" y="319" fill="#495057" font-size="15">Goal, scope, discussion</text>
+    </g>
+    <g>
+      <rect x="315" y="220" width="220" height="124" rx="20" fill="#fff3bf" stroke="#e67700" stroke-width="3"/>
+      <circle cx="343" cy="247" r="17" fill="#e67700"/>
+      <text x="343" y="253" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="800">2</text>
+      <path d="M495 239l24 9v19c0 16-10 25-24 31-14-6-24-15-24-31v-19zM482 267l9 9 16-20" fill="none" stroke="#e67700" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="340" y="291" fill="#a06100" font-size="22" font-weight="800">Policy Gate</text>
+      <text x="340" y="319" fill="#6c5200" font-size="15">Duplicates, access, claims</text>
+    </g>
+    <g>
+      <rect x="580" y="205" width="250" height="154" rx="23" fill="#e5dbff" stroke="#6741d9" stroke-width="4"/>
+      <circle cx="610" cy="235" r="18" fill="#6741d9"/>
+      <text x="610" y="242" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="800">3</text>
+      <circle cx="780" cy="246" r="28" fill="#d0bfff" stroke="#6741d9" stroke-width="3"/>
+      <path d="M762 249l18 10 18-10M762 240l18 10 18-10M762 231l18 10 18-10" fill="none" stroke="#6741d9" stroke-width="3" stroke-linejoin="round"/>
+      <text x="610" y="294" fill="#4c2ca0" font-size="25" font-weight="850">RepoSteward</text>
+      <text x="610" y="323" fill="#5f3dc4" font-size="15">Policy · state · audit</text>
+      <text x="610" y="346" fill="#5f3dc4" font-size="14">GitHub facts + write gates</text>
+    </g>
+    <g>
+      <rect x="875" y="220" width="220" height="124" rx="20" fill="#f3f0ff" stroke="#7048e8" stroke-width="3"/>
+      <circle cx="903" cy="247" r="17" fill="#7048e8"/>
+      <text x="903" y="253" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="800">4</text>
+      <path d="M1050 243l-13 14 13 14M1075 243l13 14-13 14M1071 236l-15 43" fill="none" stroke="#7048e8" stroke-width="3" stroke-linecap="round"/>
+      <text x="900" y="291" fill="#5f3dc4" font-size="22" font-weight="800">Coding Harness</text>
+      <text x="900" y="319" fill="#495057" font-size="15">Reason + edit workspace</text>
+    </g>
+    <g>
+      <rect x="875" y="455" width="220" height="124" rx="20" fill="#d3f9d8" stroke="#2b8a3e" stroke-width="3"/>
+      <circle cx="903" cy="482" r="17" fill="#2b8a3e"/>
+      <text x="903" y="488" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="800">5</text>
+      <path d="M1050 476l25 10v20c0 18-11 28-25 34-14-6-25-16-25-34v-20zM1037 506l9 9 17-21" fill="none" stroke="#2b8a3e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="900" y="526" fill="#237032" font-size="20" font-weight="800">Isolated Verify</text>
+      <text x="900" y="554" fill="#495057" font-size="15">No credentials · no network</text>
+    </g>
+    <g>
+      <rect x="580" y="455" width="250" height="124" rx="20" fill="#ffec99" stroke="#f08c00" stroke-width="4"/>
+      <circle cx="610" cy="482" r="17" fill="#f08c00"/>
+      <text x="610" y="488" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="800">6</text>
+      <circle cx="800" cy="485" r="14" fill="none" stroke="#f08c00" stroke-width="3"/>
+      <path d="M777 523c4-19 42-19 46 0M785 536l9 9 18-21" fill="none" stroke="#f08c00" stroke-width="3" stroke-linecap="round"/>
+      <text x="610" y="526" fill="#a06100" font-size="22" font-weight="800">Human Review</text>
+      <text x="610" y="554" fill="#6c5200" font-size="15">Diff · evidence · risk</text>
+    </g>
+    <g>
+      <rect x="315" y="455" width="220" height="124" rx="20" fill="#d0ebff" stroke="#1c7ed6" stroke-width="3"/>
+      <circle cx="343" cy="482" r="17" fill="#1c7ed6"/>
+      <text x="343" y="488" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="800">7</text>
+      <circle cx="465" cy="482" r="7" fill="none" stroke="#1c7ed6" stroke-width="3"/>
+      <circle cx="465" cy="518" r="7" fill="none" stroke="#1c7ed6" stroke-width="3"/>
+      <circle cx="497" cy="500" r="7" fill="none" stroke="#1c7ed6" stroke-width="3"/>
+      <path d="M465 489v22M472 482c25 0 25 11 25 11" fill="none" stroke="#1c7ed6" stroke-width="3"/>
+      <text x="340" y="526" fill="#1864ab" font-size="22" font-weight="800">Draft PR</text>
+      <text x="340" y="554" fill="#495057" font-size="15">Explicit public write</text>
+    </g>
+    <g>
+      <rect x="50" y="455" width="220" height="124" rx="20" fill="#c5f6fa" stroke="#0b7285" stroke-width="3"/>
+      <circle cx="78" cy="482" r="17" fill="#0b7285"/>
+      <text x="78" y="488" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="800">8</text>
+      <circle cx="230" cy="493" r="23" fill="none" stroke="#0b7285" stroke-width="3"/>
+      <path d="M217 493l9 9 18-22" fill="none" stroke="#0b7285" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="75" y="526" fill="#0b7285" font-size="22" font-weight="800">CI + Review</text>
+      <text x="75" y="554" fill="#495057" font-size="15">Incremental feedback</text>
+    </g>
+  </g>
+
+  <g font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="700" text-anchor="middle">
+    <rect x="50" y="638" width="335" height="48" rx="15" fill="#ffffff" stroke="#ced4da" stroke-width="2"/>
+    <text x="218" y="668" fill="#495057">Portable context lives in RepoSteward</text>
+    <rect x="432" y="638" width="335" height="48" rx="15" fill="#ffffff" stroke="#ced4da" stroke-width="2"/>
+    <text x="600" y="668" fill="#495057">Harness gets no GitHub credentials</text>
+    <rect x="814" y="638" width="331" height="48" rx="15" fill="#ffffff" stroke="#ced4da" stroke-width="2"/>
+    <text x="980" y="668" fill="#495057">Every public write has an explicit gate</text>
+  </g>
+</svg>
