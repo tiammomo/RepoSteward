@@ -311,6 +311,17 @@ uv run reposteward merge-decision RUN_ID
 Runner、数据库、依赖发布和安全风险规则不能被项目配置削弱；项目只能通过 `merge_risk_paths` 追加
 需要人工合并的路径。
 
+本地占用可以按仓库、数据类别和时间范围只读查看：
+
+```bash
+uv run reposteward storage stats
+uv run reposteward storage stats --repo owner/repository --since-days 30
+```
+
+输出分别给出逻辑载荷字节、验证日志缓存和 SQLite/WAL/SHM 的实际文件字节；跨仓库共享的内容
+寻址 Blob 会在各仓库行中显示引用字节，并在说明字段中明确其可能重复计算，避免把逻辑引用误当成
+全局物理占用。
+
 ## 安全约束
 
 - GitHub 凭据不会传给 Agent、测试、仓库 hooks、Git push 或 Docker 容器。

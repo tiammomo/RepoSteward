@@ -605,6 +605,7 @@ class StoreTests(unittest.TestCase):
                 activity=activity,
             )
             events = store.github_pr_events("owner/repo", 12)
+            statistics = store.storage_statistics(repository="owner/repo")
             watermark = store.github_pr_watermark(run_id)
             bundle = store.context_bundle(run_id)
             with closing(sqlite3.connect(store.path)) as connection, connection:
@@ -628,6 +629,10 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(blob_count, 3)
         self.assertEqual(inline_bytes, 0)
         self.assertTrue(all(event["payload_available"] for event in events))
+        by_category = {value["category"]: value for value in statistics}
+        self.assertEqual(by_category["github_event_index"]["records"], 3)
+        self.assertEqual(by_category["github_event_payload"]["records"], 3)
+        self.assertGreater(by_category["checkpoint"]["bytes"], 0)
         self.assertTrue(
             all(event["source_trust"] == "github_untrusted" for event in events)
         )

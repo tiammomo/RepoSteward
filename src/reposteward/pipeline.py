@@ -6,6 +6,7 @@ import re
 import sqlite3
 import subprocess
 from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -999,6 +1000,82 @@ class Pipeline:
             "tail": content[-tail_chars:],
             "tail_chars": min(len(content), tail_chars),
             "tail_truncated": len(content) > tail_chars,
+        }
+
+    def storage_statistics(
+        self, *, repository: str = "", since_days: int = 0
+    ) -> dict[str, Any]:
+        if since_days < 0 or since_days > 36_500:
+            raise ValueError("since_days must be between 0 and 36500")
+        normalized = repository.casefold()
+        if normalized:
+            self.policy(normalized)
+        cutoff = (
+            (datetime.now(UTC) - timedelta(days=since_days)).isoformat()
+            if since_days
+            else ""
+        )
+        categories = self.store.storage_statistics(repository=normalized, cutoff=cutoff)
+        repositories = self.store.run_repositories()
+        logs: dict[str, dict[str, Any]] = {}
+        runs_root = (self.config.state_dir / "runs").resolve()
+        if runs_root.is_dir():
+            for run_dir in runs_root.iterdir():
+                if run_dir.is_symlink() or not run_dir.is_dir():
+                    continue
+                run_repository = repositories.get(run_dir.name, "")
+                if not run_repository or (normalized and run_repository != normalized):
+                    continue
+                verification = run_dir / "verification"
+                if verification.is_symlink() or not verification.is_dir():
+                    continue
+                group = logs.setdefault(
+                    run_repository,
+                    {
+                        "repository": run_repository,
+                        "category": "verification_log_cache",
+                        "records": 0,
+                        "bytes": 0,
+                        "oldest_at": "",
+                        "newest_at": "",
+                    },
+                )
+                for path in verification.iterdir():
+                    if path.is_symlink() or not path.is_file() or path.suffix != ".log":
+                        continue
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    timestamp = datetime.fromtimestamp(stat.st_mtime, UTC).isoformat()
+                    if cutoff and timestamp < cutoff:
+                        continue
+                    group["records"] += 1
+                    group["bytes"] += stat.st_size
+                    group["oldest_at"] = min(
+                        value for value in (group["oldest_at"], timestamp) if value
+                    )
+                    group["newest_at"] = max(group["newest_at"], timestamp)
+        categories.extend(logs.values())
+        categories.sort(key=lambda value: (value["repository"], value["category"]))
+        database_files = []
+        for suffix in ("", "-wal", "-shm"):
+            path = Path(f"{self.store.path}{suffix}")
+            if path.is_file() and not path.is_symlink():
+                database_files.append({"name": path.name, "bytes": path.stat().st_size})
+        return {
+            "repository_filter": normalized,
+            "since_days": since_days,
+            "cutoff": cutoff,
+            "categories": categories,
+            "reported_logical_bytes": sum(value["bytes"] for value in categories),
+            "database_physical_bytes": sum(value["bytes"] for value in database_files),
+            "database_files": database_files,
+            "notes": (
+                "Per-repository event payload bytes are referenced bytes; one deduplicated "
+                "blob referenced by multiple repositories appears in each repository row."
+            ),
+            "public_write": False,
         }
 
     def follow_up(self, run_id: str) -> dict[str, Any]:
