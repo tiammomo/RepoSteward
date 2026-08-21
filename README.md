@@ -426,7 +426,24 @@ mode = "maintainer"
 submission_strategy = "same-repository"
 auto_merge = true
 auto_merge_method = "squash"
+# 单维护者自有仓库可显式启用；默认 false
+owner_attestation = true
 ```
+
+GitHub 不允许 PR 作者批准自己的 PR。对单维护者自有仓库，可以在 Maintainer、
+same-repository 模式下显式启用 `owner_attestation`。它不伪造 GitHub Approval，也不使用 admin
+bypass；Contributor、外部作者、非受管分支或要求独立 Reviewer 的 branch protection/ruleset
+仍然拒绝。先等待 CI 完成并人工检查精确 diff，再单独追加声明：
+
+```bash
+REPOSTEWARD_ENABLE_OWNER_ATTESTATION=1 \
+  uv run reposteward merge-attest RUN_ID --reviewed-by your-github-login
+```
+
+声明绑定 repository、PR、run、作者、受管分支、head/base、policy、diff、checks、Review、会话、
+活动、依赖和仓库规则摘要。随后必须重新运行 `merge-decision`；任何绑定事实变化都会使旧声明失效。
+仓库规则接口不可读、受保护分支的 classic protection 不可确认，或当前身份不是 owner/admin 且无
+push 权限时均失败关闭。声明只写本地追加审计，且还需要下方独立的一次性 merge 开关才能执行合并。
 
 执行器只消费一次指定的 eligible 决策，不会自己生成资格。先运行 `merge-decision`，人工检查返回的
 决策和 `audit.id`，再显式执行：
@@ -442,7 +459,7 @@ REPOSTEWARD_ENABLE_MERGE=1 \
 任何评论或 Review 编辑、check、会话、head/base、策略、规模或风险变化都会使旧决策失效；请求还会
 绑定精确 head SHA。网络结果不确定时先回读 GitHub，已在相同 head 合并则作为幂等成功，否则失败
 关闭。每次尝试的意图和结果都追加到本地审计。Contributor mode、高风险路径、超限 PR、后台轮询、
-Reviewer 回复和自动开启 GitHub auto-merge 均不在该执行器范围内。
+Reviewer 回复、伪造 Approval、admin bypass 和自动开启 GitHub auto-merge 均不在该执行器范围内。
 
 本地占用可以按仓库、数据类别和时间范围只读查看：
 

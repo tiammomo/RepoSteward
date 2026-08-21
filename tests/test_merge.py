@@ -101,6 +101,44 @@ class MergeDecisionTests(unittest.TestCase):
             ],
         )
 
+    def test_exact_owner_attestation_can_satisfy_only_the_review_gate(self) -> None:
+        incomplete = self.evaluate(
+            replace(
+                self.snapshot,
+                review_decision="",
+                owner_attestation_valid=True,
+                owner_attestation_status="valid",
+            )
+        )
+        complete = self.evaluate(
+            replace(
+                self.snapshot,
+                review_decision="",
+                owner_attestation_valid=True,
+                owner_attestation_status="valid",
+                owner_attestation_digest="f" * 64,
+            )
+        )
+
+        self.assertEqual(
+            [reason.code for reason in incomplete.reasons],
+            ["owner_attestation_incomplete", "review_not_approved"],
+        )
+        self.assertTrue(complete.eligible)
+        changes_requested = self.evaluate(
+            replace(
+                self.snapshot,
+                review_decision="CHANGES_REQUESTED",
+                owner_attestation_valid=True,
+                owner_attestation_status="valid",
+                owner_attestation_digest="f" * 64,
+            )
+        )
+        self.assertEqual(
+            [reason.code for reason in changes_requested.reasons],
+            ["review_not_approved"],
+        )
+
     def test_dependency_blockers_and_incomplete_dependency_facts_block_merge(
         self,
     ) -> None:

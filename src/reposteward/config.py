@@ -153,6 +153,7 @@ class RepositoryPolicy:
     max_diff_lines: int | None = None
     merge_risk_paths: tuple[str, ...] = ()
     event_payload_retention_days: int | None = None
+    owner_attestation: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,6 +586,7 @@ def load_config(
             auto_merge_method=str(
                 repo_value.get("auto_merge_method", "squash")
             ).strip(),
+            owner_attestation=_boolean(repo_value.get("owner_attestation"), False),
             mode=str(repo_value.get("mode", "contributor")).strip(),
             submission_strategy=str(
                 repo_value.get("submission_strategy", "fork")
@@ -701,6 +703,14 @@ def load_config(
             raise ConfigError(
                 f"{repository.name} may enable auto_merge only in maintainer "
                 "same-repository mode"
+            )
+        if repository.owner_attestation and (
+            repository.mode != "maintainer"
+            or repository.submission_strategy != "same-repository"
+        ):
+            raise ConfigError(
+                f"{repository.name} may enable owner_attestation only in "
+                "maintainer same-repository mode"
             )
         if repository.submission_strategy not in {"fork", "same-repository"}:
             raise ConfigError(

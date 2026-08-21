@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import subprocess
 import tempfile
 import unittest
 from contextlib import closing
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -20,6 +21,7 @@ from reposteward.context import (
     build_context_pack,
     build_repair_context_pack,
     portable_bundle,
+    repository_policy_digest,
     review_checkpoint,
 )
 from reposteward.context_budget import (
@@ -43,6 +45,24 @@ from reposteward.protocol import validate_context_pack
 from reposteward.repair_prompt import build_budgeted_repair_context_pack
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class RepositoryPolicyDigestTests(unittest.TestCase):
+    def test_default_off_owner_attestation_preserves_legacy_policy_digest(self) -> None:
+        policy = RepositoryPolicy(name="owner/repo")
+        legacy = asdict(policy)
+        legacy.pop("owner_attestation")
+        encoded = json.dumps(
+            legacy, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+
+        self.assertEqual(
+            repository_policy_digest(policy), hashlib.sha256(encoded).hexdigest()
+        )
+        self.assertNotEqual(
+            repository_policy_digest(replace(policy, owner_attestation=True)),
+            repository_policy_digest(policy),
+        )
 
 
 def _candidate(body: str = "Reproduce the bug") -> Candidate:

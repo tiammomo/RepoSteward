@@ -7,7 +7,7 @@ import re
 import sqlite3
 import subprocess
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -2687,6 +2687,149 @@ class Pipeline:
                 + "); run follow-up and prepare a new repair"
             )
 
+    @staticmethod
+    def _owner_review_attestation_material(facts: dict[str, Any]) -> tuple[str, str]:
+        facts_digest = _canonical_digest(facts)
+        material = {
+            "schema_version": 1,
+            "source": "owner_attestation",
+            "facts": facts,
+            "review_facts_digest": facts_digest,
+        }
+        return facts_digest, _canonical_digest(material)
+
+    def _owner_review_scope(
+        self,
+        *,
+        repository: str,
+        details: dict[str, Any],
+        policy: RepositoryPolicy,
+        actor: str,
+        pull_activity: dict[str, Any],
+        raw: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Verify that an owner review is allowed for this exact tracked PR."""
+        if not policy.owner_attestation:
+            raise PolicyError("repository owner_attestation is not explicitly enabled")
+        if (
+            policy.mode != "maintainer"
+            or policy.submission_strategy != "same-repository"
+        ):
+            raise PolicyError(
+                "owner attestation requires maintainer same-repository mode"
+            )
+        authenticated = self.github.authenticated_login()
+        repository_info = self.github.repository(repository)
+        configured = self.config.github.login
+        if not actor or actor.casefold() != configured.casefold():
+            raise PolicyError("--reviewed-by must match the configured GitHub login")
+        if authenticated.casefold() != actor.casefold():
+            raise PolicyError(
+                "authenticated GitHub login differs from the reviewed identity"
+            )
+        owner_login = str(repository_info.owner_login or "")
+        if not owner_login:
+            raise PolicyError("GitHub did not return the repository owner identity")
+        if not repository_info.can_push:
+            raise PolicyError(
+                "authenticated GitHub login cannot push to the repository"
+            )
+        if not (
+            repository_info.can_admin or owner_login.casefold() == actor.casefold()
+        ):
+            raise PolicyError(
+                "owner attestation requires repository owner or admin permission"
+            )
+        if str(pull_activity.get("author") or "").casefold() != actor.casefold():
+            raise PolicyError(
+                "owner attestation cannot review a pull request authored externally"
+            )
+        if (
+            str(pull_activity.get("head_owner") or "").casefold()
+            != owner_login.casefold()
+        ):
+            raise PolicyError("owner attestation requires a same-repository branch")
+        if (
+            str(pull_activity.get("head_repository") or "").casefold()
+            != repository.casefold()
+        ):
+            raise PolicyError(
+                "owner attestation rejects fork or cross-repository heads"
+            )
+        expected_branch = str(details.get("branch") or "")
+        if (
+            not expected_branch
+            or str(pull_activity.get("head_branch") or "") != expected_branch
+        ):
+            raise PolicyError(
+                "owner attestation requires the exact RepoSteward-tracked branch"
+            )
+        if str(raw.get("head_branch") or "") != expected_branch:
+            raise PolicyError("GitHub merge facts disagree about the tracked branch")
+        if (
+            int(pull_activity.get("number") or 0) != int(raw.get("pull_number") or 0)
+            or str(pull_activity.get("head_sha") or "")
+            != str(raw.get("head_sha") or "")
+            or str(pull_activity.get("base_sha") or "")
+            != str(raw.get("base_sha") or "")
+        ):
+            raise PolicyError(
+                "GitHub activity and merge facts were read at different revisions"
+            )
+        rules = self.github.branch_review_policy(
+            repository, str(raw.get("base_branch") or "")
+        )
+        if not bool(rules.get("complete")):
+            raise PolicyError("GitHub branch review rules are incomplete")
+        if bool(rules.get("requires_independent_review")):
+            requirements = ", ".join(
+                str(value) for value in rules.get("requirements", ())
+            )
+            raise PolicyError(
+                "GitHub requires an independent review; owner attestation is not "
+                f"allowed ({requirements or 'review rule'})"
+            )
+        return rules
+
+    @staticmethod
+    def _owner_review_facts(
+        *,
+        run_id: str,
+        actor: str,
+        snapshot: MergeSnapshot,
+        pull_activity: dict[str, Any],
+        raw: dict[str, Any],
+        rules: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "repository": snapshot.repository.casefold(),
+            "pull_number": snapshot.pull_number,
+            "run_id": run_id,
+            "actor": actor,
+            "pull_author": str(pull_activity.get("author") or ""),
+            "head_owner": str(pull_activity.get("head_owner") or ""),
+            "head_repository": str(pull_activity.get("head_repository") or ""),
+            "head_branch": str(pull_activity.get("head_branch") or ""),
+            "head_sha": snapshot.head_sha,
+            "base_sha": snapshot.base_sha,
+            "policy_digest": snapshot.policy_digest,
+            "review_decision": snapshot.review_decision,
+            "diff_digest": _canonical_digest(
+                {
+                    "files": snapshot.files,
+                    "additions": snapshot.additions,
+                    "deletions": snapshot.deletions,
+                }
+            ),
+            "checks_digest": _canonical_digest(
+                [asdict(value) for value in snapshot.checks]
+            ),
+            "conversation_digest": str(raw.get("conversation_digest") or ""),
+            "dependency_digest": snapshot.dependency_digest,
+            "activity_digest": snapshot.activity_digest,
+            "rules_digest": str(rules.get("rules_digest") or ""),
+        }
+
     def _current_merge_evaluation(
         self, run_id: str
     ) -> tuple[
@@ -2696,6 +2839,7 @@ class Pipeline:
         int,
         MergeSnapshot,
         MergeDecision,
+        dict[str, Any],
         dict[str, Any],
     ]:
         """Read all current facts and produce one deterministic merge evaluation."""
@@ -2782,7 +2926,49 @@ class Pipeline:
                 str(value) for value in dependency_status["blockers"]
             ),
             dependencies_complete=bool(dependency_status["complete"]),
+            owner_attestation_status=(
+                "missing" if policy.owner_attestation else "disabled"
+            ),
         )
+        if (
+            policy.owner_attestation
+            and snapshot.review_decision.casefold() != "approved"
+        ):
+            attestation = self.store.latest_owner_review_attestation(
+                repository, pull_number
+            )
+            if attestation is not None:
+                actor = str(attestation["actor"])
+                rules = self._owner_review_scope(
+                    repository=repository,
+                    details=details,
+                    policy=policy,
+                    actor=actor,
+                    pull_activity=pull_activity,
+                    raw=raw,
+                )
+                facts = self._owner_review_facts(
+                    run_id=run_id,
+                    actor=actor,
+                    snapshot=snapshot,
+                    pull_activity=pull_activity,
+                    raw=raw,
+                    rules=rules,
+                )
+                facts_digest, attestation_digest = (
+                    self._owner_review_attestation_material(facts)
+                )
+                if facts_digest == str(
+                    attestation["review_facts_digest"]
+                ) and attestation_digest == str(attestation["attestation_digest"]):
+                    snapshot = replace(
+                        snapshot,
+                        owner_attestation_valid=True,
+                        owner_attestation_digest=attestation_digest,
+                        owner_attestation_status="valid",
+                    )
+                else:
+                    snapshot = replace(snapshot, owner_attestation_status="stale")
         decision = evaluate_merge(
             snapshot,
             expected_head_sha=str(details.get("commit_sha") or ""),
@@ -2800,7 +2986,86 @@ class Pipeline:
             ),
             extra_risk_patterns=policy.merge_risk_paths,
         )
-        return run, details, policy, pull_number, snapshot, decision, raw
+        return run, details, policy, pull_number, snapshot, decision, raw, activity
+
+    def attest_owner_review(self, run_id: str, *, reviewed_by: str) -> dict[str, Any]:
+        """Append an exact owner review after every non-review merge gate passes."""
+        if os.environ.get("REPOSTEWARD_ENABLE_OWNER_ATTESTATION") != "1":
+            raise PolicyError(
+                "owner attestation is disabled; set "
+                "REPOSTEWARD_ENABLE_OWNER_ATTESTATION=1 for this command"
+            )
+        (
+            run,
+            details,
+            policy,
+            pull_number,
+            snapshot,
+            decision,
+            raw,
+            activity,
+        ) = self._current_merge_evaluation(run_id)
+        if str(run.get("status")) != "submitted":
+            raise PolicyError("owner attestation requires a submitted run")
+        if snapshot.review_decision.casefold() == "approved":
+            raise PolicyError("GitHub already records an approved review decision")
+        if snapshot.review_decision.casefold() not in {"", "review_required"}:
+            raise PolicyError(
+                "owner attestation cannot override the current GitHub review decision"
+            )
+        actor = str(reviewed_by).strip()
+        pull_activity = activity.get("pull_request", {})
+        rules = self._owner_review_scope(
+            repository=snapshot.repository,
+            details=details,
+            policy=policy,
+            actor=actor,
+            pull_activity=pull_activity,
+            raw=raw,
+        )
+        facts = self._owner_review_facts(
+            run_id=run_id,
+            actor=actor,
+            snapshot=snapshot,
+            pull_activity=pull_activity,
+            raw=raw,
+            rules=rules,
+        )
+        _facts_digest, attestation_digest = self._owner_review_attestation_material(
+            facts
+        )
+        non_review_reasons = tuple(
+            value for value in decision.reasons if value.code != "review_not_approved"
+        )
+        if non_review_reasons:
+            reasons = ", ".join(value.code for value in non_review_reasons)
+            raise PolicyError(
+                "owner attestation requires every non-review merge gate to pass: "
+                + reasons
+            )
+        pending_checks = sorted(
+            value.name
+            for value in snapshot.checks
+            if value.status.casefold() != "completed"
+        )
+        if pending_checks:
+            raise PolicyError(
+                "owner attestation requires CI to finish: " + ", ".join(pending_checks)
+            )
+        audit = self.store.append_owner_review_attestation(facts=facts)
+        if str(audit["attestation_digest"]) != attestation_digest:
+            raise PolicyError("owner attestation audit digest did not match")
+        return {
+            "run_id": run_id,
+            "repository": snapshot.repository,
+            "pull_number": pull_number,
+            "reviewed_by": actor,
+            "head_sha": snapshot.head_sha,
+            "attestation_digest": attestation_digest,
+            "audit": audit,
+            "next_action": "run merge-decision and review its fresh audit",
+            "public_write": False,
+        }
 
     def merge_decision(self, run_id: str) -> dict[str, Any]:
         """Evaluate and audit current merge eligibility without writing to GitHub."""
@@ -2812,6 +3077,7 @@ class Pipeline:
             snapshot,
             decision,
             _raw,
+            _activity,
         ) = self._current_merge_evaluation(run_id)
         repository = snapshot.repository
         payload = decision.to_dict()
@@ -2954,6 +3220,7 @@ class Pipeline:
             int,
             MergeSnapshot,
             MergeDecision,
+            dict[str, Any],
             dict[str, Any],
         ]:
             try:

@@ -44,7 +44,12 @@ def _digest(value: object) -> str:
 
 
 def repository_policy_digest(policy: RepositoryPolicy) -> str:
-    return _digest(asdict(policy))
+    value = asdict(policy)
+    # Preserve outstanding run digests when upgrading to the default-off feature.
+    # Enabling it remains a material policy change and receives a different digest.
+    if not policy.owner_attestation:
+        value.pop("owner_attestation")
+    return _digest(value)
 
 
 def _file_digest(path: Path) -> str:

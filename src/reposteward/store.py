@@ -13,7 +13,7 @@ from typing import Any
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -383,6 +383,30 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         ON portfolio_dependency_events(event_digest)
         """,
     ),
+    12: (
+        """
+        CREATE TABLE IF NOT EXISTS owner_review_attestations (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            repository TEXT NOT NULL,
+            pull_number INTEGER NOT NULL,
+            run_id TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            head_sha TEXT NOT NULL,
+            base_sha TEXT NOT NULL,
+            policy_digest TEXT NOT NULL,
+            review_facts_digest TEXT NOT NULL UNIQUE,
+            attestation_digest TEXT NOT NULL UNIQUE,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES runs(id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS owner_review_attestations_for_pull
+        ON owner_review_attestations(repository, pull_number, sequence DESC)
+        """,
+    ),
 }
 
 
@@ -405,6 +429,36 @@ def _canonical_json(value: object) -> str:
 
 def _json_digest(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
+
+
+def _is_lower_hex(value: str, length: int) -> bool:
+    return len(value) == length and all(
+        character in "0123456789abcdef" for character in value
+    )
+
+
+OWNER_REVIEW_FACT_KEYS = frozenset(
+    {
+        "repository",
+        "pull_number",
+        "run_id",
+        "actor",
+        "pull_author",
+        "head_owner",
+        "head_repository",
+        "head_branch",
+        "head_sha",
+        "base_sha",
+        "policy_digest",
+        "review_decision",
+        "diff_digest",
+        "checks_digest",
+        "conversation_digest",
+        "dependency_digest",
+        "activity_digest",
+        "rules_digest",
+    }
+)
 
 
 class Store:
@@ -1489,6 +1543,17 @@ class Store:
                 """,
             ),
             (
+                "owner_review_attestation_audit",
+                """
+                SELECT repository, COUNT(*) AS records,
+                       COALESCE(SUM(length(CAST(payload AS BLOB))), 0) AS bytes,
+                       MIN(created_at) AS oldest_at, MAX(created_at) AS newest_at
+                FROM owner_review_attestations
+                WHERE (?='' OR repository=?) AND (?='' OR created_at>=?)
+                GROUP BY repository
+                """,
+            ),
+            (
                 "storage_gc_audit",
                 """
                 SELECT CASE WHEN repository='' THEN '*' ELSE repository END AS repository,
@@ -2125,6 +2190,165 @@ class Store:
         result = dict(row)
         result["details"] = json.loads(result["details"])
         return result
+
+    def append_owner_review_attestation(
+        self, *, facts: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Append one immutable owner review bound to exact merge facts."""
+        if set(facts) != OWNER_REVIEW_FACT_KEYS:
+            raise StoreError("owner review facts have an unexpected shape")
+        normalized = dict(facts)
+        if isinstance(facts["pull_number"], bool) or not isinstance(
+            facts["pull_number"], int
+        ):
+            raise TypeError("owner review pull_number must be an integer")
+        string_keys = OWNER_REVIEW_FACT_KEYS - {"pull_number"}
+        if any(not isinstance(facts[key], str) for key in string_keys):
+            raise TypeError("owner review fact values must be strings")
+        normalized["repository"] = str(facts["repository"]).casefold()
+        normalized["actor"] = str(facts["actor"]).strip()
+        if int(normalized["pull_number"]) < 1:
+            raise ValueError("owner review pull_number must be positive")
+        if not normalized["run_id"] or not normalized["actor"]:
+            raise ValueError("owner review run and actor must not be empty")
+        for key in ("head_sha", "base_sha"):
+            value = str(normalized[key])
+            if not _is_lower_hex(value, 40):
+                raise ValueError(f"owner review {key} must be 40 lowercase hex chars")
+        for key in (
+            "policy_digest",
+            "diff_digest",
+            "checks_digest",
+            "conversation_digest",
+            "dependency_digest",
+            "activity_digest",
+            "rules_digest",
+        ):
+            value = str(normalized[key])
+            if not _is_lower_hex(value, 64):
+                raise ValueError(f"owner review {key} must be 64 lowercase hex chars")
+        review_facts_digest = _json_digest(normalized)
+        material = {
+            "schema_version": 1,
+            "source": "owner_attestation",
+            "facts": normalized,
+            "review_facts_digest": review_facts_digest,
+        }
+        attestation_digest = _json_digest(material)
+        now = utc_now()
+        attestation_id = uuid.uuid4().hex
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = connection.execute(
+                "SELECT repository FROM runs WHERE id=?", (normalized["run_id"],)
+            ).fetchone()
+            if run is None or str(run["repository"]) != normalized["repository"]:
+                raise StoreError("owner review does not match its tracked run")
+            previous = connection.execute(
+                """
+                SELECT * FROM owner_review_attestations
+                WHERE review_facts_digest=?
+                """,
+                (review_facts_digest,),
+            ).fetchone()
+            if previous is not None:
+                value = self._owner_review_attestation(previous)
+                return {**value, "idempotent": True}
+            connection.execute(
+                """
+                INSERT INTO owner_review_attestations(
+                    id, repository, pull_number, run_id, actor, head_sha,
+                    base_sha, policy_digest, review_facts_digest,
+                    attestation_digest, payload, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attestation_id,
+                    normalized["repository"],
+                    int(normalized["pull_number"]),
+                    normalized["run_id"],
+                    normalized["actor"],
+                    normalized["head_sha"],
+                    normalized["base_sha"],
+                    normalized["policy_digest"],
+                    review_facts_digest,
+                    attestation_digest,
+                    _canonical_json(material),
+                    now,
+                ),
+            )
+        return {
+            "id": attestation_id,
+            **material,
+            "attestation_digest": attestation_digest,
+            "created_at": now,
+            "idempotent": False,
+        }
+
+    @staticmethod
+    def _owner_review_attestation(row: sqlite3.Row) -> dict[str, Any]:
+        value = dict(row)
+        payload = json.loads(str(value["payload"]))
+        if not isinstance(payload, dict):
+            raise StoreError("owner review attestation was modified")
+        facts = payload.get("facts")
+        if not isinstance(facts, dict) or set(facts) != OWNER_REVIEW_FACT_KEYS:
+            raise StoreError("owner review attestation was modified")
+        review_facts_digest = _json_digest(facts)
+        material = {
+            "schema_version": 1,
+            "source": "owner_attestation",
+            "facts": facts,
+            "review_facts_digest": review_facts_digest,
+        }
+        scope = {
+            "repository": str(value["repository"]),
+            "pull_number": int(value["pull_number"]),
+            "run_id": str(value["run_id"]),
+            "actor": str(value["actor"]),
+            "head_sha": str(value["head_sha"]),
+            "base_sha": str(value["base_sha"]),
+            "policy_digest": str(value["policy_digest"]),
+        }
+        if (
+            payload != material
+            or any(facts.get(key) != expected for key, expected in scope.items())
+            or str(value["review_facts_digest"]) != review_facts_digest
+            or str(value["attestation_digest"]) != _json_digest(material)
+        ):
+            raise StoreError("owner review attestation was modified")
+        value["payload"] = payload
+        value["facts"] = facts
+        return value
+
+    def latest_owner_review_attestation(
+        self, repository: str, pull_number: int
+    ) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM owner_review_attestations
+                WHERE repository=? AND pull_number=?
+                ORDER BY sequence DESC LIMIT 1
+                """,
+                (repository.casefold(), pull_number),
+            ).fetchone()
+        return self._owner_review_attestation(row) if row is not None else None
+
+    def owner_review_attestations(
+        self, repository: str, pull_number: int, *, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        limit = min(max(limit, 1), 500)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM owner_review_attestations
+                WHERE repository=? AND pull_number=?
+                ORDER BY sequence DESC LIMIT ?
+                """,
+                (repository.casefold(), pull_number, limit),
+            ).fetchall()
+        return [self._owner_review_attestation(row) for row in rows]
 
     def append_merge_decision(
         self,
