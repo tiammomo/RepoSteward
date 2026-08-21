@@ -43,6 +43,9 @@ memory = "8g"
 cache_retention_days = 30
 max_gc_items = 1000
 
+[context]
+follow_up_max_tokens = 24000
+
 [repositories."owner/repository"]
 enabled = true
 auto_prepare = false

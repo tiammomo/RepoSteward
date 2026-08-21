@@ -25,6 +25,7 @@ from .context import (
     running_checkpoint,
     write_portable_bundle,
 )
+from .context_budget import FAILED_CHECK_CONCLUSIONS, build_follow_up_context
 from .discovery import score_issue
 from .github import GitHubClient, GitHubError, resolve_token
 from .harness import Harness, HarnessRequest, create_harness
@@ -45,10 +46,6 @@ from .store import Store
 from .verifier import DockerVerifier
 from .workspace import WorkspaceManager
 
-FAILED_CHECK_CONCLUSIONS = frozenset(
-    {"action_required", "cancelled", "failure", "stale", "timed_out"}
-)
-
 
 def _canonical_digest(value: object) -> str:
     return hashlib.sha256(
@@ -66,41 +63,29 @@ def _repair_feedback(
     actionable: list[dict[str, Any]] = []
     suggestions: list[dict[str, Any]] = []
 
-    for kind, key in (
-        ("issue_comment", "new_comments"),
-        ("review", "new_reviews"),
-        ("review_comment", "new_review_comments"),
-    ):
-        values = follow_up.get(key, ())
-        if not isinstance(values, (list, tuple)):
+    plan = follow_up.get("context_plan", {})
+    events = plan.get("events", ()) if isinstance(plan, dict) else ()
+    for value in events if isinstance(events, (list, tuple)) else ():
+        if not isinstance(value, dict):
             continue
-        for value in values:
-            if not isinstance(value, dict):
-                continue
-            item = {"kind": kind, **value}
-            path = str(value.get("path") or "")
-            if kind == "review_comment" and path and path not in allowed_paths:
-                suggestions.append(
-                    {**item, "reason": "path_outside_existing_pull_request_scope"}
-                )
-                continue
-            body = str(value.get("body") or "").strip()
-            state = str(value.get("state") or "").casefold()
-            if kind == "review" and not body and state != "changes_requested":
-                continue
-            if kind == "issue_comment" and not body:
-                continue
-            actionable.append(item)
+        item = dict(value)
+        kind = str(item.get("kind") or "")
+        path = str(item.get("path") or "")
+        if kind == "review_comment" and path and path not in allowed_paths:
+            suggestions.append(
+                {**item, "reason": "path_outside_existing_pull_request_scope"}
+            )
+            continue
+        actionable.append(item)
 
-    checks = follow_up.get("changed_checks", ())
-    if isinstance(checks, (list, tuple)):
-        for value in checks:
-            if not isinstance(value, dict):
-                continue
-            if (
-                str(value.get("conclusion") or "").casefold()
-                in FAILED_CHECK_CONCLUSIONS
-            ):
+    stats = plan.get("stats", {}) if isinstance(plan, dict) else {}
+    mandatory = plan.get("mandatory", {}) if isinstance(plan, dict) else {}
+    if isinstance(stats, dict) and int(stats.get("new_failed_checks", 0)):
+        checks = (
+            mandatory.get("failed_checks", ()) if isinstance(mandatory, dict) else ()
+        )
+        for value in checks if isinstance(checks, (list, tuple)) else ():
+            if isinstance(value, dict):
                 actionable.append({"kind": "failed_check", **value})
     return tuple(actionable), tuple(suggestions)
 
@@ -1354,6 +1339,58 @@ class Pipeline:
         )
         return {**result, "audit": [applying, completed], "applied": applied}
 
+    @staticmethod
+    def _follow_up_diff_snippets(
+        details: dict[str, Any], events: list[dict[str, Any]]
+    ) -> dict[str, str]:
+        """Read only diffs referenced by new, already in-scope review comments."""
+        changed_files = {str(value) for value in details.get("changed_files", ())}
+        paths = sorted(
+            {
+                str(value["payload"].get("path") or "")
+                for value in events
+                if value.get("event_type") == "review_comment"
+                and isinstance(value.get("payload"), dict)
+                and str(value["payload"].get("path") or "") in changed_files
+            }
+        )
+        worktree = Path(str(details.get("worktree") or "")).expanduser().resolve()
+        base_commit = str(details.get("base_commit") or "")
+        head_commit = str(details.get("commit_sha") or "")
+        if (
+            not paths
+            or not (worktree / ".git").exists()
+            or not re.fullmatch(r"[0-9a-fA-F]{40}", base_commit)
+            or not re.fullmatch(r"[0-9a-fA-F]{40}", head_commit)
+        ):
+            return {}
+        snippets: dict[str, str] = {}
+        for path in paths:
+            try:
+                result = subprocess.run(
+                    [
+                        "git",
+                        "--literal-pathspecs",
+                        "diff",
+                        "--no-ext-diff",
+                        "--unified=3",
+                        base_commit,
+                        head_commit,
+                        "--",
+                        path,
+                    ],
+                    cwd=worktree,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if result.returncode == 0:
+                snippets[path] = result.stdout
+        return snippets
+
     def follow_up(self, run_id: str) -> dict[str, Any]:
         """Commit and return GitHub activity changed since the previous check."""
         return self._follow_up(run_id, commit=True)
@@ -1404,43 +1441,6 @@ class Pipeline:
                 for value in activity["checks"]
             },
         }
-        activity_limit = 3
-        check_limit = 12
-
-        def compact_activity(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            result = []
-            for value in values[:activity_limit]:
-                item = {**value}
-                if "body" in item:
-                    body = str(item["body"])
-                    item["body"] = (
-                        body
-                        if len(body) <= 600
-                        else f"{body[:600]}… [omitted {len(body) - 600} chars]"
-                    )
-                for key, content in tuple(item.items()):
-                    if key == "body" or not isinstance(content, str):
-                        continue
-                    if len(content) > 800:
-                        item[key] = (
-                            f"{content[:800]}… [omitted {len(content) - 800} chars]"
-                        )
-                result.append(item)
-            return result
-
-        def compact_checks(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            result = []
-            for value in values[:check_limit]:
-                item = {**value}
-                for key in ("name", "url"):
-                    content = str(item.get(key, ""))
-                    if len(content) > 800:
-                        item[key] = (
-                            f"{content[:800]}… [omitted {len(content) - 800} chars]"
-                        )
-                result.append(item)
-            return result
-
         head_matches = pull["head_sha"] == str(details.get("commit_sha", ""))
         if not head_matches:
             next_action = "reverify_changed_head"
@@ -1460,9 +1460,31 @@ class Pipeline:
         else:
             next_action = "wait_for_activity"
 
+        context_bundle = self.store.context_bundle(run_id) if pending_events else None
+        previous_checkpoint = (
+            context_bundle.get("checkpoint")
+            if isinstance(context_bundle, dict)
+            and isinstance(context_bundle.get("checkpoint"), dict)
+            else None
+        )
+        safety_blockers = []
+        if not head_matches:
+            safety_blockers.append("pull_request_head_differs_from_verified_commit")
+        if pull.get("merged"):
+            safety_blockers.append("pull_request_is_merged")
+        elif pull["state"] != "open":
+            safety_blockers.append("pull_request_is_not_open")
+        context_plan = build_follow_up_context(
+            activity=activity,
+            events=pending_events,
+            budget_tokens=self.config.context.follow_up_max_tokens,
+            safety_blockers=tuple(safety_blockers),
+            diff_snippets=self._follow_up_diff_snippets(details, pending_events),
+            checkpoint=previous_checkpoint,
+        )
+
         checkpoint_payload = None
         if pending_events:
-            context_bundle = self.store.context_bundle(run_id)
             if context_bundle is not None:
                 checkpoint_payload = review_checkpoint(
                     context_bundle,
@@ -1524,22 +1546,58 @@ class Pipeline:
                 if isinstance(committed.get("checkpoint"), dict)
                 else ""
             ),
-            "new_comments": compact_activity(new_comments),
-            "new_comments_omitted": max(0, len(new_comments) - activity_limit),
-            "new_reviews": compact_activity(new_reviews),
-            "new_reviews_omitted": max(0, len(new_reviews) - activity_limit),
-            "new_review_comments": compact_activity(new_review_comments),
-            "new_review_comments_omitted": max(
-                0, len(new_review_comments) - activity_limit
+            "new_comments": [
+                value
+                for value in context_plan["events"]
+                if value["kind"] == "issue_comment"
+            ],
+            "new_comments_omitted": max(
+                0,
+                len(new_comments)
+                - sum(
+                    value["kind"] == "issue_comment" for value in context_plan["events"]
+                ),
             ),
-            "changed_checks": compact_checks(changed_checks),
-            "changed_checks_omitted": max(0, len(changed_checks) - check_limit),
+            "new_reviews": [
+                value for value in context_plan["events"] if value["kind"] == "review"
+            ],
+            "new_reviews_omitted": max(
+                0,
+                len(new_reviews)
+                - sum(value["kind"] == "review" for value in context_plan["events"]),
+            ),
+            "new_review_comments": [
+                value
+                for value in context_plan["events"]
+                if value["kind"] == "review_comment"
+            ],
+            "new_review_comments_omitted": max(
+                0,
+                len(new_review_comments)
+                - sum(
+                    value["kind"] == "review_comment"
+                    for value in context_plan["events"]
+                ),
+            ),
+            "changed_checks": [
+                {
+                    "id": str(value.get("id") or ""),
+                    "name": str(value.get("name") or "")[:300],
+                    "status": str(value.get("status") or ""),
+                    "conclusion": str(value.get("conclusion") or ""),
+                    "url": str(value.get("url") or "")[:500],
+                }
+                for value in changed_checks[:12]
+            ],
+            "changed_checks_omitted": max(0, len(changed_checks) - 12),
+            "context_plan": context_plan,
             "next_action": next_action,
         }
         if not commit:
             result["_previous_event_watermark"] = int(event_batch["previous_sequence"])
             result["_checkpoint_payload"] = checkpoint_payload
             result["_github_snapshot"] = snapshot
+            result["_pending_events"] = pending_events
         return result
 
     def _commit_repair_event_preview(
@@ -1603,20 +1661,18 @@ class Pipeline:
                 "next_action": follow["next_action"],
                 "public_write": False,
             }
-        omitted = sum(
-            int(follow.get(name, 0))
-            for name in (
-                "new_comments_omitted",
-                "new_reviews_omitted",
-                "new_review_comments_omitted",
-                "changed_checks_omitted",
-            )
-        )
-        if omitted:
-            raise PolicyError(
-                "incremental activity exceeds the bounded repair input; "
-                "inspect the stored events before preparing a repair"
-            )
+        context_plan = follow.get("context_plan", {})
+        if not isinstance(context_plan, dict) or not context_plan.get("actionable"):
+            self._commit_repair_event_preview(source_run, follow)
+            return {
+                "source_run_id": source_run_id,
+                "repair_prepared": False,
+                "harness_invoked": False,
+                "reason": "no_new_actionable_activity",
+                "next_action": follow["next_action"],
+                "context_stats": context_plan.get("stats", {}),
+                "public_write": False,
+            }
         changed_files = tuple(str(value) for value in details.get("changed_files", ()))
         repair_items, suggestions = _repair_feedback(follow, changed_files)
         if not repair_items:
@@ -1634,6 +1690,28 @@ class Pipeline:
                 else follow["next_action"],
                 "public_write": False,
             }
+
+        repair_paths = {
+            str(value.get("path") or "")
+            for value in repair_items
+            if value.get("kind") == "review_comment"
+        }
+        repair_context = {
+            **{
+                key: value for key, value in context_plan.items() if key != "checkpoint"
+            },
+            "events": [
+                value for value in repair_items if value.get("kind") != "failed_check"
+            ],
+            "diff_snippets": [
+                value
+                for value in context_plan.get("diff_snippets", ())
+                if isinstance(value, dict) and value.get("path") in repair_paths
+            ],
+            "scope_filter": {
+                "suggestions_recorded": len(suggestions),
+            },
+        }
 
         worktree = Path(str(details.get("worktree", ""))).expanduser().resolve()
         if not (worktree / ".git").exists():
@@ -1694,6 +1772,11 @@ class Pipeline:
             "commit_sha": parent_commit,
             "pr_url": str(details["pr_url"]),
             "repair_suggestions": list(suggestions),
+            "context_budget": {
+                "budget_tokens": context_plan.get("budget_tokens"),
+                "estimated_tokens": context_plan.get("estimated_tokens"),
+                "stats": context_plan.get("stats", {}),
+            },
         }
         try:
             context = build_repair_context_pack(
@@ -1705,12 +1788,12 @@ class Pipeline:
                 base_commit=base_commit,
                 harness=self.harness.name,
                 model=self.config.agent.model,
-                previous_checkpoint=previous_checkpoint,
+                previous_checkpoint=context_plan.get("checkpoint"),
                 pull_request_url=str(details["pr_url"]),
                 head_commit=parent_commit,
                 event_watermark=int(follow["event_watermark"]),
                 event_batch_digest=str(follow["event_batch_digest"]),
-                repair_items=repair_items,
+                repair_context=repair_context,
             )
             self.store.save_context_run(
                 pack_id=context.id,

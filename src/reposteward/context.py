@@ -22,8 +22,8 @@ MAX_HANDOFF_ITEM_CHARS = 500
 MAX_HANDOFF_NOTES_CHARS = 4_000
 MAX_HANDOFF_DECISIONS = 6
 MAX_HANDOFF_EVIDENCE_ITEMS = 8
-MAX_REPAIR_ITEMS = 16
-MAX_REPAIR_ITEM_CHARS = 1_200
+MAX_REPAIR_ITEMS = 96
+MAX_REPAIR_ITEM_CHARS = 1_900
 
 
 def _utc_now() -> str:
@@ -178,7 +178,7 @@ def _repository_skill_sources(worktree: Path) -> tuple[ContextSource, ...]:
     return tuple(sources)
 
 
-def _compact_handoff(checkpoint: dict[str, Any] | None) -> dict[str, Any] | None:
+def compact_checkpoint(checkpoint: dict[str, Any] | None) -> dict[str, Any] | None:
     if not checkpoint:
         return None
 
@@ -225,15 +225,15 @@ def _compact_handoff(checkpoint: dict[str, Any] | None) -> dict[str, Any] | None
             )
 
     notes = str(checkpoint.get("implementation_notes", ""))
+    prior_omitted = int(checkpoint.get("implementation_notes_omitted_chars", 0) or 0)
     return {
         "id": bounded_text(checkpoint.get("id", ""), 128),
         "status": bounded_text(checkpoint.get("status", ""), 64),
         "head_commit": bounded_text(checkpoint.get("head_commit", ""), 128),
         "completed": bounded_items("completed"),
         "implementation_notes": notes[:MAX_HANDOFF_NOTES_CHARS],
-        "implementation_notes_omitted_chars": max(
-            0, len(notes) - MAX_HANDOFF_NOTES_CHARS
-        ),
+        "implementation_notes_omitted_chars": prior_omitted
+        + max(0, len(notes) - MAX_HANDOFF_NOTES_CHARS),
         "tests_observed": bounded_items("tests_observed"),
         "risks": bounded_items("risks"),
         "remaining": bounded_items("remaining"),
@@ -269,7 +269,7 @@ def build_context_pack(
             "updated_at": issue.updated_at,
         }
     )
-    handoff = _compact_handoff(previous_checkpoint)
+    handoff = compact_checkpoint(previous_checkpoint)
     source_values = [
         ContextSource(
             kind="github_issue",
@@ -359,12 +359,20 @@ def build_repair_context_pack(
     head_commit: str,
     event_watermark: int,
     event_batch_digest: str,
-    repair_items: tuple[dict[str, Any], ...],
+    repair_context: dict[str, Any],
 ) -> ContextPack:
     """Build a bounded repair pack from one committed PR event batch."""
+    serialized_context = _canonical_json(repair_context)
+    chunk_chars = MAX_REPAIR_ITEM_CHARS - 32
+    chunks = tuple(
+        serialized_context[offset : offset + chunk_chars]
+        for offset in range(0, len(serialized_context), chunk_chars)
+    )
+    if not chunks or len(chunks) > MAX_REPAIR_ITEMS - 1:
+        raise ValueError("repair context exceeds context-pack record capacity")
     bounded_items = tuple(
-        _canonical_json(value)[:MAX_REPAIR_ITEM_CHARS]
-        for value in repair_items[:MAX_REPAIR_ITEMS]
+        f"context_plan_part={index:04d}/{len(chunks):04d}:{chunk}"
+        for index, chunk in enumerate(chunks, start=1)
     )
     base = build_context_pack(
         candidate,

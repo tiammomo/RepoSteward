@@ -15,12 +15,14 @@ from reposteward.config import AgentConfig, ConfigError, RepositoryPolicy, load_
 from reposteward.context import (
     MAX_HANDOFF_ITEM_CHARS,
     MAX_REPAIR_ITEM_CHARS,
+    MAX_REPAIR_ITEMS,
     MAX_TASK_DESCRIPTION_CHARS,
     build_context_pack,
     build_repair_context_pack,
     portable_bundle,
     review_checkpoint,
 )
+from reposteward.context_budget import build_follow_up_context, estimate_tokens
 from reposteward.harness import create_harness
 from reposteward.models import (
     AgentExecution,
@@ -69,7 +71,87 @@ def _candidate(body: str = "Reproduce the bug") -> Candidate:
 
 
 class ContextPackTests(unittest.TestCase):
+    def test_repair_transport_stays_within_the_follow_up_budget(self) -> None:
+        activity = {
+            "pull_request": {
+                "number": 12,
+                "url": "https://example.test/pull/12",
+                "state": "open",
+                "draft": True,
+                "head_sha": "b" * 40,
+                "base_branch": "main",
+                "base_sha": "a" * 40,
+                "merged": False,
+            },
+            "reviews": [],
+            "checks": [],
+        }
+        events = [
+            {
+                "sequence": index,
+                "event_type": "review_comment",
+                "external_id": str(index),
+                "version_digest": f"{index:064x}",
+                "payload": {
+                    "id": index,
+                    "author": "reviewer",
+                    "path": "src/example.py",
+                    "body": f"feedback-{index}-" + "x" * 1_000,
+                },
+            }
+            for index in range(1, 20)
+        ]
+        plan = build_follow_up_context(
+            activity=activity,
+            events=events,
+            budget_tokens=8_000,
+            checkpoint={"id": "checkpoint", "status": "submitted"},
+        )
+        repair_context = {
+            key: value for key, value in plan.items() if key != "checkpoint"
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            pack = build_repair_context_pack(
+                _candidate(),
+                RepositoryPolicy(name="owner/repo"),
+                work_item_id="work-1",
+                run_id="run-2",
+                worktree=Path(directory),
+                base_commit="a" * 40,
+                harness="codex-cli",
+                model="gpt-example",
+                previous_checkpoint=plan["checkpoint"],
+                pull_request_url="https://example.test/pull/12",
+                head_commit="b" * 40,
+                event_watermark=19,
+                event_batch_digest="c" * 64,
+                repair_context=repair_context,
+            )
+
+        transported = {
+            "handoff": pack.handoff,
+            "current_follow_up": pack.task.acceptance_criteria,
+        }
+        self.assertLessEqual(estimate_tokens(transported), plan["budget_tokens"])
+
     def test_repair_context_keeps_bounded_incremental_feedback(self) -> None:
+        repair_context = {
+            "schema_version": 1,
+            "budget_tokens": 12_000,
+            "estimated_tokens": 4_000,
+            "mandatory": {"safety_blockers": [], "failed_checks": []},
+            "events": [
+                {
+                    "kind": "review_comment",
+                    "id": str(index),
+                    "body": "x" * 600,
+                }
+                for index in range(30)
+            ],
+            "diff_snippets": [],
+            "actionable": True,
+            "stats": {},
+        }
         with tempfile.TemporaryDirectory() as directory:
             pack = build_repair_context_pack(
                 _candidate(),
@@ -85,15 +167,18 @@ class ContextPackTests(unittest.TestCase):
                 head_commit="b" * 40,
                 event_watermark=9,
                 event_batch_digest="c" * 64,
-                repair_items=tuple(
-                    {"kind": "review_comment", "body": "x" * 10_000} for _ in range(100)
-                ),
+                repair_context=repair_context,
             )
 
-        self.assertEqual(len(pack.task.acceptance_criteria), 17)
+        self.assertGreater(len(pack.task.acceptance_criteria), 2)
+        self.assertLessEqual(len(pack.task.acceptance_criteria), MAX_REPAIR_ITEMS)
         self.assertLessEqual(
             len(pack.task.acceptance_criteria[-1]), MAX_REPAIR_ITEM_CHARS
         )
+        encoded = "".join(
+            value.split(":", 1)[1] for value in pack.task.acceptance_criteria[1:]
+        )
+        self.assertEqual(json.loads(encoded), repair_context)
         self.assertEqual(pack.sources[-1].kind, "github_pr_event_batch")
         self.assertEqual(pack.sources[-1].digest, "c" * 64)
         self.assertIn("current_follow_up", build_harness_prompt(pack))

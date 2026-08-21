@@ -111,6 +111,8 @@ image = "trusted-runner:latest"
 [storage]
 cache_retention_days = 45
 max_gc_items = 500
+[context]
+follow_up_max_tokens = 9000
 [agent]
 harness = "codex-cli"
 executable = "codex"
@@ -138,6 +140,8 @@ require_distinct_reviewer = false
 [storage]
 cache_retention_days = 1
 max_gc_items = 10000
+[context]
+follow_up_max_tokens = 100000
 [safety]
 max_diff_lines = 500
 require_verification = false
@@ -168,6 +172,7 @@ event_payload_retention_days = 45
         self.assertEqual(config.agent.executable, "codex")
         self.assertEqual(config.storage.cache_retention_days, 45)
         self.assertEqual(config.storage.max_gc_items, 500)
+        self.assertEqual(config.context.follow_up_max_tokens, 9_000)
         self.assertEqual(config.issue_review.project_owner, "")
         self.assertEqual(config.issue_review.project_number, 0)
         self.assertTrue(config.issue_review.require_distinct_reviewer)
@@ -211,6 +216,22 @@ event_payload_retention_days = 0
             )
 
             with self.assertRaisesRegex(ConfigError, "must be positive"):
+                load_config(path)
+
+    def test_follow_up_token_budget_is_bounded(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[context]
+follow_up_max_tokens = 511
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "between 512 and 100000"):
                 load_config(path)
 
     def test_configuration_is_not_pinned_to_one_github_login(self) -> None:
