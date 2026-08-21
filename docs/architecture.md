@@ -73,6 +73,21 @@ GitHub 当前事实临时构建仓库级快照：先完整分页枚举开放 PR�
 可以用 expected digest 检测后续读取是否已经陈旧。v1 不把快照写入数据库、不调用 Harness，也不
 修改 workspace 或 GitHub；它是后续依赖排序、WIP 策略和单步协调器的只读事实层。
 
+Dependency Planner 在该快照上叠加两类权威边：PR 正文中严格、独立的 `Depends on #N` 声明，以及
+维护者通过显式本地门禁确认的 head-bound attestation。外部正文仍是不可信输入，解析器只接受仓库和
+数字引用，不执行其中的其他语义；changed-file 重叠只形成建议，绝不自动升级为门禁。规划器以稳定
+SCC、拓扑和反向邻接遍历以 O(V+E) 检测循环、传播阻塞，并识别缺失、跨仓库、关闭未合并和开放
+依赖，最后生成规范化摘要。已合并依赖不再阻塞顺序，但会提示依赖方的 base 或验证证据可能需要刷新。
+
+正文声明绑定当前 head、PR 作者和来源摘要，其编辑历史由 GitHub 保管；只读规划不会复制外部正文
+或为它新增本地事件。维护者显式确认与撤销才进入本地追加审计，两种来源在计划中分别标识。
+
+维护者确认与撤销都是本地追加事件，绑定仓库、依赖双方、当前 head、身份、来源和前一事件。相同
+动作可并发幂等重试，撤销不删除历史；head 变化使旧确认失效。Portfolio plan 不调用 Harness 或写
+GitHub，Merge Decision 只在当前 PR 存在直接依赖时读取目标 PR，并把依赖摘要和 blocker 纳入已有
+的两次 freshness 检查。RepoSteward 不能阻止维护者绕过它直接在 GitHub 点击 Ready，但所有由
+RepoSteward 产生的 Ready 判断和 merge 决策都会失败关闭。
+
 ## 持久数据模型
 
 SQLite 使用显式 `PRAGMA user_version` 迁移。现有用户的未版本化数据库会原地升级；高于当前
@@ -103,11 +118,14 @@ Checkpoint 与水位再在同一事务中提交，因此中断后可以安全重
 写 tombstone，再移除 Blob。无配置、保留期内或任一 run 尚未形成 Checkpoint 的正文都必须保留。
 验证日志是唯一默认可回收类别，期限和单次最大对象数由用户级 `[storage]` 配置拥有，项目层不能
 静默缩短。GC 默认 dry-run；apply 同时要求 `--apply` 和 `REPOSTEWARD_ENABLE_GC=1`，并在删除前后
-追加审计。普通 GC 永不删除事件索引、Context Checkpoint、Merge Decision、Merge Execution 或自身审计。
+追加审计。普通 GC 永不删除事件索引、Context Checkpoint、Portfolio Dependency、Merge Decision、
+Merge Execution 或自身审计。
 - `merge_decisions`：追加保存每次合并评估的 head/base、policy、GitHub 快照与决策摘要；重复评估
   不覆盖旧结果，便于解释状态变化。
 - `merge_executions`：按 attempt 追加保存执行身份、指定决策、精确 head、方法、写入前意图与最终
   GitHub 结果；`applying` 没有对应 `completed` 时表示进程可能在外部写入期间中断，重试必须先回读。
+- `portfolio_dependency_events`：按依赖对追加保存维护者 confirm/revoke、当前 head、身份、来源和
+  前一事件；事件 digest 唯一，读取时会同时校验物化列与规范化载荷。
 
 Context Pack 与 Harness 绑定在一个事务中写入；Checkpoint 采用追加方式写入。数据库列中的版本、
 摘要、基线和关联 ID 必须与 JSON 内容一致，否则拒绝保存。

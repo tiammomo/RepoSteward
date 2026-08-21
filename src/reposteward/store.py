@@ -13,7 +13,7 @@ from typing import Any
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -353,6 +353,34 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         """
         CREATE UNIQUE INDEX IF NOT EXISTS merge_executions_stage_once
         ON merge_executions(attempt_id, stage)
+        """,
+    ),
+    11: (
+        """
+        CREATE TABLE IF NOT EXISTS portfolio_dependency_events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            repository TEXT NOT NULL,
+            pull_number INTEGER NOT NULL,
+            dependency_number INTEGER NOT NULL,
+            head_sha TEXT NOT NULL,
+            action TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            source TEXT NOT NULL,
+            event_digest TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS portfolio_dependency_events_for_pull
+        ON portfolio_dependency_events(
+            repository, pull_number, dependency_number, sequence DESC
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS portfolio_dependency_events_digest
+        ON portfolio_dependency_events(event_digest)
         """,
     ),
 }
@@ -1450,6 +1478,17 @@ class Store:
                 """,
             ),
             (
+                "portfolio_dependency_audit",
+                """
+                SELECT repository, COUNT(*) AS records,
+                       COALESCE(SUM(length(CAST(payload AS BLOB))), 0) AS bytes,
+                       MIN(created_at) AS oldest_at, MAX(created_at) AS newest_at
+                FROM portfolio_dependency_events
+                WHERE (?='' OR repository=?) AND (?='' OR created_at>=?)
+                GROUP BY repository
+                """,
+            ),
+            (
                 "storage_gc_audit",
                 """
                 SELECT CASE WHEN repository='' THEN '*' ELSE repository END AS repository,
@@ -2161,6 +2200,192 @@ class Store:
             "decision_digest": decision_digest,
             "created_at": now,
         }
+
+    def append_portfolio_dependency_event(
+        self,
+        *,
+        repository: str,
+        pull_number: int,
+        dependency_number: int,
+        head_sha: str,
+        action: str,
+        actor: str,
+    ) -> dict[str, Any]:
+        """Append one head-bound maintainer dependency attestation."""
+        normalized_repository = repository.casefold()
+        normalized_action = action.casefold()
+        normalized_actor = actor.strip()
+        if pull_number < 1 or dependency_number < 1:
+            raise ValueError("dependency pull numbers must be positive")
+        if pull_number == dependency_number:
+            raise ValueError("a pull request cannot depend on itself")
+        if normalized_action not in {"confirm", "revoke"}:
+            raise ValueError("dependency action must be confirm or revoke")
+        if not normalized_actor:
+            raise ValueError("dependency actor must not be empty")
+        if len(head_sha) != 40 or any(
+            value not in "0123456789abcdef" for value in head_sha
+        ):
+            raise ValueError("dependency head_sha must be 40 lowercase hex chars")
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previous = connection.execute(
+                """
+                SELECT id, head_sha, action, actor, source,
+                       event_digest, payload, created_at
+                FROM portfolio_dependency_events
+                WHERE repository=? AND pull_number=? AND dependency_number=?
+                ORDER BY sequence DESC LIMIT 1
+                """,
+                (normalized_repository, pull_number, dependency_number),
+            ).fetchone()
+            if previous is not None and (
+                str(previous["head_sha"]) == head_sha
+                and str(previous["action"]) == normalized_action
+                and str(previous["actor"]) == normalized_actor
+                and str(previous["source"]) == "maintainer_attestation"
+            ):
+                previous_payload = json.loads(str(previous["payload"]))
+                expected_previous = {
+                    "schema_version": 1,
+                    "repository": normalized_repository,
+                    "pull_number": pull_number,
+                    "dependency_number": dependency_number,
+                    "head_sha": head_sha,
+                    "action": normalized_action,
+                    "actor": normalized_actor,
+                    "source": "maintainer_attestation",
+                    "previous_event_id": (
+                        str(previous_payload.get("previous_event_id") or "")
+                        if isinstance(previous_payload, dict)
+                        else ""
+                    ),
+                }
+                if previous_payload != expected_previous or _json_digest(
+                    expected_previous
+                ) != str(previous["event_digest"]):
+                    raise StoreError("portfolio dependency audit was modified")
+                return {
+                    "id": str(previous["id"]),
+                    **previous_payload,
+                    "event_digest": str(previous["event_digest"]),
+                    "created_at": str(previous["created_at"]),
+                    "idempotent": True,
+                }
+            material = {
+                "schema_version": 1,
+                "repository": normalized_repository,
+                "pull_number": pull_number,
+                "dependency_number": dependency_number,
+                "head_sha": head_sha,
+                "action": normalized_action,
+                "actor": normalized_actor,
+                "source": "maintainer_attestation",
+                "previous_event_id": str(previous["id"]) if previous else "",
+            }
+            event_digest = _json_digest(material)
+            payload = _canonical_json(material)
+            event_id = uuid.uuid4().hex
+            now = utc_now()
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO portfolio_dependency_events(
+                    id, repository, pull_number, dependency_number, head_sha,
+                    action, actor, source, event_digest, payload, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    normalized_repository,
+                    pull_number,
+                    dependency_number,
+                    head_sha,
+                    normalized_action,
+                    normalized_actor,
+                    "maintainer_attestation",
+                    event_digest,
+                    payload,
+                    now,
+                ),
+            )
+            stored = connection.execute(
+                """
+                SELECT id, created_at FROM portfolio_dependency_events
+                WHERE event_digest=?
+                """,
+                (event_digest,),
+            ).fetchone()
+            assert stored is not None
+            return {
+                "id": str(stored["id"]),
+                **material,
+                "event_digest": event_digest,
+                "created_at": str(stored["created_at"]),
+                "idempotent": str(stored["id"]) != event_id,
+            }
+
+    def latest_portfolio_dependency_events(
+        self, repository: str, *, pull_number: int = 0
+    ) -> list[dict[str, Any]]:
+        """Return the latest append-only action for every dependency pair."""
+        normalized_repository = repository.casefold()
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                WITH ranked AS (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY repository, pull_number, dependency_number
+                        ORDER BY sequence DESC
+                    ) AS dependency_rank
+                    FROM portfolio_dependency_events
+                    WHERE repository=? AND (?=0 OR pull_number=?)
+                )
+                SELECT * FROM ranked
+                WHERE dependency_rank=1
+                ORDER BY pull_number, dependency_number
+                """,
+                (normalized_repository, pull_number, pull_number),
+            ).fetchall()
+        return [self._portfolio_dependency_event(row) for row in rows]
+
+    @staticmethod
+    def _portfolio_dependency_event(row: sqlite3.Row) -> dict[str, Any]:
+        value = dict(row)
+        value.pop("dependency_rank", None)
+        payload = json.loads(str(value["payload"]))
+        if not isinstance(payload, dict):
+            raise StoreError("portfolio dependency audit was modified")
+        material = {
+            "schema_version": 1,
+            "repository": str(value["repository"]),
+            "pull_number": int(value["pull_number"]),
+            "dependency_number": int(value["dependency_number"]),
+            "head_sha": str(value["head_sha"]),
+            "action": str(value["action"]),
+            "actor": str(value["actor"]),
+            "source": str(value["source"]),
+            "previous_event_id": str(payload.get("previous_event_id") or ""),
+        }
+        if payload != material or _json_digest(material) != str(value["event_digest"]):
+            raise StoreError("portfolio dependency audit was modified")
+        value["payload"] = payload
+        return value
+
+    def portfolio_dependency_events(
+        self, repository: str, *, pull_number: int = 0, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Read recent dependency audit events without collapsing their history."""
+        limit = min(max(limit, 1), 500)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM portfolio_dependency_events
+                WHERE repository=? AND (?=0 OR pull_number=?)
+                ORDER BY sequence DESC LIMIT ?
+                """,
+                (repository.casefold(), pull_number, pull_number, limit),
+            ).fetchall()
+        return [self._portfolio_dependency_event(row) for row in rows]
 
     def merge_decisions(
         self, repository: str, pull_number: int, *, limit: int = 30

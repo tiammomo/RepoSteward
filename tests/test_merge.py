@@ -101,6 +101,23 @@ class MergeDecisionTests(unittest.TestCase):
             ],
         )
 
+    def test_dependency_blockers_and_incomplete_dependency_facts_block_merge(
+        self,
+    ) -> None:
+        result = self.evaluate(
+            replace(
+                self.snapshot,
+                dependency_digest="e" * 64,
+                dependency_blockers=("dependency_open:#11",),
+                dependencies_complete=False,
+            )
+        )
+
+        self.assertEqual(
+            [reason.code for reason in result.reasons],
+            ["dependencies_incomplete", "dependency_blocked"],
+        )
+
     def test_builtin_high_risk_paths_cannot_be_disabled(self) -> None:
         result = self.evaluate(
             replace(self.snapshot, files=(".github/workflows/quality.yml",))

@@ -26,8 +26,13 @@ from .context import (
     write_portable_bundle,
 )
 from .context_budget import FAILED_CHECK_CONCLUSIONS, build_follow_up_context
+from .dependencies import (
+    build_dependency_plan,
+    direct_dependency_requirements,
+    parse_dependency_declarations,
+)
 from .discovery import score_issue
-from .github import GitHubClient, GitHubError, resolve_token
+from .github import GitHubClient, GitHubError, PullRequest, resolve_token
 from .harness import Harness, HarnessRequest, create_harness
 from .issues import (
     attach_proposal_marker,
@@ -119,6 +124,17 @@ class Pipeline:
         if expected_digest and not re.fullmatch(r"[a-f0-9]{64}", expected_digest):
             raise ValueError("expected portfolio digest must be 64 lowercase hex chars")
         pulls = self.github.open_pull_requests(policy.name)
+        return self._portfolio_snapshot_from_pulls(
+            policy, pulls, expected_digest=expected_digest
+        )
+
+    def _portfolio_snapshot_from_pulls(
+        self,
+        policy: RepositoryPolicy,
+        pulls: tuple[PullRequest, ...],
+        *,
+        expected_digest: str = "",
+    ) -> dict[str, Any]:
         snapshots: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         for pull in pulls:
@@ -181,6 +197,209 @@ class Pipeline:
             "snapshot": snapshot,
             "harness_invoked": False,
             "workspace_modified": False,
+            "public_write": False,
+        }
+
+    def _dependency_target_states(
+        self,
+        repository: str,
+        target_numbers: set[int],
+        *,
+        open_pulls: tuple[PullRequest, ...] = (),
+    ) -> dict[tuple[str, int], dict[str, Any]]:
+        normalized_repository = repository.casefold()
+        result = {
+            (normalized_repository, int(pull.number)): {
+                "state": "open",
+                "merged": False,
+                "head_sha": str(pull.head_sha),
+                "url": str(pull.url),
+            }
+            for pull in open_pulls
+            if int(pull.number) in target_numbers
+        }
+        for target_number in sorted(target_numbers):
+            key = (normalized_repository, target_number)
+            if key in result:
+                continue
+            try:
+                pull = self.github.pull_request(repository, target_number)
+            except GitHubError as exc:
+                state = "missing" if "failed (404)" in str(exc) else "unknown"
+                result[key] = {"state": state, "merged": False, "error": str(exc)[:500]}
+                continue
+            result[key] = {
+                "state": "merged" if pull.merged else pull.state.casefold(),
+                "merged": pull.merged,
+                "head_sha": pull.head_sha,
+                "url": pull.url,
+            }
+        return result
+
+    def portfolio_dependency_plan(
+        self, repository: str, *, expected_digest: str = ""
+    ) -> dict[str, Any]:
+        """Build a deterministic dependency plan without GitHub or workspace writes."""
+        policy = self.policy(repository)
+        if expected_digest and not re.fullmatch(r"[a-f0-9]{64}", expected_digest):
+            raise ValueError(
+                "expected dependency plan digest must be 64 lowercase hex chars"
+            )
+        pulls = self.github.open_pull_requests(policy.name)
+        portfolio = self._portfolio_snapshot_from_pulls(policy, pulls)
+        snapshot = {
+            **portfolio["snapshot"],
+            "snapshot_digest": portfolio["snapshot_digest"],
+        }
+        declarations = [
+            declaration
+            for pull in pulls
+            for declaration in parse_dependency_declarations(
+                policy.name,
+                pull.number,
+                pull.head_sha,
+                pull.body,
+                actor=pull.author,
+            )
+        ]
+        open_pull_numbers = {pull.number for pull in pulls}
+        attestations = [
+            value
+            for value in self.store.latest_portfolio_dependency_events(policy.name)
+            if int(value["pull_number"]) in open_pull_numbers
+        ]
+        targets = {
+            int(value["dependency_number"])
+            for value in declarations
+            if str(value["dependency_repository"]).casefold() == policy.name.casefold()
+        }
+        targets.update(
+            int(value["dependency_number"])
+            for value in attestations
+            if str(value.get("action") or "") == "confirm"
+        )
+        target_states = self._dependency_target_states(
+            policy.name, targets, open_pulls=pulls
+        )
+        plan = build_dependency_plan(
+            snapshot, declarations, attestations, target_states
+        )
+        digest = str(plan.pop("plan_digest"))
+        return {
+            "plan_digest": digest,
+            "expected_digest": expected_digest,
+            "matches_expected_digest": (
+                digest == expected_digest if expected_digest else None
+            ),
+            "plan": plan,
+            "harness_invoked": False,
+            "workspace_modified": False,
+            "local_write": False,
+            "public_write": False,
+        }
+
+    def attest_portfolio_dependency(
+        self,
+        repository: str,
+        *,
+        pull_number: int,
+        dependency_number: int,
+        action: str,
+        reviewed_by: str,
+    ) -> dict[str, Any]:
+        """Append an explicit, identity-checked local dependency attestation."""
+        policy = self.policy(repository)
+        if pull_number < 1 or dependency_number < 1:
+            raise ValueError("dependency pull numbers must be positive")
+        if pull_number == dependency_number:
+            raise ValueError("a pull request cannot depend on itself")
+        if action not in {"confirm", "revoke"}:
+            raise ValueError("dependency action must be confirm or revoke")
+        if os.environ.get("REPOSTEWARD_ENABLE_DEPENDENCY_ATTESTATION") != "1":
+            raise PolicyError(
+                "dependency attestation is disabled; set "
+                "REPOSTEWARD_ENABLE_DEPENDENCY_ATTESTATION=1 for this command"
+            )
+        actor = reviewed_by.strip()
+        if actor.casefold() != self.config.github.login.casefold():
+            raise PolicyError("--reviewed-by must match the configured GitHub login")
+        if (
+            policy.mode != "maintainer"
+            or policy.submission_strategy != "same-repository"
+        ):
+            raise PolicyError("dependency attestation requires maintainer mode")
+        if self.github.authenticated_login().casefold() != actor.casefold():
+            raise PolicyError(
+                "authenticated GitHub login differs from reviewed identity"
+            )
+        if not self.github.repository(policy.name).can_push:
+            raise PolicyError(
+                "authenticated GitHub login cannot maintain this repository"
+            )
+        pull = self.github.pull_request(policy.name, pull_number)
+        if pull.state.casefold() != "open":
+            raise PolicyError("dependency source pull request is not open")
+        if action == "confirm":
+            self.github.pull_request(policy.name, dependency_number)
+        elif action == "revoke":
+            existing = self.store.latest_portfolio_dependency_events(
+                policy.name, pull_number=pull_number
+            )
+            if not any(
+                int(value["dependency_number"]) == dependency_number
+                for value in existing
+            ):
+                raise PolicyError(
+                    "there is no dependency confirmation history to revoke"
+                )
+        audit = self.store.append_portfolio_dependency_event(
+            repository=policy.name,
+            pull_number=pull_number,
+            dependency_number=dependency_number,
+            head_sha=pull.head_sha,
+            action=action,
+            actor=actor,
+        )
+        return {
+            "repository": policy.name.casefold(),
+            "pull_number": pull_number,
+            "dependency_number": dependency_number,
+            "action": action,
+            "audit": audit,
+            "local_write": True,
+            "public_write": False,
+        }
+
+    def portfolio_dependency_events(
+        self, repository: str, *, pull_number: int = 0, limit: int = 100
+    ) -> dict[str, Any]:
+        policy = self.policy(repository)
+        if pull_number < 0:
+            raise ValueError("pull_number must not be negative")
+        events = self.store.portfolio_dependency_events(
+            policy.name, pull_number=pull_number, limit=limit
+        )
+        return {
+            "repository": policy.name.casefold(),
+            "pull_number": pull_number,
+            "events": [
+                {
+                    key: value[key]
+                    for key in (
+                        "sequence",
+                        "id",
+                        "pull_number",
+                        "dependency_number",
+                        "head_sha",
+                        "action",
+                        "actor",
+                        "source",
+                        "event_digest",
+                        "created_at",
+                    )
+                }
+                for value in events
+            ],
             "public_write": False,
         }
 
@@ -1349,6 +1568,7 @@ class Pipeline:
                 "github_event_index",
                 "merge_decision_audit",
                 "merge_execution_audit",
+                "portfolio_dependency_audit",
                 "storage_gc_audit",
             ],
             "public_write": False,
@@ -2108,8 +2328,43 @@ class Pipeline:
         if not isinstance(project, dict):
             raise PolicyError("the verified context pack has no project policy")
         expected_policy_digest = str(project.get("policy_digest") or "")
-        activity = self.github.pull_request_activity(repository, pull_number)
+        activity = self.github.pull_request_activity(
+            repository, pull_number, include_body=True
+        )
         raw = self.github.pull_request_merge_snapshot(repository, pull_number)
+        pull_activity = activity.get("pull_request", {})
+        attestations = self.store.latest_portfolio_dependency_events(
+            repository, pull_number=pull_number
+        )
+        declarations = parse_dependency_declarations(
+            repository,
+            pull_number,
+            str(raw["head_sha"]),
+            str(pull_activity.get("body") or ""),
+            actor=str(pull_activity.get("author") or ""),
+        )
+        dependency_targets = {
+            int(value["dependency_number"])
+            for value in declarations
+            if str(value["dependency_repository"]).casefold() == repository.casefold()
+            and int(value["dependency_number"]) != pull_number
+        }
+        dependency_targets.update(
+            int(value["dependency_number"])
+            for value in attestations
+            if str(value.get("action") or "") == "confirm"
+            and int(value["dependency_number"]) != pull_number
+        )
+        dependency_status = direct_dependency_requirements(
+            repository=repository,
+            pull_number=pull_number,
+            head_sha=str(raw["head_sha"]),
+            body=str(pull_activity.get("body") or ""),
+            attestations=attestations,
+            target_states=self._dependency_target_states(
+                repository, dependency_targets
+            ),
+        )
         snapshot = MergeSnapshot(
             repository=repository,
             pull_number=pull_number,
@@ -2134,6 +2389,11 @@ class Pipeline:
             files_complete=bool(raw["files_complete"]),
             conversations_complete=bool(raw["conversations_complete"]),
             checks_complete=bool(raw["checks_complete"]),
+            dependency_digest=str(dependency_status["dependency_digest"]),
+            dependency_blockers=tuple(
+                str(value) for value in dependency_status["blockers"]
+            ),
+            dependencies_complete=bool(dependency_status["complete"]),
         )
         decision = evaluate_merge(
             snapshot,

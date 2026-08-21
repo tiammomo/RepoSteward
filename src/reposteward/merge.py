@@ -82,6 +82,9 @@ class MergeSnapshot:
     files_complete: bool = True
     conversations_complete: bool = True
     checks_complete: bool = True
+    dependency_digest: str = ""
+    dependency_blockers: tuple[str, ...] = ()
+    dependencies_complete: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +171,10 @@ def evaluate_merge(
         block("conversations_incomplete", "Review-conversation data is incomplete.")
     if not snapshot.checks_complete:
         block("checks_incomplete", "Check data is incomplete.")
+    if not snapshot.dependencies_complete:
+        block("dependencies_incomplete", "Dependency data is incomplete.")
+    for dependency_blocker in snapshot.dependency_blockers:
+        block("dependency_blocked", dependency_blocker)
     if not snapshot.activity_digest:
         block("activity_incomplete", "Pull-request activity digest is unavailable.")
     if snapshot.review_decision.casefold() != "approved":

@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .config import ConfigError, load_config
+from .dependencies import render_dependency_plan_text
 from .discovery import DiscoveryService
 from .doctor import run_doctor
 from .issues import read_details
@@ -206,6 +207,36 @@ def _parser() -> argparse.ArgumentParser:
         help="report whether current facts still match this snapshot digest",
     )
     portfolio_inspect.add_argument("--format", choices=("json", "text"), default="json")
+    portfolio_plan = portfolio_commands.add_parser(
+        "plan", help="plan authoritative pull request dependencies"
+    )
+    portfolio_plan.add_argument("repository")
+    portfolio_plan.add_argument(
+        "--expected-digest",
+        default="",
+        help="report whether current dependency facts still match this plan digest",
+    )
+    portfolio_plan.add_argument("--format", choices=("json", "text"), default="json")
+    portfolio_dependency = portfolio_commands.add_parser(
+        "dependency", help="manage local maintainer dependency attestations"
+    )
+    dependency_commands = portfolio_dependency.add_subparsers(
+        dest="dependency_command", required=True
+    )
+    for action in ("confirm", "revoke"):
+        dependency_action = dependency_commands.add_parser(
+            action, help=f"{action} one head-bound dependency"
+        )
+        dependency_action.add_argument("repository")
+        dependency_action.add_argument("pull_number", type=int)
+        dependency_action.add_argument("dependency_number", type=int)
+        dependency_action.add_argument("--reviewed-by", required=True)
+    dependency_list = dependency_commands.add_parser(
+        "list", help="read recent local dependency audit events"
+    )
+    dependency_list.add_argument("repository")
+    dependency_list.add_argument("--pull-number", type=int, default=0)
+    dependency_list.add_argument("--limit", type=int, default=100)
 
     follow_up = subparsers.add_parser(
         "follow-up",
@@ -464,6 +495,35 @@ def main(argv: list[str] | None = None) -> int:
                     print(render_portfolio_text(result))
                 else:
                     _json(result)
+                return 0
+            if args.portfolio_command == "plan":
+                result = pipeline.portfolio_dependency_plan(
+                    args.repository, expected_digest=args.expected_digest
+                )
+                if args.format == "text":
+                    print(render_dependency_plan_text(result))
+                else:
+                    _json(result)
+                return 0
+            if args.portfolio_command == "dependency":
+                if args.dependency_command == "list":
+                    _json(
+                        pipeline.portfolio_dependency_events(
+                            args.repository,
+                            pull_number=args.pull_number,
+                            limit=args.limit,
+                        )
+                    )
+                    return 0
+                _json(
+                    pipeline.attest_portfolio_dependency(
+                        args.repository,
+                        pull_number=args.pull_number,
+                        dependency_number=args.dependency_number,
+                        action=args.dependency_command,
+                        reviewed_by=args.reviewed_by,
+                    )
+                )
                 return 0
             raise AssertionError(
                 f"unhandled portfolio command: {args.portfolio_command}"
