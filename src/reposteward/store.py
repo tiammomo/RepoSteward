@@ -13,7 +13,7 @@ from typing import Any
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -286,6 +286,21 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         """
         CREATE INDEX IF NOT EXISTS github_pr_events_for_payload
         ON github_pr_events(payload_digest)
+        """,
+    ),
+    8: (
+        """
+        CREATE TABLE IF NOT EXISTS content_blob_tombstones (
+            digest TEXT PRIMARY KEY,
+            category TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            deleted_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS github_pr_watermarks_for_pull
+        ON github_pr_watermarks(repository, pull_number, sequence)
         """,
     ),
 }
@@ -1006,28 +1021,34 @@ class Store:
                 raise StoreError("GitHub watermark belongs to a different pull request")
             for event in event_values:
                 payload_bytes = event["payload"].encode()
-                connection.execute(
-                    """
-                    INSERT INTO content_blobs(digest, payload, size_bytes, created_at)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(digest) DO NOTHING
-                    """,
-                    (
-                        event["version_digest"],
-                        payload_bytes,
-                        len(payload_bytes),
-                        now,
-                    ),
-                )
-                stored_blob = connection.execute(
-                    "SELECT payload FROM content_blobs WHERE digest=?",
+                tombstone = connection.execute(
+                    "SELECT digest FROM content_blob_tombstones WHERE digest=?",
                     (event["version_digest"],),
                 ).fetchone()
-                if (
-                    stored_blob is None
-                    or bytes(stored_blob["payload"]) != payload_bytes
-                ):
-                    raise StoreError("content blob digest collision or corruption")
+                if tombstone is None:
+                    connection.execute(
+                        """
+                        INSERT INTO content_blobs(
+                            digest, payload, size_bytes, created_at
+                        ) VALUES (?, ?, ?, ?)
+                        ON CONFLICT(digest) DO NOTHING
+                        """,
+                        (
+                            event["version_digest"],
+                            payload_bytes,
+                            len(payload_bytes),
+                            now,
+                        ),
+                    )
+                    stored_blob = connection.execute(
+                        "SELECT payload FROM content_blobs WHERE digest=?",
+                        (event["version_digest"],),
+                    ).fetchone()
+                    if (
+                        stored_blob is None
+                        or bytes(stored_blob["payload"]) != payload_bytes
+                    ):
+                        raise StoreError("content blob digest collision or corruption")
                 connection.execute(
                     """
                     INSERT INTO github_pr_events(
@@ -1073,12 +1094,12 @@ class Store:
         for row in rows:
             event = dict(row)
             blob_payload = event.pop("blob_payload")
-            if blob_payload is None:
-                raise StoreError(
-                    f"GitHub event payload is unavailable: {event['payload_digest']}"
-                )
-            event["payload"] = json.loads(bytes(blob_payload))
-            event["payload_available"] = True
+            event["payload_available"] = blob_payload is not None
+            event["payload"] = (
+                json.loads(bytes(blob_payload))
+                if blob_payload is not None
+                else self._expired_event_payload(event)
+            )
             events.append(event)
         through_sequence = int(events[-1]["sequence"]) if events else previous_sequence
         batch_digest = _json_digest(
@@ -1194,10 +1215,24 @@ class Store:
             blob_payload = event.pop("blob_payload")
             event["payload_available"] = blob_payload is not None
             event["payload"] = (
-                json.loads(bytes(blob_payload)) if blob_payload is not None else None
+                json.loads(bytes(blob_payload))
+                if blob_payload is not None
+                else self._expired_event_payload(event)
             )
             result.append(event)
         return result
+
+    @staticmethod
+    def _expired_event_payload(event: dict[str, Any]) -> dict[str, Any]:
+        external_id = str(event.get("external_id", ""))
+        return {
+            "id": int(external_id) if external_id.isdecimal() else external_id,
+            "author": str(event.get("source_actor", "")),
+            "state": str(event.get("source_state", "")),
+            "created_at": str(event.get("source_created_at", "")),
+            "updated_at": str(event.get("source_updated_at", "")),
+            "payload_unavailable": True,
+        }
 
     def content_blob(self, digest: str) -> bytes | None:
         with self._connection() as connection:
@@ -1318,6 +1353,124 @@ class Store:
         with self._connection() as connection:
             rows = connection.execute("SELECT id, repository FROM runs").fetchall()
         return {str(row["id"]): str(row["repository"]) for row in rows}
+
+    @staticmethod
+    def _event_payload_gc_inventory(
+        connection: sqlite3.Connection, retention_cutoffs: dict[str, str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        rows = connection.execute(
+            """
+            SELECT b.digest, b.size_bytes, b.created_at,
+                   e.repository, e.pull_number, e.sequence, e.ingested_at,
+                   COALESCE(w.watermark_count, 0) AS watermark_count,
+                   COALESCE(w.minimum_watermark, 0) AS minimum_watermark
+            FROM content_blobs b
+            LEFT JOIN github_pr_events e ON e.payload_digest=b.digest
+            LEFT JOIN (
+                SELECT repository, pull_number,
+                       COUNT(*) AS watermark_count,
+                       MIN(sequence) AS minimum_watermark
+                FROM github_pr_watermarks
+                GROUP BY repository, pull_number
+            ) w ON w.repository=e.repository AND w.pull_number=e.pull_number
+            ORDER BY b.created_at, b.digest, e.sequence
+            """
+        ).fetchall()
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            digest = str(row["digest"])
+            value = grouped.setdefault(
+                digest,
+                {
+                    "kind": "github_event_payload",
+                    "digest": digest,
+                    "bytes": int(row["size_bytes"]),
+                    "created_at": str(row["created_at"]),
+                    "repositories": set(),
+                    "reference_count": 0,
+                    "reasons": set(),
+                },
+            )
+            if row["repository"] is None:
+                value["reasons"].add("unreferenced_content_blob")
+                continue
+            repository = str(row["repository"])
+            value["repositories"].add(repository)
+            value["reference_count"] += 1
+            cutoff = retention_cutoffs.get(repository)
+            if not cutoff:
+                value["reasons"].add("no_explicit_event_retention")
+            elif str(row["ingested_at"]) >= cutoff:
+                value["reasons"].add("within_event_retention")
+            if int(row["watermark_count"] or 0) < 1 or int(
+                row["minimum_watermark"] or 0
+            ) < int(row["sequence"]):
+                value["reasons"].add("not_checkpointed_by_every_run")
+        candidates = []
+        retained = []
+        for value in grouped.values():
+            reasons = set(value.pop("reasons"))
+            value["repositories"] = sorted(value["repositories"])
+            if reasons == {"unreferenced_content_blob"}:
+                value["reason"] = "unreferenced_content_blob"
+                candidates.append(value)
+            elif not reasons:
+                value["reason"] = "explicit_retention_elapsed_and_checkpointed"
+                candidates.append(value)
+            else:
+                value["reasons"] = sorted(reasons)
+                retained.append(value)
+        key = lambda item: (item["created_at"], item["digest"])
+        return {
+            "candidates": sorted(candidates, key=key),
+            "retained": sorted(retained, key=key),
+        }
+
+    def event_payload_gc_inventory(
+        self, retention_cutoffs: dict[str, str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        normalized = {
+            repository.casefold(): cutoff
+            for repository, cutoff in retention_cutoffs.items()
+        }
+        with self._connection() as connection:
+            return self._event_payload_gc_inventory(connection, normalized)
+
+    def delete_event_payloads(
+        self, digests: tuple[str, ...], *, retention_cutoffs: dict[str, str]
+    ) -> dict[str, Any]:
+        requested = set(digests)
+        if not requested:
+            return {"deleted": [], "skipped": []}
+        normalized = {
+            repository.casefold(): cutoff
+            for repository, cutoff in retention_cutoffs.items()
+        }
+        deleted = []
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            inventory = self._event_payload_gc_inventory(connection, normalized)
+            eligible = {value["digest"]: value for value in inventory["candidates"]}
+            for digest in sorted(requested & eligible.keys()):
+                value = eligible[digest]
+                connection.execute(
+                    """
+                    INSERT INTO content_blob_tombstones(
+                        digest, category, size_bytes, reason, deleted_at
+                    ) VALUES (?, 'github_event_payload', ?, ?, ?)
+                    ON CONFLICT(digest) DO NOTHING
+                    """,
+                    (digest, value["bytes"], value["reason"], utc_now()),
+                )
+                cursor = connection.execute(
+                    "DELETE FROM content_blobs WHERE digest=?", (digest,)
+                )
+                if cursor.rowcount:
+                    deleted.append(value)
+        return {
+            "deleted": deleted,
+            "skipped": sorted(requested - {value["digest"] for value in deleted}),
+        }
 
     def github_pr_watermark(self, run_id: str) -> dict[str, Any] | None:
         with self._connection() as connection:
