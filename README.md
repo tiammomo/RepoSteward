@@ -298,8 +298,11 @@ REPOSTEWARD_ENABLE_SUBMIT=1 \
 uv run reposteward follow-up RUN_ID
 ```
 
-第一次调用建立水位，之后只返回新增评论、Review 和状态变化的 checks。GitHub 评论和 Review
-正文始终视为不可信数据，不会被自动执行。
+第一次调用会把 PR、评论、Review、Review comment 和 checks 按稳定 ID 与内容版本写入事件表，
+建立 run 水位并追加 Review Checkpoint；之后只返回水位后的新增或编辑版本。REST 分页会完整读取，
+不再把每类前 100 条当成完整历史。GitHub 结构化事件是跟进事实，模型摘要只是可重建的派生信息；
+评论和 Review 正文始终视为不可信数据，不会被自动执行。重复调用是幂等的，事件摄取与水位推进
+分离，进程在生成 Checkpoint 前中断时不会丢失待处理事件。
 
 ## 安全约束
 

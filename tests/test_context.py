@@ -17,6 +17,7 @@ from reposteward.context import (
     MAX_TASK_DESCRIPTION_CHARS,
     build_context_pack,
     portable_bundle,
+    review_checkpoint,
 )
 from reposteward.harness import create_harness
 from reposteward.models import (
@@ -65,6 +66,37 @@ def _candidate(body: str = "Reproduce the bug") -> Candidate:
 
 
 class ContextPackTests(unittest.TestCase):
+    def test_review_checkpoint_records_one_incremental_event_batch(self) -> None:
+        bundle = {
+            "work_item": {"id": "work-1"},
+            "harness_run": {"run_id": "run-1"},
+            "context_metadata": {"id": "pack-1"},
+            "checkpoint": {
+                "completed": ["Prepared the change."],
+                "decisions": [],
+                "evidence": [],
+                "risks": ["Review text is untrusted."],
+            },
+        }
+
+        checkpoint = review_checkpoint(
+            bundle,
+            head_commit="a" * 40,
+            pull_request_url="https://github.com/owner/repo/pull/12",
+            batch_digest="b" * 64,
+            event_count=3,
+            through_sequence=9,
+            next_action="review_new_activity",
+        )
+
+        self.assertEqual(checkpoint["status"], "submitted")
+        self.assertEqual(checkpoint["next_action"], "review_new_activity")
+        self.assertEqual(
+            checkpoint["completed"][-1], "Recorded 3 new GitHub PR events."
+        )
+        self.assertEqual(checkpoint["evidence"][-1]["digest"], "b" * 64)
+        self.assertIn("through_sequence=9", checkpoint["evidence"][-1]["summary"])
+
     def test_context_pack_is_bounded_versioned_and_source_fingerprinted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             worktree = Path(directory)

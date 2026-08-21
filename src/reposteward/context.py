@@ -425,6 +425,66 @@ def running_checkpoint(
     }
 
 
+def review_checkpoint(
+    context_bundle: dict[str, Any],
+    *,
+    head_commit: str,
+    pull_request_url: str,
+    batch_digest: str,
+    event_count: int,
+    through_sequence: int,
+    next_action: str,
+) -> dict[str, Any]:
+    """Build a compact checkpoint from one persisted GitHub event batch."""
+    work_item = context_bundle.get("work_item")
+    metadata = context_bundle.get("context_metadata")
+    harness_run = context_bundle.get("harness_run")
+    if not all(isinstance(value, dict) for value in (work_item, metadata, harness_run)):
+        raise ValueError("context bundle is missing required context records")
+    assert isinstance(work_item, dict)
+    assert isinstance(metadata, dict)
+    assert isinstance(harness_run, dict)
+    previous = context_bundle.get("checkpoint")
+    if not isinstance(previous, dict):
+        previous = {}
+
+    completed = tuple(previous.get("completed", ()))
+    completed = (*completed[-127:], f"Recorded {event_count} new GitHub PR events.")
+    evidence = tuple(previous.get("evidence", ()))
+    evidence = (
+        *evidence[-127:],
+        {
+            "kind": "github_pr_activity",
+            "locator": pull_request_url,
+            "status": "recorded",
+            "digest": batch_digest,
+            "summary": (
+                f"events={event_count}; through_sequence={through_sequence}; "
+                "source=github_untrusted"
+            ),
+        },
+    )
+    decisions = tuple(previous.get("decisions", ()))
+    payload: dict[str, Any] = {
+        "schema_version": CONTEXT_SCHEMA_VERSION,
+        "work_item_id": str(work_item.get("id", "")),
+        "run_id": str(harness_run.get("run_id", "")),
+        "context_pack_id": str(metadata.get("id", "")),
+        "status": "submitted",
+        "head_commit": head_commit,
+        "completed": completed,
+        "remaining": (next_action,),
+        "next_action": next_action,
+        "blockers": (),
+        "decisions": decisions[-64:],
+        "evidence": evidence,
+    }
+    for name in ("implementation_notes", "tests_observed", "risks"):
+        if name in previous:
+            payload[name] = previous[name]
+    return payload
+
+
 def failed_checkpoint(
     context: ContextPack,
     *,
