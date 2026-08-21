@@ -218,6 +218,65 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(migrated.schema_version(), SCHEMA_VERSION)
             self.assertIsNotNone(table)
 
+    def test_version_six_database_moves_event_payloads_without_data_loss(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            payload = json.dumps(
+                {"id": 21, "author": "reviewer", "body": "keep me"},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            digest = hashlib.sha256(payload.encode()).hexdigest()
+            with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute(
+                    """
+                    CREATE TABLE github_pr_events (
+                        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                        repository TEXT NOT NULL,
+                        pull_number INTEGER NOT NULL,
+                        event_type TEXT NOT NULL,
+                        external_id TEXT NOT NULL,
+                        version_digest TEXT NOT NULL,
+                        head_sha TEXT NOT NULL DEFAULT '',
+                        source_trust TEXT NOT NULL DEFAULT 'github_untrusted',
+                        source_created_at TEXT NOT NULL DEFAULT '',
+                        source_updated_at TEXT NOT NULL DEFAULT '',
+                        payload TEXT NOT NULL,
+                        ingested_at TEXT NOT NULL,
+                        UNIQUE(repository, pull_number, event_type, external_id,
+                               version_digest)
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO github_pr_events(
+                        repository, pull_number, event_type, external_id,
+                        version_digest, payload, ingested_at
+                    ) VALUES ('owner/repo', 12, 'issue_comment', '21', ?, ?,
+                              '2026-08-20T00:00:00Z')
+                    """,
+                    (digest, payload),
+                )
+                connection.execute("PRAGMA user_version=6")
+
+            migrated = Store(path)
+            events = migrated.github_pr_events("owner/repo", 12)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                stored = connection.execute(
+                    """
+                    SELECT e.payload, e.payload_digest, e.source_actor,
+                           b.size_bytes
+                    FROM github_pr_events e
+                    JOIN content_blobs b ON b.digest=e.payload_digest
+                    """
+                ).fetchone()
+
+            self.assertEqual(migrated.schema_version(), SCHEMA_VERSION)
+            self.assertEqual(events[0]["payload"]["body"], "keep me")
+            self.assertTrue(events[0]["payload_available"])
+            self.assertEqual(stored, ("", digest, "reviewer", len(payload.encode())))
+
     def test_merge_decision_audit_is_append_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")
@@ -491,6 +550,7 @@ class StoreTests(unittest.TestCase):
                 "comments": [
                     {
                         "id": 21,
+                        "author": "reviewer",
                         "body": "first",
                         "created_at": "2026-08-20T00:00:00Z",
                         "updated_at": "2026-08-20T00:00:00Z",
@@ -507,6 +567,8 @@ class StoreTests(unittest.TestCase):
                 pull_number=12,
                 activity=activity,
             )
+            with closing(sqlite3.connect(store.path)) as connection, connection:
+                connection.execute("DELETE FROM content_blobs")
             repeated = store.ingest_github_pr_activity(
                 run_id=run_id,
                 repository="owner/repo",
@@ -545,19 +607,31 @@ class StoreTests(unittest.TestCase):
             events = store.github_pr_events("owner/repo", 12)
             watermark = store.github_pr_watermark(run_id)
             bundle = store.context_bundle(run_id)
+            with closing(sqlite3.connect(store.path)) as connection, connection:
+                blob_count = connection.execute(
+                    "SELECT COUNT(*) FROM content_blobs"
+                ).fetchone()[0]
+                inline_bytes = connection.execute(
+                    "SELECT SUM(length(payload)) FROM github_pr_events"
+                ).fetchone()[0]
 
         self.assertEqual(len(first["events"]), 2)
         self.assertEqual(repeated["batch_digest"], first["batch_digest"])
         self.assertEqual(len(repeated["events"]), 2)
+        self.assertTrue(all(event["payload_available"] for event in repeated["events"]))
         self.assertFalse(committed["idempotent"])
         self.assertEqual(committed["checkpoint"]["sequence"], 1)
         self.assertEqual(after_commit["events"], [])
         self.assertEqual(len(edited["events"]), 1)
         self.assertEqual(edited["events"][0]["event_type"], "issue_comment")
         self.assertEqual(len(events), 3)
+        self.assertEqual(blob_count, 3)
+        self.assertEqual(inline_bytes, 0)
+        self.assertTrue(all(event["payload_available"] for event in events))
         self.assertTrue(
             all(event["source_trust"] == "github_untrusted" for event in events)
         )
+        self.assertEqual(events[1]["source_actor"], "reviewer")
         self.assertEqual(
             [event["payload"]["body"] for event in events[1:]],
             ["first", "edited"],
