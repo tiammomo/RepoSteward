@@ -74,6 +74,10 @@ SQLite 使用显式 `PRAGMA user_version` 迁移。现有用户的未版本化�
 - `context_imports`：按 bundle digest 去重保存的跨机器交接历史，不覆盖本机较新的 Issue 快照。
 - `issue_proposals`：缓存本机发起的 Project item 和转换结果；GitHub Project 中的最新内容仍是
   多人审查阶段的唯一真相。
+- `github_pr_events`：按 repository、PR、事件类型、稳定 ID 和内容摘要追加 GitHub 事件版本；
+  原始正文显式标记为 GitHub 不可信输入。
+- `github_pr_watermarks`：保存每个 run 已形成 Review Checkpoint 的事件序号；Checkpoint 和水位
+  可以在同一事务中提交。
 
 Context Pack 与 Harness 绑定在一个事务中写入；Checkpoint 采用追加方式写入。数据库列中的版本、
 摘要、基线和关联 ID 必须与 JSON 内容一致，否则拒绝保存。
