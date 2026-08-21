@@ -6,8 +6,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from reposteward.agent import build_harness_prompt
 from reposteward.config import RepositoryPolicy
 from reposteward.context import repository_policy_digest
+from reposteward.context_budget import estimate_tokens
 from reposteward.models import (
     AgentExecution,
     AgentMetrics,
@@ -291,6 +293,12 @@ class RepairTests(unittest.TestCase):
         harness.run.assert_called_once()
         pipeline.verifier.verify.assert_called_once()
         store.commit_github_follow_up.assert_called_once()
+        request = harness.run.call_args.args[0]
+        prompt_tokens = estimate_tokens(build_harness_prompt(request.context))
+        self.assertLessEqual(prompt_tokens, 12_000)
+        self.assertEqual(
+            ready["details"]["context_budget"]["estimated_tokens"], prompt_tokens
+        )
 
 
 class RepairSubmissionTests(unittest.TestCase):

@@ -327,8 +327,11 @@ commit。更新已有 PR 仍必须再次执行带 `--reviewed-by` 的 `submit`�
 `context_plan.stats` 会记录预算前事件数、保留数量以及版本替换、内容重复、字段裁剪、预算裁剪和
 diff 不可用等原因。安全阻塞、当前 head/base、失败 check 和阻塞 Review 属于强制事实；如果它们
 与紧凑 Checkpoint 本身都无法放入预算，命令会明确失败，不会静默删除后继续调用 Harness。
-预算估算另行预留 2,048 token 的 Context Pack 分片和提示包装开销，并在 `transport_overhead_tokens`
-中显式返回。
+Repair 在调用 Harness 前会渲染完整 Prompt，并把 Issue 正文、固定提示、指导路径、Context Pack
+分片、增量事件、diff 片段和紧凑 Checkpoint 一并纳入同一预算。长 Issue 正文只在 Repair 输入中按
+UTF-8 字节安全截断，初次 `prepare` 语义不变；若仍超限，会先移除可选 diff 和低优先级反馈，但
+始终保留安全事实及至少一条可执行反馈。最终估算和裁剪数量记录在 `context_budget` 与
+`context_plan.stats.final_prompt_budget` 中，无法容纳最小必要集合时明确失败。
 
 `merge-decision` 只读获取完整的 changed files、required checks、Review decision 和未解决会话，
 再对照验证时冻结的 head、base、policy digest、规模上限及高风险路径生成确定性结果。每次调用都会

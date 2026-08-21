@@ -55,6 +55,15 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _utf8_prefix(value: str, max_bytes: int) -> str:
+    if max_bytes < 0:
+        raise ValueError("task description byte limit must not be negative")
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
 @dataclass(frozen=True, slots=True)
 class ContextSource:
     kind: str
@@ -256,9 +265,12 @@ def build_context_pack(
     harness: str,
     model: str,
     previous_checkpoint: dict[str, Any] | None = None,
+    task_description_max_bytes: int | None = None,
 ) -> ContextPack:
     issue = candidate.issue
     description = issue.body[:MAX_TASK_DESCRIPTION_CHARS]
+    if task_description_max_bytes is not None:
+        description = _utf8_prefix(description, task_description_max_bytes)
     policy_digest = repository_policy_digest(policy)
     issue_digest = _digest(
         {
@@ -360,6 +372,7 @@ def build_repair_context_pack(
     event_watermark: int,
     event_batch_digest: str,
     repair_context: dict[str, Any],
+    task_description_max_bytes: int | None = None,
 ) -> ContextPack:
     """Build a bounded repair pack from one committed PR event batch."""
     serialized_context = _canonical_json(repair_context)
@@ -384,6 +397,7 @@ def build_repair_context_pack(
         harness=harness,
         model=model,
         previous_checkpoint=previous_checkpoint,
+        task_description_max_bytes=task_description_max_bytes,
     )
     batch_source = ContextSource(
         kind="github_pr_event_batch",

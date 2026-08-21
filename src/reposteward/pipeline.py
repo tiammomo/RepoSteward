@@ -17,7 +17,6 @@ from .context import (
     CONTEXT_SCHEMA_VERSION,
     ContextPack,
     build_context_pack,
-    build_repair_context_pack,
     failed_checkpoint,
     portable_bundle,
     ready_checkpoint,
@@ -42,6 +41,7 @@ from .merge import MergeCheck, MergeDecision, MergeSnapshot, evaluate_merge
 from .models import AgentResult, Candidate
 from .policy import PolicyError, conventional_scope, enforce_change_policy
 from .protocol import read_context_bundle, validate_context_bundle
+from .repair_prompt import build_budgeted_repair_context_pack
 from .review import compact_command, compact_run
 from .store import Store
 from .verifier import DockerVerifier
@@ -1781,7 +1781,7 @@ class Pipeline:
             },
         }
         try:
-            context = build_repair_context_pack(
+            context, final_prompt_budget = build_budgeted_repair_context_pack(
                 candidate,
                 policy,
                 work_item_id=str(work_item["id"]),
@@ -1796,7 +1796,9 @@ class Pipeline:
                 event_watermark=int(follow["event_watermark"]),
                 event_batch_digest=str(follow["event_batch_digest"]),
                 repair_context=repair_context,
+                budget_tokens=int(context_plan["budget_tokens"]),
             )
+            failure_details["context_budget"] = final_prompt_budget
             self.store.save_context_run(
                 pack_id=context.id,
                 work_item_id=context.work_item_id,
