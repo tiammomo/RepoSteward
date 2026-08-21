@@ -4,7 +4,14 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from reposteward.issues import read_details, render_issue_body, validate_issue_title
+from reposteward.issues import (
+    attach_proposal_marker,
+    issue_security_signals,
+    proposal_body,
+    read_details,
+    render_issue_body,
+    validate_issue_title,
+)
 
 
 class IssueDraftTests(unittest.TestCase):
@@ -48,6 +55,28 @@ class IssueDraftTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "credential"):
                 read_details(path)
+
+    def test_security_reports_are_blocked_before_online_staging(self) -> None:
+        signals = issue_security_signals(
+            "Authentication bypass",
+            "The report demonstrates a command injection vulnerability.",
+        )
+
+        self.assertIn("potential security vulnerability", signals)
+
+    def test_online_marker_cannot_silently_redirect_the_repository(self) -> None:
+        body = attach_proposal_marker(
+            "## Summary\n\nDetails\n",
+            repository="owner/repo",
+            draft_id="a" * 32,
+        )
+
+        self.assertEqual(
+            proposal_body(body, repository="owner/repo"),
+            "## Summary\n\nDetails\n",
+        )
+        with self.assertRaisesRegex(ValueError, "different repository"):
+            proposal_body(body, repository="other/repo")
 
 
 if __name__ == "__main__":

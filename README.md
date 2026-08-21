@@ -138,7 +138,36 @@ uv run reposteward issue duplicate-check DRAFT_ID
 ```
 
 草稿保存在当前用户和项目隔离的本地数据库中。`duplicate-check` 只调用 GitHub 搜索接口，
-不会创建或修改 Issue；用户需要审阅 Markdown，并在 GitHub 上手动发布。
+不会创建或修改 Issue。多人协作时，可以把草稿暂存为团队 GitHub Project 中的 Draft Issue：
+
+```bash
+REPOSTEWARD_ENABLE_ISSUE_STAGE=1 \
+  uv run reposteward issue stage DRAFT_ID --submitted-by your-github-login
+```
+
+Project Draft Issue 是线上共享提案，不会出现在目标仓库的正式 Issue 列表。团队可以在线修改正文；
+review 命令始终重新读取线上最新版本，并同时生成重复项快照、安全扫描结果和内容摘要：
+
+```bash
+uv run reposteward issue review PROJECT_ITEM_ID_OR_URL \
+  --repository owner/repository
+```
+
+另一位 reviewer 检查 Project 正文和所有潜在重复项后，使用该次 review 返回的精确摘要进行转换：
+
+```bash
+REPOSTEWARD_ENABLE_ISSUE_PROMOTION=1 \
+  uv run reposteward issue promote PROJECT_ITEM_ID_OR_URL \
+  --repository owner/repository \
+  --reviewed-by reviewer-login \
+  --review-digest REVIEW_DIGEST \
+  --duplicates-reviewed
+```
+
+线上正文、Project、重复项结果或目标仓库发生变化时，旧摘要失效，必须重新 review。默认禁止提案
+创建者自行转换；检测到凭据或疑似安全漏洞时，暂存和转换都会失败，必须改用私有报告渠道。
+GitHub Actions 的人工审查与转换流程见 [`docs/github-actions.md`](docs/github-actions.md)。
+Project 页面 URL 里的数字 `itemId` 也可直接使用，因此不经本地 `stage` 而在线创建的提案同样可审核。
 
 ## 基本工作流
 

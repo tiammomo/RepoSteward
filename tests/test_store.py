@@ -236,6 +236,32 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(restored["title"], "Example issue")
         self.assertEqual(listing[0]["id"], created["id"])
 
+    def test_issue_proposal_round_trip_and_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            created = store.record_issue_proposal(
+                project_item_id="PVTI_example",
+                project_id="PVT_example",
+                project_url="https://example.test/project/1",
+                draft_id="a" * 32,
+                repository="Owner/Repo",
+                creator="alice",
+                content_digest="b" * 64,
+            )
+            restored = store.issue_proposal_for_draft("PVT_example", "a" * 32)
+            store.mark_issue_proposal_published(
+                "PVTI_example",
+                issue_number=42,
+                issue_url="https://example.test/owner/repo/issues/42",
+            )
+            published = store.issue_proposal_for_draft("PVT_example", "a" * 32)
+
+        self.assertEqual(created["repository"], "owner/repo")
+        self.assertIsNotNone(restored)
+        assert published is not None
+        self.assertEqual(published["status"], "published")
+        self.assertEqual(published["issue_number"], 42)
+
     def test_context_bundle_round_trip_uses_latest_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")

@@ -32,6 +32,13 @@ def _parser() -> argparse.ArgumentParser:
     initialize.add_argument("--login", default="")
     initialize.add_argument("--git-name", default="")
     initialize.add_argument("--git-email", default="")
+    initialize.add_argument("--issue-project-owner", default="")
+    initialize.add_argument("--issue-project-number", type=int, default=0)
+    initialize.add_argument(
+        "--issue-project-owner-type",
+        choices=("user", "organization"),
+        default="user",
+    )
     initialize.add_argument("--force", action="store_true")
 
     repo = subparsers.add_parser("repo", help="manage project repositories")
@@ -68,6 +75,30 @@ def _parser() -> argparse.ArgumentParser:
         "duplicate-check", help="search GitHub for potentially similar issues"
     )
     issue_duplicates.add_argument("draft_id")
+    issue_stage = issue_commands.add_parser(
+        "stage", help="stage a local draft in the configured GitHub Project"
+    )
+    issue_stage.add_argument("draft_id")
+    issue_stage.add_argument("--submitted-by", required=True)
+    issue_review = issue_commands.add_parser(
+        "review", help="review the latest online proposal and duplicate snapshot"
+    )
+    issue_review.add_argument(
+        "project_item_id", help="GraphQL node ID, numeric itemId, or Project item URL"
+    )
+    issue_review.add_argument("--repository", required=True)
+    issue_promote = issue_commands.add_parser(
+        "promote", help="convert an approved Project draft into a repository Issue"
+    )
+    issue_promote.add_argument(
+        "project_item_id", help="GraphQL node ID, numeric itemId, or Project item URL"
+    )
+    issue_promote.add_argument("--repository", required=True)
+    issue_promote.add_argument("--reviewed-by", required=True)
+    issue_promote.add_argument("--review-digest", required=True)
+    issue_promote.add_argument(
+        "--duplicates-reviewed", action="store_true", required=True
+    )
 
     subparsers.add_parser("doctor", help="check local tools and authentication")
     image = subparsers.add_parser("image", help="manage the isolated verifier image")
@@ -190,6 +221,9 @@ def main(argv: list[str] | None = None) -> int:
                     login=args.login,
                     git_name=args.git_name,
                     git_email=args.git_email,
+                    issue_project_owner=args.issue_project_owner,
+                    issue_project_number=args.issue_project_number,
+                    issue_project_owner_type=args.issue_project_owner_type,
                     force=args.force,
                 )
             )
@@ -232,6 +266,32 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             if args.issue_command == "duplicate-check":
                 _json(pipeline.issue_duplicate_check(args.draft_id))
+                return 0
+            if args.issue_command == "stage":
+                _json(
+                    pipeline.stage_issue_proposal(
+                        args.draft_id, submitted_by=args.submitted_by
+                    )
+                )
+                return 0
+            if args.issue_command == "review":
+                _json(
+                    pipeline.issue_proposal_review(
+                        args.project_item_id,
+                        repository=args.repository,
+                    )
+                )
+                return 0
+            if args.issue_command == "promote":
+                _json(
+                    pipeline.promote_issue_proposal(
+                        args.project_item_id,
+                        repository=args.repository,
+                        reviewed_by=args.reviewed_by,
+                        review_digest=args.review_digest,
+                        duplicates_reviewed=args.duplicates_reviewed,
+                    )
+                )
                 return 0
             raise AssertionError(f"unhandled issue command: {args.issue_command}")
         if args.command == "doctor":

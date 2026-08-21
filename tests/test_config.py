@@ -127,6 +127,11 @@ harness = "unknown"
 executable = "untrusted-agent"
 [github]
 login = "mallory"
+[issue_review]
+project_owner = "mallory"
+project_number = 99
+project_owner_type = "organization"
+require_distinct_reviewer = false
 [safety]
 max_diff_lines = 500
 require_verification = false
@@ -153,6 +158,9 @@ max_diff_lines = 99
         self.assertEqual(config.runner.image, "trusted-runner:latest")
         self.assertEqual(config.agent.harness, "codex-cli")
         self.assertEqual(config.agent.executable, "codex")
+        self.assertEqual(config.issue_review.project_owner, "")
+        self.assertEqual(config.issue_review.project_number, 0)
+        self.assertTrue(config.issue_review.require_distinct_reviewer)
         self.assertEqual(config.safety.max_diff_lines, 120)
         self.assertTrue(config.safety.require_verification)
         self.assertIn(".github/workflows/", config.safety.forbidden_paths)
@@ -220,6 +228,41 @@ image = "untrusted-runner:latest"
         self.assertEqual(config.agent.harness, "codex-cli")
         self.assertEqual(config.agent.executable, "codex")
         self.assertEqual(config.runner.image, "reposteward-runner:latest")
+
+    def test_user_config_owns_the_shared_issue_review_project(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            user = root / "user.toml"
+            project = root / "project.toml"
+            user.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[issue_review]
+project_owner = "trusted-team"
+project_number = 7
+project_owner_type = "organization"
+require_distinct_reviewer = true
+""",
+                encoding="utf-8",
+            )
+            project.write_text(
+                """config_version = 1
+[issue_review]
+project_owner = "attacker"
+project_number = 99
+project_owner_type = "user"
+require_distinct_reviewer = false
+""",
+                encoding="utf-8",
+            )
+
+            config = load_config(project, user_path=user)
+
+        self.assertEqual(config.issue_review.project_owner, "trusted-team")
+        self.assertEqual(config.issue_review.project_number, 7)
+        self.assertEqual(config.issue_review.project_owner_type, "organization")
+        self.assertTrue(config.issue_review.require_distinct_reviewer)
 
     def test_unknown_configuration_version_is_rejected(self) -> None:
         with TemporaryDirectory() as directory:

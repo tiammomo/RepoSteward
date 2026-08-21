@@ -23,5 +23,7 @@ opens pull requests only after repository-specific gates and local human review.
   matching the configured GitHub login.
 - Respect repository contribution policies. Assignment/approval checks are hard
   gates, not ranking hints.
-- Never automate security reports, mass comments, or issue creation.
+- Never automate security reports or mass comments. Repository Issue creation must
+  pass through the configured online Project draft, a fresh duplicate/security
+  review digest, a distinct reviewer, and the separate promotion gate.
 - Keep public-repository tests inside the hardened verifier container.

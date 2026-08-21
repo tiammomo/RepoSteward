@@ -12,6 +12,12 @@ git_email = "your-github-login@users.noreply.github.com"
 sign_commits = false
 signoff_commits = true
 
+[issue_review]
+project_owner = "your-github-login-or-organization"
+project_number = 1
+project_owner_type = "user"
+require_distinct_reviewer = true
+
 [discovery]
 min_score = 30
 preferred_labels = ["good first issue", "help wanted", "bug", "documentation"]

@@ -1,0 +1,106 @@
+name: Promote reviewed issue proposal
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_item_id:
+        description: Project draft node ID, numeric itemId, or browser URL
+        required: true
+        type: string
+      repository:
+        description: Target repository in owner/name form
+        required: true
+        type: string
+      review_digest:
+        description: Exact digest from the latest review workflow
+        required: true
+        type: string
+      duplicates_reviewed:
+        description: I reviewed every duplicate candidate in the latest report
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize every promotion into the same repository. The later job must
+  # refresh duplicate search results after the earlier Issue becomes visible.
+  group: issue-promote-${{ inputs.repository }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    environment: reposteward-issue-publishing
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PROJECT_ITEM_ID: ${{ inputs.project_item_id }}
+      TARGET_REPOSITORY: ${{ inputs.repository }}
+      REVIEW_DIGEST: ${{ inputs.review_digest }}
+      DUPLICATES_REVIEWED: ${{ inputs.duplicates_reviewed }}
+      PUBLISHER_LOGIN: ${{ vars.REPOSTEWARD_PUBLISHER_LOGIN }}
+      ISSUE_PROJECT_OWNER: ${{ vars.REPOSTEWARD_ISSUE_PROJECT_OWNER }}
+      ISSUE_PROJECT_NUMBER: ${{ vars.REPOSTEWARD_ISSUE_PROJECT_NUMBER }}
+      ISSUE_PROJECT_OWNER_TYPE: ${{ vars.REPOSTEWARD_ISSUE_PROJECT_OWNER_TYPE }}
+      REPOSTEWARD_ENABLE_ISSUE_PROMOTION: "1"
+    steps:
+      - name: Check out trusted RepoSteward code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.32"
+          enable-cache: true
+
+      - name: Install Python and RepoSteward
+        run: |
+          uv python install 3.12
+          uv sync --locked --python 3.12
+
+      - name: Isolate RepoSteward runtime state
+        run: |
+          {
+            echo "XDG_CONFIG_HOME=$RUNNER_TEMP/reposteward/config"
+            echo "XDG_STATE_HOME=$RUNNER_TEMP/reposteward/state"
+            echo "XDG_DATA_HOME=$RUNNER_TEMP/reposteward/data"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate publication attestation
+        env:
+          GH_TOKEN: ${{ secrets.REPOSTEWARD_GITHUB_PUBLISH_TOKEN }}
+        run: |
+          test -n "$GH_TOKEN"
+          test -n "$PUBLISHER_LOGIN"
+          test "$GITHUB_ACTOR" = "$PUBLISHER_LOGIN"
+          test "$DUPLICATES_REVIEWED" = "true"
+          test -n "$ISSUE_PROJECT_OWNER"
+          test -n "$ISSUE_PROJECT_NUMBER"
+          test "$ISSUE_PROJECT_OWNER_TYPE" = "user" -o "$ISSUE_PROJECT_OWNER_TYPE" = "organization"
+
+      - name: Create ephemeral trusted configuration
+        run: |
+          mkdir -p "$RUNNER_TEMP/reposteward/project"
+          uv run reposteward init \
+            --login "$PUBLISHER_LOGIN" \
+            --issue-project-owner "$ISSUE_PROJECT_OWNER" \
+            --issue-project-number "$ISSUE_PROJECT_NUMBER" \
+            --issue-project-owner-type "$ISSUE_PROJECT_OWNER_TYPE"
+          uv run reposteward repo add "$TARGET_REPOSITORY" \
+            --path "$RUNNER_TEMP/reposteward/project/.reposteward.toml"
+
+      - name: Convert the exact reviewed proposal into an Issue
+        env:
+          GH_TOKEN: ${{ secrets.REPOSTEWARD_GITHUB_PUBLISH_TOKEN }}
+        run: |
+          uv run reposteward \
+            --config "$RUNNER_TEMP/reposteward/project/.reposteward.toml" \
+            issue promote "$PROJECT_ITEM_ID" \
+            --repository "$TARGET_REPOSITORY" \
+            --reviewed-by "$PUBLISHER_LOGIN" \
+            --review-digest "$REVIEW_DIGEST" \
+            --duplicates-reviewed

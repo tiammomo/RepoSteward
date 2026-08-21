@@ -5,7 +5,7 @@ from typing import Any
 from unittest.mock import patch
 
 from reposteward.config import GitHubConfig
-from reposteward.github import GitHubClient, resolve_authentication
+from reposteward.github import GitHubClient, GitHubError, resolve_authentication
 
 
 class StubGitHubClient(GitHubClient):
@@ -120,6 +120,88 @@ class GitHubIssueSearchTests(unittest.TestCase):
         args, kwargs = request.call_args
         self.assertEqual(args[:2], ("GET", "/search/issues"))
         self.assertIn("repo:owner/repo is:issue", kwargs["query"]["q"])
+
+
+class GitHubProjectIssueTests(unittest.TestCase):
+    def test_project_draft_item_is_parsed_from_graphql(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        payload = {
+            "data": {
+                "node": {
+                    "id": "PVTI_example",
+                    "fullDatabaseId": "123456",
+                    "updatedAt": "2026-08-21T00:00:00Z",
+                    "creator": {"login": "author"},
+                    "project": {
+                        "id": "PVT_example",
+                        "number": 1,
+                        "url": "https://example.test/project/1",
+                    },
+                    "content": {
+                        "__typename": "DraftIssue",
+                        "title": "Proposal title",
+                        "body": "Proposal body",
+                    },
+                }
+            }
+        }
+
+        with patch.object(client, "_request", return_value=(payload, None)):
+            result = client.project_issue_proposal("PVTI_example")
+
+        self.assertEqual(result.creator, "author")
+        self.assertEqual(result.database_id, 123456)
+        self.assertEqual(result.content_type, "DraftIssue")
+        self.assertEqual(result.project_id, "PVT_example")
+
+    def test_numeric_project_item_id_is_resolved_from_active_project_items(
+        self,
+    ) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        payload = {
+            "data": {
+                "node": {
+                    "items": {
+                        "nodes": [
+                            {
+                                "id": "PVTI_example",
+                                "fullDatabaseId": "123456",
+                                "updatedAt": "2026-08-21T00:00:00Z",
+                                "creator": {"login": "author"},
+                                "project": {
+                                    "id": "PVT_example",
+                                    "number": 1,
+                                    "url": "https://example.test/project/1",
+                                },
+                                "content": {
+                                    "__typename": "DraftIssue",
+                                    "title": "Proposal title",
+                                    "body": "Proposal body",
+                                },
+                            }
+                        ],
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    }
+                }
+            }
+        }
+
+        with patch.object(client, "_request", return_value=(payload, None)):
+            result = client.project_issue_proposal_by_database_id(
+                project_id="PVT_example", database_id=123456
+            )
+
+        self.assertEqual(result.item_id, "PVTI_example")
+
+    def test_graphql_errors_fail_closed(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        payload = {"errors": [{"message": "Projects permission is required"}]}
+
+        with (
+            patch.object(client, "_request", return_value=(payload, None)),
+            self.assertRaisesRegex(GitHubError, "Projects permission is required"),
+        ):
+            client.project_v2("owner", 1, owner_type="user")
 
 
 class GitHubPullRequestTests(unittest.TestCase):
