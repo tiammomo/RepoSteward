@@ -13,7 +13,7 @@ from typing import Any
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -253,6 +253,41 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         ON merge_decisions(repository, pull_number, created_at DESC)
         """,
     ),
+    7: (
+        """
+        CREATE TABLE IF NOT EXISTS content_blobs (
+            digest TEXT PRIMARY KEY,
+            payload BLOB NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        "ALTER TABLE github_pr_events ADD COLUMN payload_digest TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE github_pr_events ADD COLUMN source_actor TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE github_pr_events ADD COLUMN source_state TEXT NOT NULL DEFAULT ''",
+        """
+        INSERT OR IGNORE INTO content_blobs(digest, payload, size_bytes, created_at)
+        SELECT version_digest, CAST(payload AS BLOB),
+               length(CAST(payload AS BLOB)), ingested_at
+        FROM github_pr_events
+        """,
+        """
+        UPDATE github_pr_events
+        SET payload_digest=version_digest,
+            source_actor=COALESCE(json_extract(payload, '$.author'), ''),
+            source_state=COALESCE(
+                json_extract(payload, '$.state'),
+                json_extract(payload, '$.status'),
+                json_extract(payload, '$.conclusion'),
+                ''
+            ),
+            payload=''
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS github_pr_events_for_payload
+        ON github_pr_events(payload_digest)
+        """,
+    ),
 }
 
 
@@ -316,6 +351,18 @@ class Store:
                 connection.execute("BEGIN IMMEDIATE")
                 try:
                     for statement in statements:
+                        if version == 7 and statement.startswith(
+                            "ALTER TABLE github_pr_events ADD COLUMN"
+                        ):
+                            column = statement.split("ADD COLUMN", 1)[1].split()[0]
+                            existing = {
+                                str(row[1])
+                                for row in connection.execute(
+                                    "PRAGMA table_info(github_pr_events)"
+                                )
+                            }
+                            if column in existing:
+                                continue
                         connection.execute(statement)
                     connection.execute(f"PRAGMA user_version={version}")
                     connection.commit()
@@ -895,6 +942,13 @@ class Store:
                         "source_updated_at": str(
                             value.get("updated_at") or value.get("submitted_at") or ""
                         ),
+                        "source_actor": str(value.get("author") or ""),
+                        "source_state": str(
+                            value.get("state")
+                            or value.get("status")
+                            or value.get("conclusion")
+                            or ""
+                        ),
                         "payload": _canonical_json(value),
                     }
                 )
@@ -951,13 +1005,39 @@ class Store:
             ):
                 raise StoreError("GitHub watermark belongs to a different pull request")
             for event in event_values:
+                payload_bytes = event["payload"].encode()
+                connection.execute(
+                    """
+                    INSERT INTO content_blobs(digest, payload, size_bytes, created_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(digest) DO NOTHING
+                    """,
+                    (
+                        event["version_digest"],
+                        payload_bytes,
+                        len(payload_bytes),
+                        now,
+                    ),
+                )
+                stored_blob = connection.execute(
+                    "SELECT payload FROM content_blobs WHERE digest=?",
+                    (event["version_digest"],),
+                ).fetchone()
+                if (
+                    stored_blob is None
+                    or bytes(stored_blob["payload"]) != payload_bytes
+                ):
+                    raise StoreError("content blob digest collision or corruption")
                 connection.execute(
                     """
                     INSERT INTO github_pr_events(
                         repository, pull_number, event_type, external_id,
                         version_digest, head_sha, source_trust, source_created_at,
-                        source_updated_at, payload, ingested_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, 'github_untrusted', ?, ?, ?, ?)
+                        source_updated_at, payload, ingested_at, payload_digest,
+                        source_actor, source_state
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, 'github_untrusted', ?, ?, '', ?, ?, ?, ?
+                    )
                     ON CONFLICT(
                         repository, pull_number, event_type,
                         external_id, version_digest
@@ -972,15 +1052,19 @@ class Store:
                         event["head_sha"],
                         event["source_created_at"],
                         event["source_updated_at"],
-                        event["payload"],
                         now,
+                        event["version_digest"],
+                        event["source_actor"],
+                        event["source_state"],
                     ),
                 )
             previous_sequence = int(watermark["sequence"])
             rows = connection.execute(
                 """
-                SELECT * FROM github_pr_events
-                WHERE repository=? AND pull_number=? AND sequence>?
+                SELECT e.*, b.payload AS blob_payload
+                FROM github_pr_events e
+                LEFT JOIN content_blobs b ON b.digest=e.payload_digest
+                WHERE e.repository=? AND e.pull_number=? AND e.sequence>?
                 ORDER BY sequence
                 """,
                 (repository, pull_number, previous_sequence),
@@ -988,7 +1072,13 @@ class Store:
         events = []
         for row in rows:
             event = dict(row)
-            event["payload"] = json.loads(event["payload"])
+            blob_payload = event.pop("blob_payload")
+            if blob_payload is None:
+                raise StoreError(
+                    f"GitHub event payload is unavailable: {event['payload_digest']}"
+                )
+            event["payload"] = json.loads(bytes(blob_payload))
+            event["payload_available"] = True
             events.append(event)
         through_sequence = int(events[-1]["sequence"]) if events else previous_sequence
         batch_digest = _json_digest(
@@ -1091,17 +1181,30 @@ class Store:
         with self._connection() as connection:
             rows = connection.execute(
                 """
-                SELECT * FROM github_pr_events
-                WHERE repository=? AND pull_number=? ORDER BY sequence
+                SELECT e.*, b.payload AS blob_payload
+                FROM github_pr_events e
+                LEFT JOIN content_blobs b ON b.digest=e.payload_digest
+                WHERE e.repository=? AND e.pull_number=? ORDER BY e.sequence
                 """,
                 (repository.casefold(), pull_number),
             ).fetchall()
         result = []
         for row in rows:
             event = dict(row)
-            event["payload"] = json.loads(event["payload"])
+            blob_payload = event.pop("blob_payload")
+            event["payload_available"] = blob_payload is not None
+            event["payload"] = (
+                json.loads(bytes(blob_payload)) if blob_payload is not None else None
+            )
             result.append(event)
         return result
+
+    def content_blob(self, digest: str) -> bytes | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT payload FROM content_blobs WHERE digest=?", (digest,)
+            ).fetchone()
+        return bytes(row["payload"]) if row is not None else None
 
     def github_pr_watermark(self, run_id: str) -> dict[str, Any] | None:
         with self._connection() as connection:

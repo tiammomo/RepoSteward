@@ -75,7 +75,10 @@ SQLite 使用显式 `PRAGMA user_version` 迁移。现有用户的未版本化�
 - `issue_proposals`：缓存本机发起的 Project item 和转换结果；GitHub Project 中的最新内容仍是
   多人审查阶段的唯一真相。
 - `github_pr_events`：按 repository、PR、事件类型、稳定 ID 和内容摘要追加 GitHub 事件版本；
-  评论编辑、check 状态和 PR head 变化不会覆盖旧版本，原始正文显式标记为 GitHub 不可信输入。
+  评论编辑、check 状态和 PR head 变化不会覆盖旧版本。事件行只保留稳定 ID、作者、状态、时间与
+  内容摘要，原始正文显式标记为 GitHub 不可信输入。
+- `content_blobs`：按 SHA-256 对较大的 GitHub 事件载荷做内容寻址和跨引用去重；事件索引通过摘要
+  引用 Blob，事务会同时写入并校验内容，旧版内联正文原地无损迁移。
 - `github_pr_watermarks`：保存每个 run 已经形成 Review Checkpoint 的事件序号。事件先幂等入库，
   Checkpoint 与水位再在同一事务中提交，因此中断后可以安全重试。
 - `merge_decisions`：追加保存每次合并评估的 head/base、policy、GitHub 快照与决策摘要；重复评估
