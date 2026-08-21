@@ -58,6 +58,9 @@ max_output_chars = 12000
 passed_output_chars = 2000
 max_log_chars = 2000000
 
+[context]
+follow_up_max_tokens = 24000
+
 [repositories."langchain-ai/deepagents"]
 enabled = true
 auto_prepare = true

@@ -103,6 +103,13 @@ PR 跟进以 GitHub 的结构化事件为唯一真相。`follow-up` 完整遍历
 派生信息，不能覆盖事件，也不能直接授权 push、回复或 merge。原始评论和 Review 正文始终标记为
 外部不可信输入。
 
+水位后的事件先经过供应商无关的确定性预算器：相同稳定 ID 只保留最新版本，相同内容摘要跨 ID
+去重，再按行级 Review、相关 diff、Review 和 Issue comment 的优先级装入预算。估算直接使用 UTF-8
+字节数作为供应商无关的保守上界，并把紧凑 Checkpoint、head/base、安全阻塞、当前失败 check 和阻塞
+Review 一并计入。强制事实不能裁剪；无法容纳时失败关闭。可选内容的版本替换、去重、字段裁剪、
+预算裁剪和 diff 缺失均进入 `context_plan.stats`，因此 Harness 输入大小与丢弃原因都可复现。
+估算还固定预留 2,048 token 的 Context Pack 分片与提示包装开销，并作为计划字段公开。
+
 Contributor 修复循环消费一个已提交 run 的下一批事件。确定性规划先排除重复轮询、非失败 check
 和指向原 PR diff 之外路径的建议；只有剩余反馈需要理解代码时才创建 successor run 并调用 Harness。
 successor 从已提交水位开始，避免重新注入完整 PR 历史。修复通过相同隔离 Runner 与 diff 策略后只
@@ -154,5 +161,4 @@ uv run reposteward context import handoff.json
 ## 后续优先级
 
 1. 增加 Claude Code 与 DeepSeek 适配器，并运行同一契约测试套件。
-2. 为增量 reviewer feedback 增加统一 token 预算与内容去重。
-3. 增加 context redaction 和跨机器加密导出策略。
+2. 增加 context redaction 和跨机器加密导出策略。

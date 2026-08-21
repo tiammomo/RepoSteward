@@ -41,6 +41,7 @@ class SetupTests(unittest.TestCase):
         self.assertTrue(parsed["issue_review"]["require_distinct_reviewer"])
         self.assertEqual(parsed["storage"]["cache_retention_days"], 30)
         self.assertEqual(parsed["storage"]["max_gc_items"], 1000)
+        self.assertEqual(parsed["context"]["follow_up_max_tokens"], 24_000)
         self.assertEqual(
             parsed["project"]["state_dir"], str(root / "state" / "reposteward")
         )

@@ -116,6 +116,11 @@ class StorageConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextConfig:
+    follow_up_max_tokens: int = 24_000
+
+
+@dataclass(frozen=True, slots=True)
 class RepositoryPolicy:
     name: str
     enabled: bool = True
@@ -162,6 +167,7 @@ class AppConfig:
     agent: AgentConfig
     runner: RunnerConfig
     storage: StorageConfig
+    context: ContextConfig
     repositories: dict[str, RepositoryPolicy] = field(default_factory=dict)
 
 
@@ -309,6 +315,12 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
         result["storage"] = dict(user_storage)
     else:
         result.pop("storage", None)
+
+    user_context = user.get("context")
+    if isinstance(user_context, dict):
+        result["context"] = dict(user_context)
+    else:
+        result.pop("context", None)
 
     user_agent = user.get("agent")
     project_agent = project.get("agent")
@@ -551,6 +563,11 @@ def load_config(
         max_gc_items=int(storage_raw.get("max_gc_items", 1_000)),
     )
 
+    context_raw = _section(raw, "context")
+    context = ContextConfig(
+        follow_up_max_tokens=int(context_raw.get("follow_up_max_tokens", 24_000))
+    )
+
     repositories_raw = _section(raw, "repositories")
     repositories: dict[str, RepositoryPolicy] = {}
     for name, repo_value in repositories_raw.items():
@@ -657,6 +674,8 @@ def load_config(
         raise ConfigError("storage.cache_retention_days must be between 1 and 36500")
     if not 1 <= storage.max_gc_items <= 10_000:
         raise ConfigError("storage.max_gc_items must be between 1 and 10000")
+    if not 512 <= context.follow_up_max_tokens <= 100_000:
+        raise ConfigError("context.follow_up_max_tokens must be between 512 and 100000")
     if not agent.harness:
         raise ConfigError("agent.harness must not be empty")
     for repository in repositories.values():
@@ -721,5 +740,6 @@ def load_config(
         agent=agent,
         runner=runner,
         storage=storage,
+        context=context,
         repositories=repositories,
     )

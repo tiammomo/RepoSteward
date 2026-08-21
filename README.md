@@ -309,9 +309,17 @@ uv run reposteward merge-decision RUN_ID
 Contributor fork 收到新的失败 check、Reviewer 正文或 diff 内行级评论后，可以对最近一次
 `submitted` run 执行 `repair`。命令先按水位读取增量并做确定性范围判断：没有新增可执行信息、
 只有成功 check，或只有指向当前 diff 之外路径的建议时不会调用 Harness。确需理解代码时，Harness
-只收到受限事件批次和最近 Checkpoint，在原 worktree 修改；Runner 重新验证后生成新的本地 `ready`
+只收到统一 token 预算内的事件批次、相关 diff 片段和紧凑 Checkpoint，在原 worktree 修改；Runner 重新验证后生成新的本地 `ready`
 commit。更新已有 PR 仍必须再次执行带 `--reviewed-by` 的 `submit`。准备后若 head、base、策略或
 事件水位变化，旧修复会被拒绝。该流程不会自动回复、催促 Reviewer 或合并 upstream PR。
+
+预算由用户配置中的 `[context].follow_up_max_tokens` 控制，默认 24,000。估算直接使用 UTF-8 字节数作为供应商无关的保守上界，
+计算，不依赖模型供应商或原生会话；稳定 ID 只保留最新事件版本，相同内容摘要只注入一次。输出的
+`context_plan.stats` 会记录预算前事件数、保留数量以及版本替换、内容重复、字段裁剪、预算裁剪和
+diff 不可用等原因。安全阻塞、当前 head/base、失败 check 和阻塞 Review 属于强制事实；如果它们
+与紧凑 Checkpoint 本身都无法放入预算，命令会明确失败，不会静默删除后继续调用 Harness。
+预算估算另行预留 2,048 token 的 Context Pack 分片和提示包装开销，并在 `transport_overhead_tokens`
+中显式返回。
 
 `merge-decision` 只读获取完整的 changed files、required checks、Review decision 和未解决会话，
 再对照验证时冻结的 head、base、policy digest、规模上限及高风险路径生成确定性结果。每次调用都会

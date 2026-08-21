@@ -39,6 +39,33 @@ def _follow(**extra: object) -> dict:
         "_github_snapshot": {},
     }
     value.update(extra)
+    events = []
+    for kind, key in (
+        ("issue_comment", "new_comments"),
+        ("review", "new_reviews"),
+        ("review_comment", "new_review_comments"),
+    ):
+        events.extend({"kind": kind, **item} for item in value[key])
+    failed_checks = [
+        item
+        for item in value["changed_checks"]
+        if str(item.get("conclusion") or "").casefold()
+        in {"action_required", "cancelled", "failure", "stale", "timed_out"}
+    ]
+    value["context_plan"] = {
+        "schema_version": 1,
+        "budget_tokens": 12_000,
+        "estimated_tokens": 100,
+        "mandatory": {
+            "failed_checks": failed_checks,
+            "safety_blockers": [],
+            "blocking_reviews": [],
+        },
+        "events": events,
+        "diff_snippets": [],
+        "actionable": bool(events or failed_checks),
+        "stats": {"new_failed_checks": len(failed_checks)},
+    }
     return value
 
 
@@ -92,6 +119,76 @@ class RepairTests(unittest.TestCase):
 
         pipeline.prepare_repair("source")
         pipeline.harness.run.assert_not_called()
+
+    def test_successful_check_only_advances_watermark_without_harness(self) -> None:
+        pipeline = object.__new__(Pipeline)
+        pipeline.config = SimpleNamespace(
+            repositories={"owner/repo": RepositoryPolicy(name="owner/repo")}
+        )
+        pipeline.store = Mock()
+        pipeline.store.run.return_value = {
+            "id": "source",
+            "repository": "owner/repo",
+            "issue_number": 7,
+            "status": "submitted",
+            "stage": "pull_request",
+            "worktree": "/tmp/worktree",
+            "details": {"pr_url": "https://example.test/pull/12"},
+        }
+        pipeline.store.commit_github_follow_up.return_value = {
+            "sequence": 9,
+            "checkpoint": None,
+        }
+        pipeline._follow_up = Mock(
+            return_value=_follow(
+                changed_checks=[
+                    {
+                        "id": "check-1",
+                        "name": "tests",
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                ],
+                next_action="wait_for_activity",
+            )
+        )
+        pipeline.harness = Mock()
+
+        result = pipeline.prepare_repair("source")
+
+        self.assertEqual(result["reason"], "no_new_actionable_activity")
+        pipeline.store.commit_github_follow_up.assert_called_once()
+        pipeline.harness.run.assert_not_called()
+
+    def test_diff_reader_only_uses_verified_changed_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            worktree = Path(directory)
+            (worktree / ".git").mkdir()
+            details = {
+                "worktree": str(worktree),
+                "base_commit": "a" * 40,
+                "commit_sha": "b" * 40,
+                "changed_files": ["src/allowed.py"],
+            }
+            events = [
+                {
+                    "event_type": "review_comment",
+                    "payload": {"path": "src/allowed.py"},
+                },
+                {
+                    "event_type": "review_comment",
+                    "payload": {"path": "../outside.py"},
+                },
+            ]
+            completed = SimpleNamespace(returncode=0, stdout="bounded diff")
+
+            with patch(
+                "reposteward.pipeline.subprocess.run", return_value=completed
+            ) as run:
+                snippets = Pipeline._follow_up_diff_snippets(details, events)
+
+        self.assertEqual(snippets, {"src/allowed.py": "bounded diff"})
+        self.assertEqual(run.call_args.args[0][-1], "src/allowed.py")
 
     def test_in_scope_feedback_is_verified_and_left_ready(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -738,6 +738,7 @@ class GitHubClient:
                 "updated_at": str(pull.get("updated_at") or ""),
                 "head_sha": head_sha,
                 "base_branch": str((pull.get("base") or {}).get("ref") or ""),
+                "base_sha": str((pull.get("base") or {}).get("sha") or ""),
                 "mergeable": pull.get("mergeable"),
                 "mergeable_state": str(pull.get("mergeable_state") or ""),
                 "merged": bool(pull.get("merged_at")),
