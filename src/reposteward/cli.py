@@ -178,6 +178,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     follow_up.add_argument("run_id")
 
+    merge_decision = subparsers.add_parser(
+        "merge-decision", help="evaluate and audit read-only PR merge eligibility"
+    )
+    merge_decision.add_argument("run_id")
+
     submit = subparsers.add_parser(
         "submit", help="push a reviewed change and create or reopen a PR"
     )
@@ -392,6 +397,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "follow-up":
             _json(pipeline.follow_up(args.run_id))
+            return 0
+        if args.command == "merge-decision":
+            _json(pipeline.merge_decision(args.run_id))
             return 0
         if args.command == "submit":
             _json(

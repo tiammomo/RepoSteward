@@ -17,6 +17,7 @@ from .context import (
     failed_checkpoint,
     portable_bundle,
     ready_checkpoint,
+    repository_policy_digest,
     review_checkpoint,
     running_checkpoint,
     write_portable_bundle,
@@ -32,6 +33,7 @@ from .issues import (
     render_issue_body,
     validate_issue_title,
 )
+from .merge import MergeCheck, MergeSnapshot, evaluate_merge
 from .models import AgentResult, Candidate
 from .policy import PolicyError, conventional_scope, enforce_change_policy
 from .protocol import read_context_bundle, validate_context_bundle
@@ -1173,6 +1175,81 @@ class Pipeline:
             "changed_checks": compact_checks(changed_checks),
             "changed_checks_omitted": max(0, len(changed_checks) - check_limit),
             "next_action": next_action,
+        }
+
+    def merge_decision(self, run_id: str) -> dict[str, Any]:
+        """Evaluate and audit current merge eligibility without writing to GitHub."""
+        run = self.store.run(run_id)
+        if run is None:
+            raise KeyError(f"run not found: {run_id}")
+        details = run.get("details", {})
+        match = re.search(r"/pull/(\d+)/?$", str(details.get("pr_url", "")))
+        if not match:
+            raise PolicyError("the selected run has no submitted pull request")
+        repository = str(run["repository"])
+        pull_number = int(match.group(1))
+        policy = self.policy(repository)
+        context = self.store.context_bundle(run_id)
+        if context is None:
+            raise PolicyError("the selected run has no verified context pack")
+        project = context["context_pack"].get("project")
+        if not isinstance(project, dict):
+            raise PolicyError("the verified context pack has no project policy")
+        expected_policy_digest = str(project.get("policy_digest") or "")
+        raw = self.github.pull_request_merge_snapshot(repository, pull_number)
+        snapshot = MergeSnapshot(
+            repository=repository,
+            pull_number=pull_number,
+            head_sha=str(raw["head_sha"]),
+            base_sha=str(raw["base_sha"]),
+            policy_digest=repository_policy_digest(policy),
+            state=str(raw["state"]),
+            draft=bool(raw["draft"]),
+            mergeable=str(raw["mergeable"]),
+            review_decision=str(raw["review_decision"]),
+            unresolved_conversations=int(raw["unresolved_conversations"]),
+            files=tuple(str(value) for value in raw["files"]),
+            additions=int(raw["additions"]),
+            deletions=int(raw["deletions"]),
+            checks=tuple(MergeCheck(**value) for value in raw["checks"]),
+            files_complete=bool(raw["files_complete"]),
+            conversations_complete=bool(raw["conversations_complete"]),
+            checks_complete=bool(raw["checks_complete"]),
+        )
+        decision = evaluate_merge(
+            snapshot,
+            expected_head_sha=str(details.get("commit_sha") or ""),
+            expected_base_sha=str(details.get("base_commit") or ""),
+            expected_policy_digest=expected_policy_digest,
+            max_files_changed=(
+                policy.max_files_changed
+                if policy.max_files_changed is not None
+                else self.config.safety.max_files_changed
+            ),
+            max_diff_lines=(
+                policy.max_diff_lines
+                if policy.max_diff_lines is not None
+                else self.config.safety.max_diff_lines
+            ),
+            extra_risk_patterns=policy.merge_risk_paths,
+        )
+        payload = decision.to_dict()
+        audit_payload = {**payload, "snapshot": asdict(snapshot)}
+        audit = self.store.append_merge_decision(
+            repository=repository,
+            pull_number=pull_number,
+            head_sha=snapshot.head_sha,
+            base_sha=snapshot.base_sha,
+            policy_digest=snapshot.policy_digest,
+            decision=audit_payload,
+        )
+        return {
+            "run_id": run_id,
+            "repository": repository,
+            "pull_number": pull_number,
+            **payload,
+            "audit": audit,
+            "public_write": False,
         }
 
     def submit(

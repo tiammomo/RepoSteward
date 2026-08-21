@@ -1539,6 +1539,30 @@ class Store:
         decision_digest = str(decision.get("decision_digest", ""))
         if not snapshot_digest or not decision_digest:
             raise StoreError("merge decision is missing its audit digests")
+        snapshot = decision.get("snapshot")
+        if not isinstance(snapshot, dict) or _json_digest(snapshot) != snapshot_digest:
+            raise StoreError("merge decision snapshot does not match its digest")
+        expected_scope = {
+            "repository": repository.casefold(),
+            "pull_number": pull_number,
+            "head_sha": head_sha,
+            "base_sha": base_sha,
+            "policy_digest": policy_digest,
+        }
+        if any(snapshot.get(key) != value for key, value in expected_scope.items()):
+            raise StoreError("merge decision snapshot does not match its audit scope")
+        decision_material = {
+            key: decision.get(key)
+            for key in (
+                "eligible",
+                "reasons",
+                "risk_categories",
+                "risk_files",
+                "snapshot_digest",
+            )
+        }
+        if _json_digest(decision_material) != decision_digest:
+            raise StoreError("merge decision does not match its digest")
         with self._connection() as connection:
             connection.execute(
                 """

@@ -78,6 +78,8 @@ SQLite 使用显式 `PRAGMA user_version` 迁移。现有用户的未版本化�
   评论编辑、check 状态和 PR head 变化不会覆盖旧版本，原始正文显式标记为 GitHub 不可信输入。
 - `github_pr_watermarks`：保存每个 run 已经形成 Review Checkpoint 的事件序号。事件先幂等入库，
   Checkpoint 与水位再在同一事务中提交，因此中断后可以安全重试。
+- `merge_decisions`：追加保存每次合并评估的 head/base、policy、GitHub 快照与决策摘要；重复评估
+  不覆盖旧结果，便于解释状态变化。
 
 Context Pack 与 Harness 绑定在一个事务中写入；Checkpoint 采用追加方式写入。数据库列中的版本、
 摘要、基线和关联 ID 必须与 JSON 内容一致，否则拒绝保存。
@@ -86,6 +88,11 @@ PR 跟进以 GitHub 的结构化事件为唯一真相。`follow-up` 完整遍历
 内容摘要区分事件版本，并只从水位后的版本生成紧凑 Review Checkpoint。模型分类或摘要属于可重建
 派生信息，不能覆盖事件，也不能直接授权 push、回复或 merge。原始评论和 Review 正文始终标记为
 外部不可信输入。
+
+Merge Decision Engine 位于执行器之前。它完整分页读取 GitHub 结构化状态，并以纯函数检查已验证
+head/base、策略摘要、审批、required checks、未解决会话、规模和不可削弱的高风险路径。结果只表示
+当前快照是否具备资格，不执行 merge，也不以 Harness 推理替代确定性事实。任何不完整快照都失败
+关闭；策略、head 或 base 在验证后变化时必须重新验证。
 
 三类协议文档都使用 Draft 2020-12 JSON Schema，schema 随 Python 包发布。持久化和导入边界会
 拒绝未知字段、未来版本、跨 work item/run 的关联错配及不一致摘要。Bundle digest 只能检测意外

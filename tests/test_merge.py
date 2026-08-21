@@ -30,6 +30,7 @@ class MergeDecisionTests(unittest.TestCase):
             snapshot or self.snapshot,
             expected_head_sha="a" * 40,
             expected_base_sha="b" * 40,
+            expected_policy_digest="c" * 64,
             max_files_changed=18,
             max_diff_lines=700,
             **kwargs,
@@ -49,6 +50,7 @@ class MergeDecisionTests(unittest.TestCase):
                 self.snapshot,
                 head_sha="d" * 40,
                 base_sha="e" * 40,
+                policy_digest="f" * 64,
                 files_complete=False,
                 conversations_complete=False,
                 checks_complete=False,
@@ -61,6 +63,7 @@ class MergeDecisionTests(unittest.TestCase):
             {
                 "head_changed",
                 "base_changed",
+                "policy_changed",
                 "files_incomplete",
                 "conversations_incomplete",
                 "checks_incomplete",
