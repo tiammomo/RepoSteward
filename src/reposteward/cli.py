@@ -18,7 +18,10 @@ from .setup import add_repository, initialize_user_config
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="reposteward",
-        description="A local-first, policy-gated Issue-to-PR workbench.",
+        description=(
+            "Local-first, policy-gated control plane for turning GitHub issues into "
+            "verified, human-reviewed pull requests with coding agents."
+        ),
     )
     parser.add_argument(
         "--config",
