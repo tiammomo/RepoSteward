@@ -17,6 +17,8 @@ from typing import Any
 from .config import GitHubConfig
 from .models import Issue, RepositoryInfo
 
+MAX_REST_PAGES = 1_000
+
 
 class GitHubError(RuntimeError):
     """A GitHub API request failed."""
@@ -165,6 +167,42 @@ class GitHubClient:
         if not isinstance(data, dict):
             raise GitHubError("GitHub GraphQL response did not contain data")
         return data
+
+    @staticmethod
+    def _response_has_next_page(response: object) -> bool:
+        headers = getattr(response, "headers", None)
+        if headers is None or not hasattr(headers, "get"):
+            return False
+        link = str(headers.get("Link", ""))
+        return any('rel="next"' in value for value in link.split(",") if value.strip())
+
+    def _paginated_rest_values(
+        self, path: str, *, container: str = ""
+    ) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            payload, response = self._request(
+                "GET", path, query={"per_page": 100, "page": page}
+            )
+            values = (
+                payload.get(container)
+                if container and isinstance(payload, dict)
+                else payload
+            )
+            if not isinstance(values, list) or not all(
+                isinstance(value, dict) for value in values
+            ):
+                label = container or "response"
+                raise GitHubError(f"GitHub paginated {label} was not a list")
+            result.extend(values)
+            if not self._response_has_next_page(response):
+                return result
+            if page >= MAX_REST_PAGES:
+                raise GitHubError(
+                    f"GitHub pagination exceeded {MAX_REST_PAGES} pages for {path}"
+                )
+            page += 1
 
     def project_v2(self, owner: str, number: int, *, owner_type: str) -> dict[str, Any]:
         field = "organization" if owner_type == "organization" else "user"
@@ -677,34 +715,20 @@ class GitHubClient:
 
     def pull_request_activity(self, upstream: str, number: int) -> dict[str, Any]:
         pull, _ = self._request("GET", f"/repos/{upstream}/pulls/{number}")
-        comments, _ = self._request(
-            "GET",
-            f"/repos/{upstream}/issues/{number}/comments",
-            query={"per_page": 100},
+        comments = self._paginated_rest_values(
+            f"/repos/{upstream}/issues/{number}/comments"
         )
-        reviews, _ = self._request(
-            "GET",
-            f"/repos/{upstream}/pulls/{number}/reviews",
-            query={"per_page": 100},
+        reviews = self._paginated_rest_values(
+            f"/repos/{upstream}/pulls/{number}/reviews"
         )
-        review_comments, _ = self._request(
-            "GET",
-            f"/repos/{upstream}/pulls/{number}/comments",
-            query={"per_page": 100},
+        review_comments = self._paginated_rest_values(
+            f"/repos/{upstream}/pulls/{number}/comments"
         )
         head_sha = str((pull.get("head") or {}).get("sha") or "")
-        checks, _ = self._request(
-            "GET",
+        check_runs = self._paginated_rest_values(
             f"/repos/{upstream}/commits/{head_sha}/check-runs",
-            query={"per_page": 100},
+            container="check_runs",
         )
-        if not all(
-            isinstance(value, list) for value in (comments, reviews, review_comments)
-        ):
-            raise GitHubError(
-                f"pull request activity for {upstream}#{number} is invalid"
-            )
-        check_runs = checks.get("check_runs", ()) if isinstance(checks, dict) else ()
         return {
             "pull_request": {
                 "number": int(pull["number"]),

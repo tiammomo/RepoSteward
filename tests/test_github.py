@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -205,6 +206,67 @@ class GitHubProjectIssueTests(unittest.TestCase):
 
 
 class GitHubPullRequestTests(unittest.TestCase):
+    def test_pull_request_activity_follows_every_rest_page(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        pull = {
+            "number": 12,
+            "html_url": "https://example.test/pull/12",
+            "state": "open",
+            "draft": True,
+            "updated_at": "2026-08-20T00:00:00Z",
+            "head": {"sha": "a" * 40},
+            "base": {"ref": "main"},
+            "mergeable": True,
+            "mergeable_state": "clean",
+            "merged_at": None,
+        }
+        first_page = [
+            {
+                "id": value,
+                "user": {"login": "reviewer"},
+                "created_at": "2026-08-20T00:00:00Z",
+                "updated_at": "2026-08-20T00:00:00Z",
+                "html_url": f"https://example.test/comment/{value}",
+                "body": "review",
+            }
+            for value in range(1, 101)
+        ]
+        second_page = [
+            {
+                "id": 101,
+                "user": {"login": "reviewer"},
+                "created_at": "2026-08-20T00:00:00Z",
+                "updated_at": "2026-08-20T00:00:00Z",
+                "html_url": "https://example.test/comment/101",
+                "body": "last review",
+            }
+        ]
+        next_page = SimpleNamespace(
+            headers={
+                "Link": '<https://api.test/comments?page=2>; rel="next", '
+                '<https://api.test/comments?page=2>; rel="last"'
+            }
+        )
+        last_page = SimpleNamespace(headers={})
+
+        with patch.object(
+            client,
+            "_request",
+            side_effect=[
+                (pull, None),
+                (first_page, next_page),
+                (second_page, last_page),
+                ([], last_page),
+                ([], last_page),
+                ({"check_runs": []}, last_page),
+            ],
+        ) as request:
+            activity = client.pull_request_activity("owner/repo", 12)
+
+        self.assertEqual(len(activity["comments"]), 101)
+        self.assertEqual(request.call_args_list[1].kwargs["query"]["page"], 1)
+        self.assertEqual(request.call_args_list[2].kwargs["query"]["page"], 2)
+
     def test_pull_request_activity_returns_compact_structured_state(self) -> None:
         client = GitHubClient(GitHubConfig(), token="test-token")
         pull = {

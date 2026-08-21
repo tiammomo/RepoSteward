@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import uuid
@@ -12,7 +13,7 @@ from typing import Any
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -195,6 +196,42 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         ON issue_proposals(status, updated_at DESC)
         """,
     ),
+    5: (
+        """
+        CREATE TABLE IF NOT EXISTS github_pr_events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            repository TEXT NOT NULL,
+            pull_number INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            version_digest TEXT NOT NULL,
+            head_sha TEXT NOT NULL DEFAULT '',
+            source_trust TEXT NOT NULL DEFAULT 'github_untrusted',
+            source_created_at TEXT NOT NULL DEFAULT '',
+            source_updated_at TEXT NOT NULL DEFAULT '',
+            payload TEXT NOT NULL,
+            ingested_at TEXT NOT NULL,
+            UNIQUE(
+                repository, pull_number, event_type, external_id, version_digest
+            )
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS github_pr_events_for_pull
+        ON github_pr_events(repository, pull_number, sequence)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS github_pr_watermarks (
+            run_id TEXT PRIMARY KEY,
+            repository TEXT NOT NULL,
+            pull_number INTEGER NOT NULL,
+            sequence INTEGER NOT NULL DEFAULT 0,
+            batch_digest TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES runs(id)
+        )
+        """,
+    ),
 }
 
 
@@ -204,6 +241,19 @@ class StoreError(RuntimeError):
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds")
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _json_digest(value: object) -> str:
+    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
 
 
 class Store:
@@ -669,15 +719,15 @@ class Store:
             if cursor.rowcount != 1:
                 raise KeyError(f"harness run not found: {run_id}")
 
-    def save_checkpoint(
-        self,
+    @staticmethod
+    def _validate_checkpoint_record(
         *,
         work_item_id: str,
         run_id: str,
         context_pack_id: str,
         status: str,
         payload: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> None:
         expected = {
             "work_item_id": work_item_id,
             "run_id": run_id,
@@ -692,59 +742,352 @@ class Store:
                 "checkpoint payload does not match its record: " + ", ".join(mismatched)
             )
         validate_checkpoint(payload)
+
+    @staticmethod
+    def _insert_checkpoint(
+        connection: sqlite3.Connection,
+        *,
+        work_item_id: str,
+        run_id: str,
+        context_pack_id: str,
+        status: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        context = connection.execute(
+            """
+            SELECT work_item_id, run_id FROM context_packs WHERE id=?
+            """,
+            (context_pack_id,),
+        ).fetchone()
+        if context is None:
+            raise KeyError(f"context pack not found: {context_pack_id}")
+        if (
+            str(context["work_item_id"]) != work_item_id
+            or str(context["run_id"]) != run_id
+        ):
+            raise StoreError(
+                "checkpoint context pack belongs to a different work item or run"
+            )
+        row = connection.execute(
+            """
+            SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence
+            FROM checkpoints WHERE run_id=?
+            """,
+            (run_id,),
+        ).fetchone()
+        assert row is not None
+        sequence = int(row["next_sequence"])
         checkpoint_id = uuid.uuid4().hex
+        now = utc_now()
+        materialized = {
+            **payload,
+            "id": checkpoint_id,
+            "sequence": sequence,
+            "created_at": now,
+        }
+        connection.execute(
+            """
+            INSERT INTO checkpoints(
+                id, work_item_id, run_id, context_pack_id, sequence,
+                status, payload, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                checkpoint_id,
+                work_item_id,
+                run_id,
+                context_pack_id,
+                sequence,
+                status,
+                json.dumps(materialized, ensure_ascii=False),
+                now,
+            ),
+        )
+        return materialized
+
+    def save_checkpoint(
+        self,
+        *,
+        work_item_id: str,
+        run_id: str,
+        context_pack_id: str,
+        status: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        self._validate_checkpoint_record(
+            work_item_id=work_item_id,
+            run_id=run_id,
+            context_pack_id=context_pack_id,
+            status=status,
+            payload=payload,
+        )
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return self._insert_checkpoint(
+                connection,
+                work_item_id=work_item_id,
+                run_id=run_id,
+                context_pack_id=context_pack_id,
+                status=status,
+                payload=payload,
+            )
+
+    @staticmethod
+    def _github_event_values(
+        activity: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        pull = activity.get("pull_request")
+        if not isinstance(pull, dict):
+            raise StoreError("GitHub activity is missing its pull request")
+        head_sha = str(pull.get("head_sha", ""))
+        collections: tuple[tuple[str, object], ...] = (
+            ("pull_request", (pull,)),
+            ("issue_comment", activity.get("comments")),
+            ("review", activity.get("reviews")),
+            ("review_comment", activity.get("review_comments")),
+            ("check", activity.get("checks")),
+        )
+        result: list[dict[str, str]] = []
+        for event_type, raw_values in collections:
+            if not isinstance(raw_values, (list, tuple)):
+                raise StoreError(f"GitHub {event_type} activity is not a list")
+            for value in raw_values:
+                if not isinstance(value, dict):
+                    raise StoreError(f"GitHub {event_type} event is not an object")
+                external_value = (
+                    value.get("number")
+                    if event_type == "pull_request"
+                    else value.get("id")
+                )
+                external_id = str(external_value or "").strip()
+                if not external_id:
+                    raise StoreError(f"GitHub {event_type} event has no stable ID")
+                result.append(
+                    {
+                        "event_type": event_type,
+                        "external_id": external_id,
+                        "version_digest": _json_digest(value),
+                        "head_sha": head_sha,
+                        "source_created_at": str(
+                            value.get("created_at") or value.get("submitted_at") or ""
+                        ),
+                        "source_updated_at": str(
+                            value.get("updated_at") or value.get("submitted_at") or ""
+                        ),
+                        "payload": _canonical_json(value),
+                    }
+                )
+        return result
+
+    def ingest_github_pr_activity(
+        self,
+        *,
+        run_id: str,
+        repository: str,
+        pull_number: int,
+        activity: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist immutable event versions and return those after the run watermark."""
+        repository = repository.casefold()
+        if pull_number < 1:
+            raise ValueError("pull_number must be positive")
+        event_values = self._github_event_values(activity)
         now = utc_now()
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            context = connection.execute(
-                """
-                SELECT work_item_id, run_id FROM context_packs WHERE id=?
-                """,
-                (context_pack_id,),
+            run = connection.execute(
+                "SELECT repository, details FROM runs WHERE id=?", (run_id,)
             ).fetchone()
-            if context is None:
-                raise KeyError(f"context pack not found: {context_pack_id}")
-            if (
-                str(context["work_item_id"]) != work_item_id
-                or str(context["run_id"]) != run_id
-            ):
-                raise StoreError(
-                    "checkpoint context pack belongs to a different work item or run"
-                )
-            row = connection.execute(
+            if run is None:
+                raise KeyError(f"run not found: {run_id}")
+            if str(run["repository"]).casefold() != repository:
+                raise StoreError("GitHub activity belongs to a different repository")
+            details = json.loads(str(run["details"]))
+            pr_url = str(details.get("pr_url", "")).rstrip("/")
+            if pr_url and not pr_url.endswith(f"/pull/{pull_number}"):
+                raise StoreError("GitHub activity belongs to a different pull request")
+            connection.execute(
                 """
-                SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence
-                FROM checkpoints WHERE run_id=?
+                INSERT INTO github_pr_watermarks(
+                    run_id, repository, pull_number, sequence,
+                    batch_digest, updated_at
+                ) VALUES (?, ?, ?, 0, '', ?)
+                ON CONFLICT(run_id) DO NOTHING
+                """,
+                (run_id, repository, pull_number, now),
+            )
+            watermark = connection.execute(
+                """
+                SELECT repository, pull_number, sequence
+                FROM github_pr_watermarks WHERE run_id=?
                 """,
                 (run_id,),
             ).fetchone()
-            assert row is not None
-            sequence = int(row["next_sequence"])
-            materialized = {
-                **payload,
-                "id": checkpoint_id,
-                "sequence": sequence,
-                "created_at": now,
+            assert watermark is not None
+            if (
+                str(watermark["repository"]).casefold() != repository
+                or int(watermark["pull_number"]) != pull_number
+            ):
+                raise StoreError("GitHub watermark belongs to a different pull request")
+            for event in event_values:
+                connection.execute(
+                    """
+                    INSERT INTO github_pr_events(
+                        repository, pull_number, event_type, external_id,
+                        version_digest, head_sha, source_trust, source_created_at,
+                        source_updated_at, payload, ingested_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'github_untrusted', ?, ?, ?, ?)
+                    ON CONFLICT(
+                        repository, pull_number, event_type,
+                        external_id, version_digest
+                    ) DO NOTHING
+                    """,
+                    (
+                        repository,
+                        pull_number,
+                        event["event_type"],
+                        event["external_id"],
+                        event["version_digest"],
+                        event["head_sha"],
+                        event["source_created_at"],
+                        event["source_updated_at"],
+                        event["payload"],
+                        now,
+                    ),
+                )
+            previous_sequence = int(watermark["sequence"])
+            rows = connection.execute(
+                """
+                SELECT * FROM github_pr_events
+                WHERE repository=? AND pull_number=? AND sequence>?
+                ORDER BY sequence
+                """,
+                (repository, pull_number, previous_sequence),
+            ).fetchall()
+        events = []
+        for row in rows:
+            event = dict(row)
+            event["payload"] = json.loads(event["payload"])
+            events.append(event)
+        through_sequence = int(events[-1]["sequence"]) if events else previous_sequence
+        batch_digest = _json_digest(
+            [
+                {
+                    "sequence": value["sequence"],
+                    "event_type": value["event_type"],
+                    "external_id": value["external_id"],
+                    "version_digest": value["version_digest"],
+                }
+                for value in events
+            ]
+        )
+        return {
+            "previous_sequence": previous_sequence,
+            "through_sequence": through_sequence,
+            "batch_digest": batch_digest,
+            "events": events,
+        }
+
+    def commit_github_follow_up(
+        self,
+        *,
+        run_id: str,
+        repository: str,
+        pull_number: int,
+        previous_sequence: int,
+        through_sequence: int,
+        batch_digest: str,
+        checkpoint: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Advance a PR watermark and append its Review Checkpoint atomically."""
+        repository = repository.casefold()
+        checkpoint_args: dict[str, str] | None = None
+        if checkpoint is not None:
+            checkpoint_args = {
+                "work_item_id": str(checkpoint.get("work_item_id", "")),
+                "run_id": str(checkpoint.get("run_id", "")),
+                "context_pack_id": str(checkpoint.get("context_pack_id", "")),
+                "status": str(checkpoint.get("status", "")),
             }
+            self._validate_checkpoint_record(payload=checkpoint, **checkpoint_args)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            watermark = connection.execute(
+                "SELECT * FROM github_pr_watermarks WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if watermark is None:
+                raise KeyError(f"GitHub watermark not found for run: {run_id}")
+            if (
+                str(watermark["repository"]).casefold() != repository
+                or int(watermark["pull_number"]) != pull_number
+            ):
+                raise StoreError("GitHub watermark belongs to a different pull request")
+            current_sequence = int(watermark["sequence"])
+            if current_sequence != previous_sequence:
+                if current_sequence >= through_sequence:
+                    return {
+                        "idempotent": True,
+                        "sequence": current_sequence,
+                        "checkpoint": None,
+                    }
+                raise StoreError("GitHub watermark changed during follow-up")
+            if through_sequence < previous_sequence:
+                raise StoreError("GitHub watermark cannot move backwards")
+            if through_sequence > previous_sequence:
+                event = connection.execute(
+                    """
+                    SELECT sequence FROM github_pr_events
+                    WHERE repository=? AND pull_number=? AND sequence=?
+                    """,
+                    (repository, pull_number, through_sequence),
+                ).fetchone()
+                if event is None:
+                    raise StoreError(
+                        "GitHub watermark does not reference a stored event"
+                    )
+            materialized = None
+            if checkpoint is not None:
+                assert checkpoint_args is not None
+                materialized = self._insert_checkpoint(
+                    connection, payload=checkpoint, **checkpoint_args
+                )
             connection.execute(
                 """
-                INSERT INTO checkpoints(
-                    id, work_item_id, run_id, context_pack_id, sequence,
-                    status, payload, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                UPDATE github_pr_watermarks
+                SET sequence=?, batch_digest=?, updated_at=? WHERE run_id=?
                 """,
-                (
-                    checkpoint_id,
-                    work_item_id,
-                    run_id,
-                    context_pack_id,
-                    sequence,
-                    status,
-                    json.dumps(materialized, ensure_ascii=False),
-                    now,
-                ),
+                (through_sequence, batch_digest, utc_now(), run_id),
             )
-        return materialized
+        return {
+            "idempotent": False,
+            "sequence": through_sequence,
+            "checkpoint": materialized,
+        }
+
+    def github_pr_events(
+        self, repository: str, pull_number: int
+    ) -> list[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM github_pr_events
+                WHERE repository=? AND pull_number=? ORDER BY sequence
+                """,
+                (repository.casefold(), pull_number),
+            ).fetchall()
+        result = []
+        for row in rows:
+            event = dict(row)
+            event["payload"] = json.loads(event["payload"])
+            result.append(event)
+        return result
+
+    def github_pr_watermark(self, run_id: str) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM github_pr_watermarks WHERE run_id=?", (run_id,)
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def update_work_item_status(self, work_item_id: str, status: str) -> None:
         with self._connection() as connection:
