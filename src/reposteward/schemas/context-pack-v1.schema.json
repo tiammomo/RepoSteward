@@ -119,7 +119,8 @@
             "github_issue",
             "repository_policy",
             "repository_guidance",
-            "reposteward_checkpoint"
+            "reposteward_checkpoint",
+            "github_pr_event_batch"
           ]
         },
         "locator": {"type": "string", "maxLength": 4000},

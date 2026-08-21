@@ -4,7 +4,7 @@ import hashlib
 import json
 import tempfile
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +22,8 @@ MAX_HANDOFF_ITEM_CHARS = 500
 MAX_HANDOFF_NOTES_CHARS = 4_000
 MAX_HANDOFF_DECISIONS = 6
 MAX_HANDOFF_EVIDENCE_ITEMS = 8
+MAX_REPAIR_ITEMS = 16
+MAX_REPAIR_ITEM_CHARS = 1_200
 
 
 def _utc_now() -> str:
@@ -339,6 +341,66 @@ def build_context_pack(
             model=model,
             created_at=_utc_now(),
         ),
+    )
+
+
+def build_repair_context_pack(
+    candidate: Candidate,
+    policy: RepositoryPolicy,
+    *,
+    work_item_id: str,
+    run_id: str,
+    worktree: Path,
+    base_commit: str,
+    harness: str,
+    model: str,
+    previous_checkpoint: dict[str, Any],
+    pull_request_url: str,
+    head_commit: str,
+    event_watermark: int,
+    event_batch_digest: str,
+    repair_items: tuple[dict[str, Any], ...],
+) -> ContextPack:
+    """Build a bounded repair pack from one committed PR event batch."""
+    bounded_items = tuple(
+        _canonical_json(value)[:MAX_REPAIR_ITEM_CHARS]
+        for value in repair_items[:MAX_REPAIR_ITEMS]
+    )
+    base = build_context_pack(
+        candidate,
+        policy,
+        work_item_id=work_item_id,
+        run_id=run_id,
+        worktree=worktree,
+        base_commit=base_commit,
+        harness=harness,
+        model=model,
+        previous_checkpoint=previous_checkpoint,
+    )
+    batch_source = ContextSource(
+        kind="github_pr_event_batch",
+        locator=pull_request_url,
+        digest=event_batch_digest,
+        trust="external_untrusted",
+    )
+    sources = (*base.sources[: MAX_CONTEXT_SOURCES - 1], batch_source)
+    source_digest = _digest([asdict(source) for source in sources])
+    repair_header = _canonical_json(
+        {
+            "pull_request_url": pull_request_url,
+            "head_commit": head_commit,
+            "event_watermark": event_watermark,
+            "event_batch_digest": event_batch_digest,
+        }
+    )
+    return replace(
+        base,
+        task=replace(
+            base.task,
+            acceptance_criteria=(repair_header, *bounded_items),
+        ),
+        sources=tuple(sources),
+        source_digest=source_digest,
     )
 
 
