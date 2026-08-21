@@ -5,9 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from reposteward.config import RepositoryPolicy
+from reposteward.config import RepositoryPolicy, StorageConfig
 from reposteward.pipeline import Pipeline
+from reposteward.policy import PolicyError
 
 
 class StubStore:
@@ -61,3 +63,91 @@ class StorageStatisticsTests(unittest.TestCase):
         pipeline = object.__new__(Pipeline)
         with self.assertRaisesRegex(ValueError, "between 0 and 36500"):
             pipeline.storage_statistics(since_days=-1)
+
+
+class GcStore:
+    def __init__(self) -> None:
+        self.audit: list[str] = []
+        self.payload_deleted = False
+
+    def run_gc_safety(self) -> dict[str, dict]:
+        return {"run-1": {"repository": "owner/repo", "terminal_checkpoint": True}}
+
+    def event_payload_gc_inventory(self, _cutoffs: dict[str, str]) -> dict:
+        if self.payload_deleted:
+            return {"candidates": [], "retained": []}
+        return {
+            "candidates": [
+                {
+                    "kind": "github_event_payload",
+                    "digest": "a" * 64,
+                    "bytes": 7,
+                    "created_at": "2020-01-01T00:00:00+00:00",
+                    "repositories": ["owner/repo"],
+                    "reference_count": 1,
+                    "reason": "explicit_retention_elapsed_and_checkpointed",
+                }
+            ],
+            "retained": [],
+        }
+
+    def delete_event_payloads(
+        self, digests: tuple[str, ...], *, retention_cutoffs: dict[str, str]
+    ) -> dict:
+        self.payload_deleted = True
+        return {
+            "deleted": [{"digest": digests[0], "bytes": 7}],
+            "skipped": [],
+        }
+
+    def record_storage_gc(self, *, stage: str, **_kwargs) -> dict:
+        self.audit.append(stage)
+        return {"id": f"audit-{len(self.audit)}", "stage": stage}
+
+
+class StorageGcTests(unittest.TestCase):
+    def pipeline(self, root: Path) -> tuple[Pipeline, GcStore, Path]:
+        verification = root / "runs" / "run-1" / "verification"
+        verification.mkdir(parents=True)
+        log = verification / "command.log"
+        log.write_bytes(b"12345")
+        os.utime(log, (1, 1))
+        policy = RepositoryPolicy(name="owner/repo", event_payload_retention_days=30)
+        pipeline = object.__new__(Pipeline)
+        pipeline.config = SimpleNamespace(
+            state_dir=root,
+            storage=StorageConfig(cache_retention_days=30, max_gc_items=10),
+            repositories={"owner/repo": policy},
+            github=SimpleNamespace(login="operator"),
+        )
+        store = GcStore()
+        pipeline.store = store
+        return pipeline, store, log
+
+    def test_gc_defaults_to_exact_read_only_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline, store, log = self.pipeline(Path(directory))
+
+            result = pipeline.storage_gc(repository="Owner/Repo")
+
+            self.assertTrue(log.exists())
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["candidate_count"], 2)
+        self.assertEqual(result["estimated_reclaimable_bytes"], 12)
+        self.assertEqual(store.audit, [])
+        self.assertIn("merge_decision_audit", result["protected_categories"])
+
+    def test_gc_apply_requires_switch_then_audits_and_deletes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline, store, log = self.pipeline(Path(directory))
+            with self.assertRaisesRegex(PolicyError, "ENABLE_GC"):
+                pipeline.storage_gc(repository="owner/repo", apply=True)
+            self.assertTrue(log.exists())
+
+            with patch.dict("os.environ", {"REPOSTEWARD_ENABLE_GC": "1"}):
+                result = pipeline.storage_gc(repository="owner/repo", apply=True)
+
+            self.assertFalse(log.exists())
+        self.assertEqual(store.audit, ["applying", "completed"])
+        self.assertEqual(len(result["applied"]["deleted_logs"]), 1)
+        self.assertEqual(len(result["applied"]["deleted_event_payloads"]), 1)

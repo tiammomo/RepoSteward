@@ -94,6 +94,10 @@ pids_limit = 1024
 max_output_chars = 12000
 passed_output_chars = 2000
 max_log_chars = 2000000
+
+[storage]
+cache_retention_days = 30
+max_gc_items = 1000
 """
 
 

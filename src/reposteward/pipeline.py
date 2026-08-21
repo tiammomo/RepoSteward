@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -1077,6 +1078,221 @@ class Pipeline:
             ),
             "public_write": False,
         }
+
+    def _verification_log_gc_inventory(
+        self, *, repository: str, cutoff: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        safety = self.store.run_gc_safety()
+        candidates = []
+        retained = []
+        state_root = self.config.state_dir.resolve()
+        runs_root = state_root / "runs"
+        if not runs_root.is_dir():
+            return {"candidates": candidates, "retained": retained}
+        for run_dir in sorted(runs_root.iterdir()):
+            if run_dir.is_symlink() or not run_dir.is_dir():
+                continue
+            run = safety.get(run_dir.name)
+            verification = run_dir / "verification"
+            if verification.is_symlink() or not verification.is_dir():
+                continue
+            for path in sorted(verification.iterdir()):
+                if path.is_symlink() or not path.is_file() or path.suffix != ".log":
+                    continue
+                try:
+                    stat = path.stat()
+                    relative = path.relative_to(state_root).as_posix()
+                except (OSError, ValueError):
+                    continue
+                run_repository = str(run.get("repository", "")) if run else ""
+                if repository and run_repository != repository:
+                    continue
+                timestamp = datetime.fromtimestamp(stat.st_mtime, UTC).isoformat()
+                item = {
+                    "kind": "verification_log_cache",
+                    "path": relative,
+                    "run_id": run_dir.name,
+                    "repository": run_repository,
+                    "bytes": stat.st_size,
+                    "created_at": timestamp,
+                    "mtime_ns": stat.st_mtime_ns,
+                }
+                if run is None:
+                    item["reasons"] = ["unknown_run"]
+                    retained.append(item)
+                elif not bool(run["terminal_checkpoint"]):
+                    item["reasons"] = ["no_terminal_checkpoint"]
+                    retained.append(item)
+                elif timestamp >= cutoff:
+                    item["reasons"] = ["within_cache_retention"]
+                    retained.append(item)
+                else:
+                    item["reason"] = "expired_rebuildable_cache"
+                    candidates.append(item)
+        key = lambda value: (value["created_at"], value["path"])
+        return {
+            "candidates": sorted(candidates, key=key),
+            "retained": sorted(retained, key=key),
+        }
+
+    @staticmethod
+    def _retained_gc_summary(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
+        for value in values:
+            reasons = tuple(str(item) for item in value.get("reasons", ()))
+            key = (str(value["kind"]), reasons)
+            group = grouped.setdefault(
+                key,
+                {
+                    "kind": key[0],
+                    "reasons": list(reasons),
+                    "records": 0,
+                    "bytes": 0,
+                },
+            )
+            group["records"] += 1
+            group["bytes"] += int(value["bytes"])
+        return sorted(
+            grouped.values(), key=lambda value: (value["kind"], value["reasons"])
+        )
+
+    def storage_gc(
+        self, *, repository: str = "", apply: bool = False
+    ) -> dict[str, Any]:
+        normalized = repository.casefold()
+        if normalized:
+            self.policy(normalized)
+        now = datetime.now(UTC)
+        cache_cutoff = (
+            now - timedelta(days=self.config.storage.cache_retention_days)
+        ).isoformat()
+        retention_cutoffs = {
+            policy.name.casefold(): (
+                now - timedelta(days=policy.event_payload_retention_days)
+            ).isoformat()
+            for policy in self.config.repositories.values()
+            if policy.event_payload_retention_days is not None
+        }
+        logs = self._verification_log_gc_inventory(
+            repository=normalized, cutoff=cache_cutoff
+        )
+        payloads = self.store.event_payload_gc_inventory(retention_cutoffs)
+
+        def in_scope(value: dict[str, Any]) -> bool:
+            repositories = value.get("repositories", ())
+            return not normalized or normalized in repositories
+
+        payload_candidates = [
+            value for value in payloads["candidates"] if in_scope(value)
+        ]
+        payload_retained = [value for value in payloads["retained"] if in_scope(value)]
+        candidates = [*logs["candidates"], *payload_candidates]
+        candidates.sort(
+            key=lambda value: (
+                value["created_at"],
+                value["kind"],
+                str(value.get("path") or value.get("digest")),
+            )
+        )
+        retained = [*logs["retained"], *payload_retained]
+        if len(candidates) > self.config.storage.max_gc_items:
+            for value in candidates[self.config.storage.max_gc_items :]:
+                retained.append({**value, "reasons": ["gc_item_limit"]})
+            candidates = candidates[: self.config.storage.max_gc_items]
+        generated_at = now.isoformat()
+        plan_material = {
+            "repository": normalized,
+            "generated_at": generated_at,
+            "cache_cutoff": cache_cutoff,
+            "retention_cutoffs": retention_cutoffs,
+            "candidates": candidates,
+        }
+        plan_digest = hashlib.sha256(
+            json.dumps(
+                plan_material,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        result: dict[str, Any] = {
+            **plan_material,
+            "plan_digest": plan_digest,
+            "dry_run": not apply,
+            "candidate_count": len(candidates),
+            "estimated_reclaimable_bytes": sum(
+                int(value["bytes"]) for value in candidates
+            ),
+            "retained_summary": self._retained_gc_summary(retained),
+            "protected_categories": [
+                "checkpoint",
+                "github_event_index",
+                "merge_decision_audit",
+                "storage_gc_audit",
+            ],
+            "public_write": False,
+        }
+        if not apply:
+            return result
+        if os.environ.get("REPOSTEWARD_ENABLE_GC") != "1":
+            raise PolicyError(
+                "storage GC apply is disabled; set REPOSTEWARD_ENABLE_GC=1"
+            )
+        applying = self.store.record_storage_gc(
+            repository=normalized,
+            actor=self.config.github.login,
+            stage="applying",
+            plan_digest=plan_digest,
+            payload=result,
+        )
+        deleted_logs = []
+        skipped_logs = []
+        fresh_safety = self.store.run_gc_safety()
+        state_root = self.config.state_dir.resolve()
+        runs_root = state_root / "runs"
+        for value in candidates:
+            if value["kind"] != "verification_log_cache":
+                continue
+            path = state_root / str(value["path"])
+            run = fresh_safety.get(str(value["run_id"]))
+            try:
+                if (
+                    path.is_symlink()
+                    or path.suffix != ".log"
+                    or not path.resolve().is_relative_to(runs_root)
+                    or run is None
+                    or not bool(run["terminal_checkpoint"])
+                ):
+                    raise OSError("log no longer satisfies GC policy")
+                stat = path.stat()
+                if stat.st_mtime_ns != int(value["mtime_ns"]):
+                    raise OSError("log changed after planning")
+                path.unlink()
+                deleted_logs.append(value)
+            except OSError as exc:
+                skipped_logs.append({"path": value["path"], "reason": str(exc)})
+        payload_result = self.store.delete_event_payloads(
+            tuple(
+                str(value["digest"])
+                for value in candidates
+                if value["kind"] == "github_event_payload"
+            ),
+            retention_cutoffs=retention_cutoffs,
+        )
+        applied = {
+            "deleted_logs": deleted_logs,
+            "skipped_logs": skipped_logs,
+            "deleted_event_payloads": payload_result["deleted"],
+            "skipped_event_payloads": payload_result["skipped"],
+        }
+        completed = self.store.record_storage_gc(
+            repository=normalized,
+            actor=self.config.github.login,
+            stage="completed",
+            plan_digest=plan_digest,
+            payload=applied,
+        )
+        return {**result, "audit": [applying, completed], "applied": applied}
 
     def follow_up(self, run_id: str) -> dict[str, Any]:
         """Return only GitHub activity that changed since the previous check."""

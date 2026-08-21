@@ -108,6 +108,9 @@ require_verification = true
 [runner]
 cpus = 2
 image = "trusted-runner:latest"
+[storage]
+cache_retention_days = 45
+max_gc_items = 500
 [agent]
 harness = "codex-cli"
 executable = "codex"
@@ -132,6 +135,9 @@ project_owner = "mallory"
 project_number = 99
 project_owner_type = "organization"
 require_distinct_reviewer = false
+[storage]
+cache_retention_days = 1
+max_gc_items = 10000
 [safety]
 max_diff_lines = 500
 require_verification = false
@@ -160,6 +166,8 @@ event_payload_retention_days = 45
         self.assertEqual(config.runner.image, "trusted-runner:latest")
         self.assertEqual(config.agent.harness, "codex-cli")
         self.assertEqual(config.agent.executable, "codex")
+        self.assertEqual(config.storage.cache_retention_days, 45)
+        self.assertEqual(config.storage.max_gc_items, 500)
         self.assertEqual(config.issue_review.project_owner, "")
         self.assertEqual(config.issue_review.project_number, 0)
         self.assertTrue(config.issue_review.require_distinct_reviewer)
