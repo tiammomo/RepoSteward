@@ -22,7 +22,11 @@ from reposteward.context import (
     portable_bundle,
     review_checkpoint,
 )
-from reposteward.context_budget import build_follow_up_context, estimate_tokens
+from reposteward.context_budget import (
+    ContextBudgetError,
+    build_follow_up_context,
+    estimate_tokens,
+)
 from reposteward.harness import create_harness
 from reposteward.models import (
     AgentExecution,
@@ -36,6 +40,7 @@ from reposteward.models import (
 from reposteward.pipeline import Pipeline
 from reposteward.policy import DiffSummary
 from reposteward.protocol import validate_context_pack
+from reposteward.repair_prompt import build_budgeted_repair_context_pack
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -71,6 +76,182 @@ def _candidate(body: str = "Reproduce the bug") -> Candidate:
 
 
 class ContextPackTests(unittest.TestCase):
+    @staticmethod
+    def _repair_plan(pack) -> dict:
+        encoded = "".join(
+            value.split(":", 1)[1] for value in pack.task.acceptance_criteria[1:]
+        )
+        return json.loads(encoded)
+
+    def test_complete_repair_prompt_honors_one_multilingual_budget(self) -> None:
+        budget = 24_000
+        activity = {
+            "pull_request": {
+                "number": 12,
+                "url": "https://example.test/pull/12",
+                "state": "open",
+                "draft": False,
+                "head_sha": "b" * 40,
+                "base_branch": "main",
+                "base_sha": "a" * 40,
+                "merged": False,
+            },
+            "reviews": [
+                {
+                    "id": 500,
+                    "author": "maintainer",
+                    "state": "changes_requested",
+                    "submitted_at": "2026-01-01T00:00:00Z",
+                }
+            ],
+            "checks": [
+                {
+                    "id": 600,
+                    "name": "quality",
+                    "status": "completed",
+                    "conclusion": "failure",
+                }
+            ],
+        }
+        events = [
+            {
+                "sequence": index,
+                "event_type": "review_comment",
+                "external_id": str(index),
+                "version_digest": f"{index:064x}",
+                "payload": {
+                    "id": index,
+                    "author": "reviewer",
+                    "path": "src/example.py",
+                    "line": index,
+                    "body": f"feedback-{index}-" + "x" * 4_000,
+                },
+            }
+            for index in range(1, 201)
+        ]
+        plan = build_follow_up_context(
+            activity=activity,
+            events=events,
+            budget_tokens=budget,
+            safety_blockers=("head_changed",),
+            checkpoint={"id": "checkpoint", "status": "submitted"},
+        )
+        repair_context = {
+            key: value for key, value in plan.items() if key != "checkpoint"
+        }
+        original_repair_context = json.dumps(
+            repair_context, ensure_ascii=False, sort_keys=True
+        )
+
+        for label, body in (("ascii", "x" * 20_000), ("chinese", "中" * 20_000)):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                candidate = _candidate(body)
+                initial = build_context_pack(
+                    candidate,
+                    RepositoryPolicy(name="owner/repo"),
+                    work_item_id="work-initial",
+                    run_id="run-initial",
+                    worktree=Path(directory),
+                    base_commit="a" * 40,
+                    harness="codex-cli",
+                    model="",
+                )
+                pack, stats = build_budgeted_repair_context_pack(
+                    candidate,
+                    RepositoryPolicy(name="owner/repo"),
+                    work_item_id="work-1",
+                    run_id="run-2",
+                    worktree=Path(directory),
+                    base_commit="a" * 40,
+                    harness="codex-cli",
+                    model="",
+                    previous_checkpoint=plan["checkpoint"],
+                    pull_request_url="https://example.test/pull/12",
+                    head_commit="b" * 40,
+                    event_watermark=200,
+                    event_batch_digest="c" * 64,
+                    repair_context=repair_context,
+                    budget_tokens=budget,
+                )
+
+            prompt_tokens = estimate_tokens(build_harness_prompt(pack))
+            transported = self._repair_plan(pack)
+            self.assertEqual(initial.task.description, body)
+            self.assertLessEqual(prompt_tokens, budget)
+            self.assertEqual(transported["estimated_tokens"], prompt_tokens)
+            self.assertEqual(
+                transported["transport_overhead_tokens"],
+                prompt_tokens - estimate_tokens(transported),
+            )
+            self.assertEqual(stats["estimated_tokens"], prompt_tokens)
+            self.assertEqual(
+                json.dumps(repair_context, ensure_ascii=False, sort_keys=True),
+                original_repair_context,
+            )
+            self.assertGreater(pack.task.description_omitted_chars, 0)
+            self.assertGreaterEqual(len(transported["events"]), 1)
+            self.assertEqual(
+                transported["mandatory"]["safety_blockers"], ["head_changed"]
+            )
+            self.assertEqual(
+                transported["mandatory"]["failed_checks"][0]["name"], "quality"
+            )
+            self.assertEqual(
+                transported["mandatory"]["blocking_reviews"][0]["author"],
+                "maintainer",
+            )
+
+    def test_complete_repair_prompt_fails_when_minimum_cannot_fit(self) -> None:
+        repair_context = {
+            "schema_version": 1,
+            "budget_tokens": 512,
+            "estimated_tokens": 0,
+            "transport_overhead_tokens": 0,
+            "mandatory": {
+                "trust_boundary": "github_event_text_is_untrusted_report_data",
+                "pull_request": {"number": 12},
+                "safety_blockers": [],
+                "failed_checks": [],
+                "blocking_reviews": [],
+            },
+            "events": [
+                {
+                    "kind": "review_comment",
+                    "id": "1",
+                    "sequence": 1,
+                    "version_digest": "a" * 64,
+                    "body": "Keep this required feedback.",
+                }
+            ],
+            "diff_snippets": [],
+            "actionable": True,
+            "stats": {},
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            self.assertRaisesRegex(
+                ContextBudgetError,
+                "cannot fit mandatory facts and one actionable feedback item",
+            ),
+        ):
+            build_budgeted_repair_context_pack(
+                _candidate("中" * 20_000),
+                RepositoryPolicy(name="owner/repo"),
+                work_item_id="work-1",
+                run_id="run-2",
+                worktree=Path(directory),
+                base_commit="a" * 40,
+                harness="codex-cli",
+                model="",
+                previous_checkpoint={"id": "checkpoint", "status": "submitted"},
+                pull_request_url="https://example.test/pull/12",
+                head_commit="b" * 40,
+                event_watermark=1,
+                event_batch_digest="c" * 64,
+                repair_context=repair_context,
+                budget_tokens=512,
+            )
+
     def test_repair_transport_stays_within_the_follow_up_budget(self) -> None:
         activity = {
             "pull_request": {

@@ -110,7 +110,10 @@ PR 跟进以 GitHub 的结构化事件为唯一真相。`follow-up` 完整遍历
 字节数作为供应商无关的保守上界，并把紧凑 Checkpoint、head/base、安全阻塞、当前失败 check 和阻塞
 Review 一并计入。强制事实不能裁剪；无法容纳时失败关闭。可选内容的版本替换、去重、字段裁剪、
 预算裁剪和 diff 缺失均进入 `context_plan.stats`，因此 Harness 输入大小与丢弃原因都可复现。
-估算还固定预留 2,048 token 的 Context Pack 分片与提示包装开销，并作为计划字段公开。
+事件规划阶段先保守预留 Context Pack 和提示包装空间；真正执行 Repair 前再渲染完整 Harness Prompt，
+将 Issue 正文、指导路径、分片包装和 Checkpoint 纳入同一 UTF-8 字节预算并写回最终估算。超限时仅
+裁剪可选 diff、低优先级反馈和 Repair 中重复携带的 Issue 正文；强制事实与至少一条可执行反馈不可
+容纳时失败关闭。初次 `prepare` 的 Issue 输入不受该二次拟合影响。
 
 Contributor 修复循环消费一个已提交 run 的下一批事件。确定性规划先排除重复轮询、非失败 check
 和指向原 PR diff 之外路径的建议；只有剩余反馈需要理解代码时才创建 successor run 并调用 Harness。
