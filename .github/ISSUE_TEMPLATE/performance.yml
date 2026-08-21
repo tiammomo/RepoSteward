@@ -1,0 +1,50 @@
+name: 性能问题
+description: 提交有可重复证据的性能退化或优化机会
+title: "perf: "
+labels:
+  - performance
+body:
+  - type: textarea
+    id: workload
+    attributes:
+      label: 工作负载与数据规模
+      description: 描述仓库规模、Issue/轨迹数量、上下文大小、并发度和运行环境。
+    validations:
+      required: true
+  - type: textarea
+    id: baseline
+    attributes:
+      label: 当前基线
+      description: 提供命令、样本数、预热方式、耗时或内存数据，以及对应 commit。
+    validations:
+      required: true
+  - type: textarea
+    id: cause
+    attributes:
+      label: 代码路径与原因判断
+      description: 指向疑似热点，并区分测量事实和推断。
+    validations:
+      required: true
+  - type: textarea
+    id: target
+    attributes:
+      label: 期望结果与验收方式
+      description: 给出保持语义不变的目标和可重复 benchmark 或回归测试。
+    validations:
+      required: true
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: 正确性与资源权衡
+      description: 说明缓存失效、内存、数据库迁移、并发或复杂度风险。
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 数据来自可重复测量，而不只是主观感受。
+          required: true
+        - label: 测量过程不包含凭据、私有仓库内容或个人信息。
+          required: true

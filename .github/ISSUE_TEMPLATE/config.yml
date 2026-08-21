@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全问题 / Security vulnerability
+    url: https://github.com/tiammomo/RepoSteward/security/advisories/new
+    about: 请通过私有漏洞报告提交，不要公开披露。

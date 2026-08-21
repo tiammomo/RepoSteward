@@ -1,0 +1,63 @@
+name: Bug 报告
+description: 报告可复现的 RepoSteward 行为错误
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先搜索已有 Issue。安全问题请使用 Private vulnerability reporting。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题摘要
+      description: 用一段话说明发生了什么，以及它影响了哪个工作流。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 最小复现
+      description: 提供最少步骤、命令和脱敏后的输入。不要粘贴 token 或完整运行日志。
+      placeholder: |
+        1. 配置……
+        2. 运行……
+        3. 观察到……
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: RepoSteward 版本、操作系统、Python、uv、Harness 和相关配置；请先脱敏。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 补充证据
+      description: 可附最小日志片段、失败测试或截图；请删除凭据和个人信息。
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索已有 Issue 和 PR。
+          required: true
+        - label: 这不是需要私下报告的安全问题。
+          required: true
+        - label: 我已经删除凭据、账号缓存和个人信息。
+          required: true
