@@ -38,10 +38,13 @@ class PullRequest:
     url: str
     state: str
     draft: bool
+    title: str = ""
+    updated_at: str = ""
     head_owner: str = ""
     head_branch: str = ""
     head_sha: str = ""
     base_branch: str = ""
+    base_sha: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,13 +188,19 @@ class GitHubClient:
         return any('rel="next"' in value for value in link.split(",") if value.strip())
 
     def _paginated_rest_values(
-        self, path: str, *, container: str = ""
+        self,
+        path: str,
+        *,
+        container: str = "",
+        query: dict[str, str | int] | None = None,
     ) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         page = 1
         while True:
             payload, response = self._request(
-                "GET", path, query={"per_page": 100, "page": page}
+                "GET",
+                path,
+                query={**(query or {}), "per_page": 100, "page": page},
             )
             values = (
                 payload.get(container)
@@ -701,6 +710,18 @@ class GitHubClient:
             return None
         return self._parse_pull_request(payload[0])
 
+    def open_pull_requests(self, upstream: str) -> tuple[PullRequest, ...]:
+        """Return every open pull request by following REST pagination."""
+        values = self._paginated_rest_values(
+            f"/repos/{upstream}/pulls", query={"state": "open"}
+        )
+        return tuple(
+            sorted(
+                (self._parse_pull_request(value) for value in values),
+                key=lambda value: value.number,
+            )
+        )
+
     @staticmethod
     def _parse_pull_request(item: dict[str, Any]) -> PullRequest:
         head = item.get("head") or {}
@@ -711,10 +732,13 @@ class GitHubClient:
             url=str(item["html_url"]),
             state=str(item["state"]),
             draft=bool(item.get("draft", False)),
+            title=str(item.get("title") or ""),
+            updated_at=str(item.get("updated_at") or ""),
             head_owner=str(head_owner),
             head_branch=str(head.get("ref") or ""),
             head_sha=str(head.get("sha") or ""),
             base_branch=str(base.get("ref") or ""),
+            base_sha=str(base.get("sha") or ""),
         )
 
     def pull_request(self, upstream: str, number: int) -> PullRequest:
@@ -825,7 +849,8 @@ class GitHubClient:
                 ) {
                   repository(owner: $owner, name: $name) {
                     pullRequest(number: $number) {
-                      number state isDraft mergeable reviewDecision
+                      number title url updatedAt state isDraft mergeable reviewDecision
+                      headRefName baseRefName
                       headRefOid baseRefOid additions deletions changedFiles
                       mergeCommit { oid }
                       files(first: 100, after: $files) {
@@ -961,7 +986,12 @@ class GitHubClient:
         return {
             "repository": upstream.casefold(),
             "pull_number": int(pull["number"]),
+            "title": str(pull.get("title") or ""),
+            "url": str(pull.get("url") or ""),
+            "updated_at": str(pull.get("updatedAt") or ""),
+            "head_branch": str(pull.get("headRefName") or ""),
             "head_sha": str(pull.get("headRefOid") or ""),
+            "base_branch": str(pull.get("baseRefName") or ""),
             "base_sha": str(pull.get("baseRefOid") or ""),
             "state": str(pull.get("state") or ""),
             "draft": bool(pull.get("isDraft")),

@@ -95,6 +95,45 @@ class GitHubCompetingWorkTests(unittest.TestCase):
         )
 
 
+class GitHubPullRequestPaginationTests(unittest.TestCase):
+    def test_open_pull_requests_follows_every_rest_page(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+
+        def pull(number: int) -> dict[str, object]:
+            return {
+                "number": number,
+                "html_url": f"https://example.test/pulls/{number}",
+                "state": "open",
+                "draft": number == 2,
+                "title": f"Pull {number}",
+                "updated_at": "2026-08-22T00:00:00Z",
+                "head": {
+                    "ref": f"change-{number}",
+                    "sha": str(number) * 40,
+                    "repo": {"owner": {"login": "alice"}},
+                },
+                "base": {"ref": "main", "sha": "b" * 40},
+            }
+
+        first_response = SimpleNamespace(
+            headers={"Link": '<https://api.test/pulls?page=2>; rel="next"'}
+        )
+        final_response = SimpleNamespace(headers={})
+        with patch.object(
+            client,
+            "_request",
+            side_effect=[([pull(2)], first_response), ([pull(1)], final_response)],
+        ) as request:
+            pulls = client.open_pull_requests("owner/repo")
+
+        self.assertEqual([value.number for value in pulls], [1, 2])
+        self.assertEqual(pulls[1].base_sha, "b" * 40)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.call_args_list[0].kwargs["query"]["state"], "open")
+        self.assertEqual(request.call_args_list[0].kwargs["query"]["page"], 1)
+        self.assertEqual(request.call_args_list[1].kwargs["query"]["page"], 2)
+
+
 class GitHubIssueSearchTests(unittest.TestCase):
     def test_similar_issue_search_is_read_only_and_compact(self) -> None:
         client = GitHubClient(GitHubConfig(), token="test-token")

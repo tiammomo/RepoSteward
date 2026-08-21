@@ -6,7 +6,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from reposteward.cli import main
 from reposteward.config import load_config
@@ -122,6 +122,49 @@ class CliSetupTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertFalse(payload["public_write"])
         self.assertIn("## Summary", payload["body"])
+
+    def test_portfolio_inspect_supports_json_and_text(self) -> None:
+        result = {
+            "snapshot_digest": "a" * 64,
+            "expected_digest": "",
+            "matches_expected_digest": None,
+            "snapshot": {
+                "repository": "owner/repo",
+                "complete": True,
+                "pull_requests": [],
+                "overlaps": [],
+                "errors": [],
+                "stats": {
+                    "pull_requests": 0,
+                    "draft_pull_requests": 0,
+                    "overlapping_pairs": 0,
+                },
+            },
+            "harness_invoked": False,
+            "workspace_modified": False,
+            "public_write": False,
+        }
+        pipeline = MagicMock()
+        pipeline.portfolio_snapshot.return_value = result
+
+        json_output = io.StringIO()
+        text_output = io.StringIO()
+        with (
+            patch("reposteward.cli.load_config", return_value=object()),
+            patch("reposteward.cli.Pipeline", return_value=pipeline),
+        ):
+            with redirect_stdout(json_output):
+                json_code = main(["portfolio", "inspect", "owner/repo"])
+            with redirect_stdout(text_output):
+                text_code = main(
+                    ["portfolio", "inspect", "owner/repo", "--format", "text"]
+                )
+
+        self.assertEqual(json_code, 0)
+        self.assertEqual(text_code, 0)
+        self.assertEqual(json.loads(json_output.getvalue()), result)
+        self.assertIn("Portfolio: owner/repo", text_output.getvalue())
+        pipeline.portfolio_snapshot.assert_called_with("owner/repo", expected_digest="")
 
 
 if __name__ == "__main__":
