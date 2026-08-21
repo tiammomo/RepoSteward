@@ -218,6 +218,30 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(migrated.schema_version(), SCHEMA_VERSION)
             self.assertIsNotNone(table)
 
+    def test_version_nine_database_receives_merge_execution_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute("DROP TABLE merge_executions")
+                connection.execute("PRAGMA user_version=9")
+
+            migrated = Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                table = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE name='merge_executions'"
+                ).fetchone()
+                unique_stage = connection.execute(
+                    """
+                    SELECT name FROM sqlite_master
+                    WHERE type='index' AND name='merge_executions_stage_once'
+                    """
+                ).fetchone()
+
+            self.assertEqual(migrated.schema_version(), SCHEMA_VERSION)
+            self.assertIsNotNone(table)
+            self.assertIsNotNone(unique_stage)
+
     def test_version_six_database_moves_event_payloads_without_data_loss(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"
@@ -484,6 +508,7 @@ class StoreTests(unittest.TestCase):
                 additions=1,
                 deletions=0,
                 checks=(MergeCheck("quality", "COMPLETED", "SUCCESS"),),
+                activity_digest="f" * 64,
             )
             evaluated = evaluate_merge(
                 snapshot,
@@ -512,10 +537,101 @@ class StoreTests(unittest.TestCase):
                 decision=decision,
             )
             audit = store.merge_decisions("owner/repo", 12)
+            loaded = store.merge_decision(first["id"])
+            run_id = store.start_run("owner/repo", 7, "merge")
+            intent = store.append_merge_execution(
+                attempt_id="attempt-1",
+                run_id=run_id,
+                decision_id=first["id"],
+                repository="owner/repo",
+                pull_number=12,
+                actor="alice",
+                merge_method="squash",
+                stage="applying",
+                outcome="pending",
+                reason="fresh decision",
+                decision_digest=evaluated.decision_digest,
+                head_sha="c" * 40,
+                payload={"phase": "before_write"},
+            )
+            completed = store.append_merge_execution(
+                attempt_id="attempt-1",
+                run_id=run_id,
+                decision_id=first["id"],
+                repository="owner/repo",
+                pull_number=12,
+                actor="alice",
+                merge_method="squash",
+                stage="completed",
+                outcome="merged",
+                reason="merged",
+                decision_digest=evaluated.decision_digest,
+                head_sha="c" * 40,
+                payload={"sha": "f" * 40},
+            )
+            executions = store.merge_executions("owner/repo", 12)
+            statistics = store.storage_statistics(repository="owner/repo")
+            with self.assertRaisesRegex(ValueError, "stage and outcome"):
+                store.append_merge_execution(
+                    attempt_id="attempt-invalid-stage",
+                    run_id=run_id,
+                    decision_id=first["id"],
+                    repository="owner/repo",
+                    pull_number=12,
+                    actor="alice",
+                    merge_method="squash",
+                    stage="applying",
+                    outcome="merged",
+                    reason="invalid",
+                    decision_digest=evaluated.decision_digest,
+                    head_sha="c" * 40,
+                    payload={},
+                )
+            with self.assertRaisesRegex(StoreError, "run and decision"):
+                store.append_merge_execution(
+                    attempt_id="attempt-mismatched-decision",
+                    run_id=run_id,
+                    decision_id=first["id"],
+                    repository="owner/repo",
+                    pull_number=12,
+                    actor="alice",
+                    merge_method="squash",
+                    stage="completed",
+                    outcome="blocked",
+                    reason="invalid",
+                    decision_digest="0" * 64,
+                    head_sha="c" * 40,
+                    payload={},
+                )
+            with self.assertRaisesRegex(StoreError, "already contains"):
+                store.append_merge_execution(
+                    attempt_id="attempt-1",
+                    run_id=run_id,
+                    decision_id=first["id"],
+                    repository="owner/repo",
+                    pull_number=12,
+                    actor="alice",
+                    merge_method="squash",
+                    stage="applying",
+                    outcome="pending",
+                    reason="duplicate intent",
+                    decision_digest=evaluated.decision_digest,
+                    head_sha="c" * 40,
+                    payload={},
+                )
 
         self.assertNotEqual(first["id"], second["id"])
         self.assertEqual(len(audit), 2)
         self.assertTrue(all(value["eligible"] for value in audit))
+        assert loaded is not None
+        self.assertEqual(loaded["decision_digest"], evaluated.decision_digest)
+        self.assertNotEqual(intent["id"], completed["id"])
+        self.assertEqual(len(executions), 2)
+        self.assertEqual(
+            {value["stage"] for value in executions}, {"applying", "completed"}
+        )
+        by_category = {value["category"]: value for value in statistics}
+        self.assertEqual(by_category["merge_execution_audit"]["records"], 2)
 
     def test_merge_decision_audit_rejects_tampered_material(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -539,6 +655,51 @@ class StoreTests(unittest.TestCase):
                     policy_digest="e" * 64,
                     decision=decision,
                 )
+
+    def test_merge_decision_reader_rejects_database_tampering(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            snapshot = MergeSnapshot(
+                repository="owner/repo",
+                pull_number=12,
+                head_sha="c" * 40,
+                base_sha="d" * 40,
+                policy_digest="e" * 64,
+                state="OPEN",
+                draft=False,
+                mergeable="MERGEABLE",
+                review_decision="APPROVED",
+                unresolved_conversations=0,
+                files=("src/example.py",),
+                additions=1,
+                deletions=0,
+                checks=(MergeCheck("quality", "COMPLETED", "SUCCESS"),),
+                activity_digest="f" * 64,
+            )
+            evaluated = evaluate_merge(
+                snapshot,
+                expected_head_sha="c" * 40,
+                expected_base_sha="d" * 40,
+                expected_policy_digest="e" * 64,
+                max_files_changed=18,
+                max_diff_lines=700,
+            )
+            audit = store.append_merge_decision(
+                repository="owner/repo",
+                pull_number=12,
+                head_sha="c" * 40,
+                base_sha="d" * 40,
+                policy_digest="e" * 64,
+                decision={**evaluated.to_dict(), "snapshot": asdict(snapshot)},
+            )
+            with closing(sqlite3.connect(store.path)) as connection, connection:
+                connection.execute(
+                    "UPDATE merge_decisions SET decision_digest=? WHERE id=?",
+                    ("0" * 64, audit["id"]),
+                )
+
+            with self.assertRaisesRegex(StoreError, "result was modified"):
+                store.merge_decision(audit["id"])
 
     def test_candidate_round_trip_and_status_preservation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

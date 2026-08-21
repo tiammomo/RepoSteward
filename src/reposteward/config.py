@@ -125,6 +125,8 @@ class RepositoryPolicy:
     name: str
     enabled: bool = True
     auto_prepare: bool = False
+    auto_merge: bool = False
+    auto_merge_method: str = "squash"
     mode: str = "contributor"
     submission_strategy: str = "fork"
     min_stars: int = 1_000
@@ -579,6 +581,10 @@ def load_config(
             name=name,
             enabled=_boolean(repo_value.get("enabled"), True),
             auto_prepare=_boolean(repo_value.get("auto_prepare"), False),
+            auto_merge=_boolean(repo_value.get("auto_merge"), False),
+            auto_merge_method=str(
+                repo_value.get("auto_merge_method", "squash")
+            ).strip(),
             mode=str(repo_value.get("mode", "contributor")).strip(),
             submission_strategy=str(
                 repo_value.get("submission_strategy", "fork")
@@ -682,6 +688,19 @@ def load_config(
         if repository.mode not in {"contributor", "maintainer"}:
             raise ConfigError(
                 f"unsupported mode for {repository.name}: {repository.mode!r}"
+            )
+        if repository.auto_merge_method not in {"merge", "squash", "rebase"}:
+            raise ConfigError(
+                f"unsupported auto_merge_method for {repository.name}: "
+                f"{repository.auto_merge_method!r}"
+            )
+        if repository.auto_merge and (
+            repository.mode != "maintainer"
+            or repository.submission_strategy != "same-repository"
+        ):
+            raise ConfigError(
+                f"{repository.name} may enable auto_merge only in maintainer "
+                "same-repository mode"
             )
         if repository.submission_strategy not in {"fork", "same-repository"}:
             raise ConfigError(

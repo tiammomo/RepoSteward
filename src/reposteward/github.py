@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,13 @@ MAX_REST_PAGES = 1_000
 
 class GitHubError(RuntimeError):
     """A GitHub API request failed."""
+
+
+def _canonical_digest(value: object) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -819,6 +827,7 @@ class GitHubClient:
                     pullRequest(number: $number) {
                       number state isDraft mergeable reviewDecision
                       headRefOid baseRefOid additions deletions changedFiles
+                      mergeCommit { oid }
                       files(first: 100, after: $files) {
                         totalCount
                         nodes { path }
@@ -939,6 +948,16 @@ class GitHubClient:
                         "required": bool(value.get("isRequired")),
                     }
                 )
+        conversation_state = sorted(
+            (
+                {
+                    "id": str(value.get("id") or ""),
+                    "resolved": bool(value.get("isResolved")),
+                }
+                for value in values["threads"]
+            ),
+            key=lambda value: value["id"],
+        )
         return {
             "repository": upstream.casefold(),
             "pull_number": int(pull["number"]),
@@ -951,6 +970,7 @@ class GitHubClient:
             "unresolved_conversations": sum(
                 not bool(value.get("isResolved")) for value in values["threads"]
             ),
+            "conversation_digest": _canonical_digest(conversation_state),
             "files": sorted(
                 {
                     str(value.get("path") or "")
@@ -964,6 +984,31 @@ class GitHubClient:
             "files_complete": True,
             "conversations_complete": True,
             "checks_complete": True,
+            "merge_commit_sha": str(((pull.get("mergeCommit") or {}).get("oid")) or ""),
+        }
+
+    def merge_pull_request(
+        self,
+        upstream: str,
+        number: int,
+        *,
+        head_sha: str,
+        method: str,
+    ) -> dict[str, Any]:
+        """Merge one exact PR head and return GitHub's normalized result."""
+        if method not in {"merge", "squash", "rebase"}:
+            raise ValueError(f"unsupported merge method: {method!r}")
+        payload, _ = self._request(
+            "PUT",
+            f"/repos/{upstream}/pulls/{number}/merge",
+            data={"sha": head_sha, "merge_method": method},
+        )
+        if not isinstance(payload, dict):
+            raise GitHubError("GitHub merge response was not an object")
+        return {
+            "merged": bool(payload.get("merged")),
+            "sha": str(payload.get("sha") or ""),
+            "message": str(payload.get("message") or ""),
         }
 
     def reopen_pull_request(

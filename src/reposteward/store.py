@@ -13,7 +13,7 @@ from typing import Any
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -318,6 +318,41 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         """
         CREATE INDEX IF NOT EXISTS storage_gc_runs_recent
         ON storage_gc_runs(created_at DESC)
+        """,
+    ),
+    10: (
+        """
+        CREATE TABLE IF NOT EXISTS merge_executions (
+            id TEXT PRIMARY KEY,
+            attempt_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            decision_id TEXT NOT NULL,
+            repository TEXT NOT NULL,
+            pull_number INTEGER NOT NULL,
+            actor TEXT NOT NULL,
+            merge_method TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            decision_digest TEXT NOT NULL,
+            head_sha TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES runs(id),
+            FOREIGN KEY(decision_id) REFERENCES merge_decisions(id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS merge_executions_for_pull
+        ON merge_executions(repository, pull_number, created_at DESC)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS merge_executions_for_attempt
+        ON merge_executions(attempt_id, created_at)
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS merge_executions_stage_once
+        ON merge_executions(attempt_id, stage)
         """,
     ),
 }
@@ -1404,6 +1439,17 @@ class Store:
                 """,
             ),
             (
+                "merge_execution_audit",
+                """
+                SELECT repository, COUNT(*) AS records,
+                       COALESCE(SUM(length(CAST(payload AS BLOB))), 0) AS bytes,
+                       MIN(created_at) AS oldest_at, MAX(created_at) AS newest_at
+                FROM merge_executions
+                WHERE (?='' OR repository=?) AND (?='' OR created_at>=?)
+                GROUP BY repository
+                """,
+            ),
+            (
                 "storage_gc_audit",
                 """
                 SELECT CASE WHEN repository='' THEN '*' ELSE repository END AS repository,
@@ -2134,6 +2180,190 @@ class Store:
             value = dict(row)
             value["eligible"] = bool(value["eligible"])
             value["payload"] = json.loads(value["payload"])
+            result.append(value)
+        return result
+
+    def merge_decision(self, decision_id: str) -> dict[str, Any] | None:
+        """Read one merge decision and reject any materialized audit mismatch."""
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM merge_decisions WHERE id=?", (decision_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        value = dict(row)
+        payload = json.loads(str(value["payload"]))
+        snapshot = payload.get("snapshot")
+        if not isinstance(snapshot, dict):
+            raise StoreError("merge decision audit has no snapshot")
+        if _json_digest(snapshot) != str(value["snapshot_digest"]):
+            raise StoreError("merge decision audit snapshot was modified")
+        scope = {
+            "repository": str(value["repository"]),
+            "pull_number": int(value["pull_number"]),
+            "head_sha": str(value["head_sha"]),
+            "base_sha": str(value["base_sha"]),
+            "policy_digest": str(value["policy_digest"]),
+        }
+        if any(snapshot.get(key) != expected for key, expected in scope.items()):
+            raise StoreError("merge decision audit scope was modified")
+        material = {
+            key: payload.get(key)
+            for key in (
+                "eligible",
+                "reasons",
+                "risk_categories",
+                "risk_files",
+                "snapshot_digest",
+            )
+        }
+        if _json_digest(material) != str(value["decision_digest"]):
+            raise StoreError("merge decision audit result was modified")
+        if bool(value["eligible"]) != bool(payload.get("eligible")):
+            raise StoreError("merge decision audit eligibility was modified")
+        value["eligible"] = bool(value["eligible"])
+        value["payload"] = payload
+        return value
+
+    def append_merge_execution(
+        self,
+        *,
+        attempt_id: str,
+        run_id: str,
+        decision_id: str,
+        repository: str,
+        pull_number: int,
+        actor: str,
+        merge_method: str,
+        stage: str,
+        outcome: str,
+        reason: str,
+        decision_digest: str,
+        head_sha: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Append one intent or result record for a merge execution attempt."""
+        if not attempt_id or not run_id or not decision_id:
+            raise ValueError("merge execution identities must not be empty")
+        repository = repository.casefold()
+        actor = actor.strip()
+        if not repository or not actor or not decision_digest or not head_sha:
+            raise ValueError("merge execution audit fields must not be empty")
+        if pull_number < 1:
+            raise ValueError("pull_number must be positive")
+        if stage not in {"applying", "completed"}:
+            raise ValueError(f"unsupported merge execution stage: {stage!r}")
+        if outcome not in {"pending", "merged", "already_merged", "blocked", "failed"}:
+            raise ValueError(f"unsupported merge execution outcome: {outcome!r}")
+        if (stage == "applying") != (outcome == "pending"):
+            raise ValueError("merge execution stage and outcome do not match")
+        if merge_method not in {"merge", "squash", "rebase"}:
+            raise ValueError(f"unsupported merge method: {merge_method!r}")
+        if not isinstance(payload, dict):
+            raise TypeError("merge execution payload must be an object")
+        record_id = uuid.uuid4().hex
+        now = utc_now()
+        with self._connection() as connection:
+            run = connection.execute(
+                "SELECT repository FROM runs WHERE id=?", (run_id,)
+            ).fetchone()
+            decision = connection.execute(
+                """
+                SELECT repository, pull_number, decision_digest, head_sha
+                FROM merge_decisions WHERE id=?
+                """,
+                (decision_id,),
+            ).fetchone()
+            if run is None or decision is None:
+                raise StoreError("merge execution references missing audit material")
+            expected = {
+                "repository": repository,
+                "pull_number": pull_number,
+                "decision_digest": decision_digest,
+                "head_sha": head_sha,
+            }
+            if str(run["repository"]) != repository or any(
+                decision[key] != value for key, value in expected.items()
+            ):
+                raise StoreError("merge execution does not match its run and decision")
+            previous = connection.execute(
+                """
+                SELECT run_id, decision_id, repository, pull_number, actor,
+                       merge_method, decision_digest, head_sha
+                FROM merge_executions WHERE attempt_id=? LIMIT 1
+                """,
+                (attempt_id,),
+            ).fetchone()
+            identity = {
+                "run_id": run_id,
+                "decision_id": decision_id,
+                "repository": repository,
+                "pull_number": pull_number,
+                "actor": actor,
+                "merge_method": merge_method,
+                "decision_digest": decision_digest,
+                "head_sha": head_sha,
+            }
+            if previous is not None and any(
+                previous[key] != value for key, value in identity.items()
+            ):
+                raise StoreError("merge execution attempt identity changed")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO merge_executions(
+                        id, attempt_id, run_id, decision_id, repository,
+                        pull_number, actor, merge_method, stage, outcome,
+                        reason, decision_digest, head_sha, payload, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record_id,
+                        attempt_id,
+                        run_id,
+                        decision_id,
+                        repository,
+                        pull_number,
+                        actor,
+                        merge_method,
+                        stage,
+                        outcome,
+                        str(reason)[:2_000],
+                        decision_digest,
+                        head_sha,
+                        _canonical_json(payload),
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise StoreError(
+                    "merge execution attempt already contains this stage"
+                ) from exc
+        return {
+            "id": record_id,
+            "attempt_id": attempt_id,
+            "stage": stage,
+            "outcome": outcome,
+            "created_at": now,
+        }
+
+    def merge_executions(
+        self, repository: str, pull_number: int, *, limit: int = 30
+    ) -> list[dict[str, Any]]:
+        limit = min(max(limit, 1), 100)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM merge_executions
+                WHERE repository=? AND pull_number=?
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (repository.casefold(), pull_number, limit),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            value["payload"] = json.loads(str(value["payload"]))
             result.append(value)
         return result
 

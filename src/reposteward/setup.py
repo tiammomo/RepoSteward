@@ -203,6 +203,8 @@ def add_repository(
     section = f"""[repositories.{_toml_string(repository)}]
 enabled = true
 auto_prepare = false
+auto_merge = false
+auto_merge_method = "squash"
 mode = {_toml_string(mode)}
 submission_strategy = {_toml_string("same-repository" if mode == "maintainer" else "fork")}
 require_no_competing_work = true

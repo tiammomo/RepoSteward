@@ -91,9 +91,11 @@ Checkpoint 与水位再在同一事务中提交，因此中断后可以安全重
 写 tombstone，再移除 Blob。无配置、保留期内或任一 run 尚未形成 Checkpoint 的正文都必须保留。
 验证日志是唯一默认可回收类别，期限和单次最大对象数由用户级 `[storage]` 配置拥有，项目层不能
 静默缩短。GC 默认 dry-run；apply 同时要求 `--apply` 和 `REPOSTEWARD_ENABLE_GC=1`，并在删除前后
-追加审计。普通 GC 永不删除事件索引、Context Checkpoint、Merge Decision 或自身审计。
+追加审计。普通 GC 永不删除事件索引、Context Checkpoint、Merge Decision、Merge Execution 或自身审计。
 - `merge_decisions`：追加保存每次合并评估的 head/base、policy、GitHub 快照与决策摘要；重复评估
   不覆盖旧结果，便于解释状态变化。
+- `merge_executions`：按 attempt 追加保存执行身份、指定决策、精确 head、方法、写入前意图与最终
+  GitHub 结果；`applying` 没有对应 `completed` 时表示进程可能在外部写入期间中断，重试必须先回读。
 
 Context Pack 与 Harness 绑定在一个事务中写入；Checkpoint 采用追加方式写入。数据库列中的版本、
 摘要、基线和关联 ID 必须与 JSON 内容一致，否则拒绝保存。
@@ -120,6 +122,14 @@ Merge Decision Engine 位于执行器之前。它完整分页读取 GitHub 结�
 head/base、策略摘要、审批、required checks、未解决会话、规模和不可削弱的高风险路径。结果只表示
 当前快照是否具备资格，不执行 merge，也不以 Harness 推理替代确定性事实。任何不完整快照都失败
 关闭；策略、head 或 base 在验证后变化时必须重新验证。
+
+Maintainer Merge Executor 是独立、默认关闭的 CLI 写入边界。仓库必须同时配置 Maintainer、
+same-repository 和 `auto_merge = true`，进程还必须设置一次性环境开关并声明与 token 一致的身份。
+执行器要求调用者指定一条已审计的 eligible 决策，随后重新计算完整活动摘要和 Merge Snapshot；
+真正调用 GitHub 前再读取一次，且 PUT 请求绑定验证过的 head SHA。任何摘要不一致、高风险、超限、
+不完整事实或权限问题都阻止写入。网络超时或 GitHub 返回不确定结果时先回读；相同 head 已合并视为
+幂等成功，其他状态不会盲目重试。执行器不回复 Reviewer、不服务 Contributor mode，也没有常驻
+调度器。
 
 三类协议文档都使用 Draft 2020-12 JSON Schema，schema 随 Python 包发布。持久化和导入边界会
 拒绝未知字段、未来版本、跨 work item/run 的关联错配及不一致摘要。Bundle digest 只能检测意外

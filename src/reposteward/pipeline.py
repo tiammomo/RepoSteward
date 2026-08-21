@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import uuid
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -37,7 +38,7 @@ from .issues import (
     render_issue_body,
     validate_issue_title,
 )
-from .merge import MergeCheck, MergeSnapshot, evaluate_merge
+from .merge import MergeCheck, MergeDecision, MergeSnapshot, evaluate_merge
 from .models import AgentResult, Candidate
 from .policy import PolicyError, conventional_scope, enforce_change_policy
 from .protocol import read_context_bundle, validate_context_bundle
@@ -1273,6 +1274,7 @@ class Pipeline:
                 "checkpoint",
                 "github_event_index",
                 "merge_decision_audit",
+                "merge_execution_audit",
                 "storage_gc_audit",
             ],
             "public_write": False,
@@ -2001,8 +2003,18 @@ class Pipeline:
                 + "); run follow-up and prepare a new repair"
             )
 
-    def merge_decision(self, run_id: str) -> dict[str, Any]:
-        """Evaluate and audit current merge eligibility without writing to GitHub."""
+    def _current_merge_evaluation(
+        self, run_id: str
+    ) -> tuple[
+        dict[str, Any],
+        dict[str, Any],
+        RepositoryPolicy,
+        int,
+        MergeSnapshot,
+        MergeDecision,
+        dict[str, Any],
+    ]:
+        """Read all current facts and produce one deterministic merge evaluation."""
         run = self.store.run(run_id)
         if run is None:
             raise KeyError(f"run not found: {run_id}")
@@ -2020,6 +2032,7 @@ class Pipeline:
         if not isinstance(project, dict):
             raise PolicyError("the verified context pack has no project policy")
         expected_policy_digest = str(project.get("policy_digest") or "")
+        activity = self.github.pull_request_activity(repository, pull_number)
         raw = self.github.pull_request_merge_snapshot(repository, pull_number)
         snapshot = MergeSnapshot(
             repository=repository,
@@ -2036,6 +2049,12 @@ class Pipeline:
             additions=int(raw["additions"]),
             deletions=int(raw["deletions"]),
             checks=tuple(MergeCheck(**value) for value in raw["checks"]),
+            activity_digest=_canonical_digest(
+                {
+                    "activity": activity,
+                    "conversation_digest": str(raw["conversation_digest"]),
+                }
+            ),
             files_complete=bool(raw["files_complete"]),
             conversations_complete=bool(raw["conversations_complete"]),
             checks_complete=bool(raw["checks_complete"]),
@@ -2057,6 +2076,20 @@ class Pipeline:
             ),
             extra_risk_patterns=policy.merge_risk_paths,
         )
+        return run, details, policy, pull_number, snapshot, decision, raw
+
+    def merge_decision(self, run_id: str) -> dict[str, Any]:
+        """Evaluate and audit current merge eligibility without writing to GitHub."""
+        (
+            _run,
+            _details,
+            _policy,
+            pull_number,
+            snapshot,
+            decision,
+            _raw,
+        ) = self._current_merge_evaluation(run_id)
+        repository = snapshot.repository
         payload = decision.to_dict()
         audit_payload = {**payload, "snapshot": asdict(snapshot)}
         audit = self.store.append_merge_decision(
@@ -2074,6 +2107,304 @@ class Pipeline:
             **payload,
             "audit": audit,
             "public_write": False,
+        }
+
+    def execute_merge(
+        self, run_id: str, *, decision_id: str, reviewed_by: str
+    ) -> dict[str, Any]:
+        """Execute one fresh eligible maintainer decision behind explicit gates."""
+        run = self.store.run(run_id)
+        if run is None:
+            raise KeyError(f"run not found: {run_id}")
+        repository = str(run["repository"])
+        policy = self.policy(repository)
+        details = run.get("details", {})
+        match = re.search(r"/pull/(\d+)/?$", str(details.get("pr_url", "")))
+        if not match:
+            raise PolicyError("the selected run has no submitted pull request")
+        pull_number = int(match.group(1))
+        stored = self.store.merge_decision(decision_id)
+        if stored is None:
+            raise PolicyError(f"merge decision not found: {decision_id}")
+        if (
+            str(stored["repository"]).casefold() != repository.casefold()
+            or int(stored["pull_number"]) != pull_number
+        ):
+            raise PolicyError("merge decision belongs to a different pull request")
+        attempt_id = uuid.uuid4().hex
+        actor = str(reviewed_by).strip()
+        if not actor:
+            raise PolicyError("--reviewed-by must not be empty")
+        method = policy.auto_merge_method
+        audits: list[dict[str, Any]] = []
+
+        def record(
+            *, stage: str, outcome: str, reason: str, payload: dict[str, Any]
+        ) -> None:
+            audits.append(
+                self.store.append_merge_execution(
+                    attempt_id=attempt_id,
+                    run_id=run_id,
+                    decision_id=decision_id,
+                    repository=repository,
+                    pull_number=pull_number,
+                    actor=actor,
+                    merge_method=method,
+                    stage=stage,
+                    outcome=outcome,
+                    reason=reason,
+                    decision_digest=str(stored["decision_digest"]),
+                    head_sha=str(stored["head_sha"]),
+                    payload=payload,
+                )
+            )
+
+        def block(reason: str, *, payload: dict[str, Any] | None = None) -> None:
+            record(
+                stage="completed",
+                outcome="blocked",
+                reason=reason,
+                payload=payload or {},
+            )
+            raise PolicyError(reason)
+
+        if os.environ.get("REPOSTEWARD_ENABLE_MERGE") != "1":
+            block(
+                "merge execution is disabled; set REPOSTEWARD_ENABLE_MERGE=1 "
+                "for this command"
+            )
+        if not policy.auto_merge:
+            block("repository auto_merge is not explicitly enabled")
+        if (
+            policy.mode != "maintainer"
+            or policy.submission_strategy != "same-repository"
+        ):
+            block("auto merge requires maintainer same-repository mode")
+        if str(run.get("status")) != "submitted":
+            block("auto merge requires a submitted run")
+        if actor.casefold() != self.config.github.login.casefold():
+            block("--reviewed-by must match the configured GitHub login")
+        if not bool(stored["eligible"]):
+            block("merge decision is not eligible")
+        stored_snapshot = stored["payload"].get("snapshot")
+        if not isinstance(stored_snapshot, dict) or not stored_snapshot.get(
+            "activity_digest"
+        ):
+            block("merge decision predates activity freshness checks; evaluate again")
+        expected_head = str(details.get("commit_sha") or "")
+        expected_base = str(details.get("base_commit") or "")
+        current_policy_digest = repository_policy_digest(policy)
+        if (
+            str(stored["head_sha"]) != expected_head
+            or str(stored["base_sha"]) != expected_base
+            or str(stored["policy_digest"]) != current_policy_digest
+        ):
+            block(
+                "merge decision scope differs from the verified run or current policy"
+            )
+
+        try:
+            authenticated = self.github.authenticated_login()
+            repository_info = self.github.repository(repository)
+        except GitHubError as exc:
+            record(
+                stage="completed",
+                outcome="failed",
+                reason="GitHub execution identity could not be confirmed",
+                payload={"error": str(exc)},
+            )
+            raise PolicyError(
+                "GitHub execution identity could not be confirmed"
+            ) from exc
+        if authenticated.casefold() != actor.casefold():
+            block("authenticated GitHub login differs from the reviewed identity")
+        if not repository_info.can_push:
+            block("authenticated GitHub login cannot push to the repository")
+
+        def read_current(
+            stage: str,
+        ) -> tuple[
+            dict[str, Any],
+            dict[str, Any],
+            RepositoryPolicy,
+            int,
+            MergeSnapshot,
+            MergeDecision,
+            dict[str, Any],
+        ]:
+            try:
+                return self._current_merge_evaluation(run_id)
+            except (GitHubError, KeyError, PolicyError, TypeError, ValueError) as exc:
+                reason = f"GitHub facts could not be confirmed during {stage}"
+                record(
+                    stage="completed",
+                    outcome="failed",
+                    reason=reason,
+                    payload={"error": str(exc)},
+                )
+                raise PolicyError(reason) from exc
+
+        current = read_current("merge preflight")
+        snapshot, decision, raw = current[4], current[5], current[6]
+        if snapshot.state.casefold() == "merged":
+            if snapshot.head_sha != expected_head:
+                block("merged pull request head differs from the verified commit")
+            record(
+                stage="completed",
+                outcome="already_merged",
+                reason="pull request is already merged at the verified head",
+                payload={"merge_commit_sha": str(raw.get("merge_commit_sha") or "")},
+            )
+            return {
+                "run_id": run_id,
+                "repository": repository,
+                "pull_number": pull_number,
+                "merged": True,
+                "idempotent": True,
+                "merge_commit_sha": str(raw.get("merge_commit_sha") or ""),
+                "attempt_id": attempt_id,
+                "audit": audits,
+                "public_write": False,
+            }
+        if (
+            not decision.eligible
+            or decision.decision_digest != str(stored["decision_digest"])
+            or decision.snapshot_digest != str(stored["snapshot_digest"])
+        ):
+            block(
+                "merge decision is stale; run merge-decision again",
+                payload={"current_decision": decision.to_dict()},
+            )
+
+        record(
+            stage="applying",
+            outcome="pending",
+            reason="fresh eligible decision accepted for execution",
+            payload={"decision": decision.to_dict(), "snapshot": asdict(snapshot)},
+        )
+        just_in_time = read_current("just-in-time merge validation")
+        latest_snapshot, latest_decision = just_in_time[4], just_in_time[5]
+        if latest_snapshot.state.casefold() == "merged":
+            if latest_snapshot.head_sha != expected_head:
+                reason = "merged pull request head differs from the verified commit"
+                record(
+                    stage="completed",
+                    outcome="blocked",
+                    reason=reason,
+                    payload={"snapshot": asdict(latest_snapshot)},
+                )
+                raise PolicyError(reason)
+            latest_raw = just_in_time[6]
+            record(
+                stage="completed",
+                outcome="already_merged",
+                reason="pull request was merged concurrently at the verified head",
+                payload={
+                    "merge_commit_sha": str(latest_raw.get("merge_commit_sha") or "")
+                },
+            )
+            return {
+                "run_id": run_id,
+                "repository": repository,
+                "pull_number": pull_number,
+                "merged": True,
+                "idempotent": True,
+                "merge_commit_sha": str(latest_raw.get("merge_commit_sha") or ""),
+                "attempt_id": attempt_id,
+                "audit": audits,
+                "public_write": False,
+            }
+        if (
+            not latest_decision.eligible
+            or latest_decision.decision_digest != str(stored["decision_digest"])
+            or latest_decision.snapshot_digest != str(stored["snapshot_digest"])
+        ):
+            reason = (
+                "merge decision changed during execution; no merge request was sent"
+            )
+            record(
+                stage="completed",
+                outcome="blocked",
+                reason=reason,
+                payload={"current_decision": latest_decision.to_dict()},
+            )
+            raise PolicyError(reason)
+
+        public_write = False
+        try:
+            public_write = True
+            result = self.github.merge_pull_request(
+                repository,
+                pull_number,
+                head_sha=latest_snapshot.head_sha,
+                method=method,
+            )
+            if not result["merged"]:
+                raise GitHubError(
+                    f"GitHub declined the merge: {result.get('message') or 'unknown'}"
+                )
+        except GitHubError as exc:
+            try:
+                reconciled = self._current_merge_evaluation(run_id)
+                reconciled_snapshot, reconciled_raw = reconciled[4], reconciled[6]
+            except (
+                GitHubError,
+                KeyError,
+                PolicyError,
+                TypeError,
+                ValueError,
+            ) as check_exc:
+                reason = (
+                    "merge result is uncertain and GitHub state could not be confirmed"
+                )
+                record(
+                    stage="completed",
+                    outcome="failed",
+                    reason=reason,
+                    payload={
+                        "merge_error": str(exc),
+                        "reconcile_error": str(check_exc),
+                    },
+                )
+                raise PolicyError(reason) from exc
+            if (
+                reconciled_snapshot.state.casefold() == "merged"
+                and reconciled_snapshot.head_sha == expected_head
+            ):
+                result = {
+                    "merged": True,
+                    "sha": str(reconciled_raw.get("merge_commit_sha") or ""),
+                    "message": "merge confirmed after an uncertain API result",
+                }
+            else:
+                reason = "GitHub did not merge the verified pull request head"
+                record(
+                    stage="completed",
+                    outcome="failed",
+                    reason=reason,
+                    payload={
+                        "merge_error": str(exc),
+                        "state": asdict(reconciled_snapshot),
+                    },
+                )
+                raise PolicyError(reason) from exc
+
+        record(
+            stage="completed",
+            outcome="merged",
+            reason=str(result.get("message") or "pull request merged"),
+            payload={"github_result": result},
+        )
+        return {
+            "run_id": run_id,
+            "repository": repository,
+            "pull_number": pull_number,
+            "merged": True,
+            "idempotent": False,
+            "merge_commit_sha": str(result.get("sha") or ""),
+            "attempt_id": attempt_id,
+            "audit": audits,
+            "public_write": public_write,
         }
 
     def submit(

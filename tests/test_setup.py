@@ -131,6 +131,8 @@ class SetupTests(unittest.TestCase):
         policy = config.repositories["owner/repo"]
         self.assertEqual(policy.mode, "maintainer")
         self.assertEqual(policy.submission_strategy, "same-repository")
+        self.assertFalse(policy.auto_merge)
+        self.assertEqual(policy.auto_merge_method, "squash")
 
     def test_repo_add_excludes_local_config_without_changing_gitignore(self) -> None:
         with TemporaryDirectory() as directory:

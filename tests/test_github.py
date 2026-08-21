@@ -230,6 +230,7 @@ class GitHubPullRequestTests(unittest.TestCase):
                         "additions": 10,
                         "deletions": 2,
                         "changedFiles": 2,
+                        "mergeCommit": {"oid": "f" * 40},
                         "files": {
                             "totalCount": 2,
                             "nodes": files,
@@ -302,11 +303,29 @@ class GitHubPullRequestTests(unittest.TestCase):
 
         self.assertEqual(snapshot["files"], ["src/a.py", "src/b.py"])
         self.assertEqual(snapshot["unresolved_conversations"], 1)
+        self.assertEqual(len(snapshot["conversation_digest"]), 64)
         self.assertEqual(snapshot["checks"][0]["name"], "legacy-ci")
         self.assertEqual(snapshot["checks"][0]["status"], "pending")
         self.assertTrue(snapshot["checks"][1]["required"])
+        self.assertEqual(snapshot["merge_commit_sha"], "f" * 40)
         self.assertEqual(graphql.call_args_list[1].args[1]["files"], "file-1")
         self.assertEqual(graphql.call_args_list[1].args[1]["threads"], "thread-end")
+
+    def test_merge_request_is_pinned_to_one_head_and_method(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        payload = {"merged": True, "sha": "c" * 40, "message": "merged"}
+
+        with patch.object(client, "_request", return_value=(payload, None)) as request:
+            result = client.merge_pull_request(
+                "owner/repo", 12, head_sha="a" * 40, method="squash"
+            )
+
+        self.assertTrue(result["merged"])
+        request.assert_called_once_with(
+            "PUT",
+            "/repos/owner/repo/pulls/12/merge",
+            data={"sha": "a" * 40, "merge_method": "squash"},
+        )
 
     def test_merge_snapshot_rejects_incomplete_connection_data(self) -> None:
         client = GitHubClient(GitHubConfig(), token="test-token")
