@@ -1,26 +1,46 @@
 # RepoSteward
 
-RepoSteward 是一个面向 GitHub 项目维护者和贡献者的、本地优先、策略驱动、人工确认的
-Issue-to-PR 工作台。它负责发现和筛选 Issue、准备隔离工作区、调用编码 Agent、在无凭据
-容器中验证改动、生成紧凑的审阅材料，并在用户明确确认后创建 PR。
+> 把 GitHub Issue 变成经过验证和人工确认的 Pull Request。
 
-当前版本已经覆盖“本地 Issue 草稿与查重”和“已有 Issue → 已验证 PR”流程，并支持贡献者
-fork 和维护者同仓库分支两种提交策略。RepoSteward 不会自动创建 Issue、发布评论或催促
-维护者；所有公开写入仍由用户明确触发。
+RepoSteward 是运行在 GitHub 和 Coding Harness 之间的本地维护控制面。它保存 Issue、仓库策略、
+执行状态和验证证据，让 Codex 等 Harness 专注于推理和修改工作区。是否创建 Issue、推送分支或
+提交 PR，仍由用户通过单独的审核门禁决定。
 
-参与开发前请阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md)。功能、性能和行为变更应先通过 Issue
-明确问题、证据和验收标准，再以聚焦 PR 落地；安全问题请按 [`SECURITY.md`](SECURITY.md)
-私下报告，不要创建公开 Issue。
+RepoSteward 适合需要长期维护 GitHub 项目、在多个 Coding Harness 或账号之间切换，又希望保留
+统一审阅记录的维护者和贡献者。它不是批量 PR 机器人，也不会让模型直接持有 GitHub 凭据。
+
+## 当前状态
+
+项目仍处于 0.x 早期开发阶段。已经实现的主流程包括：
+
+- 在本地准备 Issue 草稿、搜索重复项，并通过 GitHub Project 审核线上提案；
+- 从已有 Issue 创建隔离工作区，调用 Codex CLI 或 Codex SDK 完成修改；
+- 在无凭据、无网络的容器中执行允许的验证命令；
+- 生成紧凑的 Review Packet，并在人工确认后创建 Draft PR；
+- 使用 Context Pack 和 Checkpoint 在账号、机器或 Harness 之间交接任务。
+
+Claude Code、DeepSeek 等 Harness 目前只有统一接入契约，尚未提供内置适配器。配置格式和公开
+接口在稳定版本发布前仍可能调整。
+
+## 快速导航
+
+- 准备试用：从[安装](#安装)、[添加项目](#添加项目)和[基本工作流](#基本工作流)开始。
+- 了解边界：阅读[产品边界](#产品边界)和[架构文档](docs/architecture.md)。
+- 切换 Harness 或账号：阅读[上下文与跨 Harness 交接](#上下文与跨-harness-交接)。
+- 参与开发：阅读[贡献指南](CONTRIBUTING.md)和[安全报告说明](SECURITY.md)。
 
 ## 产品边界
 
-RepoSteward 负责流水线、持久上下文、状态、策略、审计和 GitHub 事实；Coding Harness 负责
-推理和工作区编辑；Docker Runner 负责隔离验证；用户对最终公开提交负责。Harness 的原生
-会话只作为可选加速信息，任务连续性的唯一真相是版本化 Context Pack 与 Checkpoint。
-组件边界、持久数据模型和跨账号恢复约束见
-[`docs/architecture.md`](docs/architecture.md)。
+| 组件 | 职责 |
+| --- | --- |
+| RepoSteward | 流水线、仓库策略、持久上下文、审计和 GitHub 事实 |
+| Coding Harness | 推理和工作区编辑，不接触 GitHub 凭据 |
+| Docker Runner | 安装依赖并执行隔离验证 |
+| 用户 | 审阅 Issue、diff 和验证证据，决定是否公开提交 |
 
-它不是批量 PR 机器人，也不是无人值守的通用编码 Agent。默认工作方式是低频、高质量：
+Harness 的原生会话只用于加速恢复。版本化 Context Pack 与 Checkpoint 才是任务连续性的记录。
+组件设计、持久数据模型和跨账号恢复约束见
+[`docs/architecture.md`](docs/architecture.md)。默认工作流如下：
 
 ```text
 发现/选择 Issue
@@ -43,6 +63,8 @@ RepoSteward 负责流水线、持久上下文、状态、策略、审计和 GitH
 要求 Python 3.12+、uv、Git、Docker、GitHub CLI，以及已登录的 Codex CLI。
 
 ```bash
+git clone https://github.com/tiammomo/RepoSteward.git
+cd RepoSteward
 uv sync
 uv run reposteward --help
 uv run reposteward init
@@ -287,6 +309,12 @@ uv run reposteward follow-up RUN_ID
 - `.github/workflows`、凭据路径和超出配置限额的 diff 默认不可提交。
 - 依赖安装可以在无凭据容器中联网，实际验证命令在 `--network none` 下运行。
 - `run` 最多自动准备候选，永远不会自动执行 `submit`。
+
+## 参与开发
+
+功能、性能和行为变更应先通过 Issue 明确问题、证据和验收标准，再以聚焦 PR 落地。开始前请
+阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md)。安全问题请按 [`SECURITY.md`](SECURITY.md) 私下报告，
+不要创建公开 Issue。
 
 ## 名称迁移
 
