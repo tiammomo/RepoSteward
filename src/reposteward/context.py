@@ -41,6 +41,10 @@ def _digest(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
 
 
+def repository_policy_digest(policy: RepositoryPolicy) -> str:
+    return _digest(asdict(policy))
+
+
 def _file_digest(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -253,8 +257,7 @@ def build_context_pack(
 ) -> ContextPack:
     issue = candidate.issue
     description = issue.body[:MAX_TASK_DESCRIPTION_CHARS]
-    policy_payload = asdict(policy)
-    policy_digest = _digest(policy_payload)
+    policy_digest = repository_policy_digest(policy)
     issue_digest = _digest(
         {
             "repository": issue.repository,

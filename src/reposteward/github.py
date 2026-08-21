@@ -792,6 +792,179 @@ class GitHubClient:
             ],
         }
 
+    def pull_request_merge_snapshot(self, upstream: str, number: int) -> dict[str, Any]:
+        """Read a complete PR decision snapshot without making GitHub writes."""
+        owner, name = upstream.split("/", 1)
+        cursors: dict[str, str | None] = {
+            "files": None,
+            "threads": None,
+            "checks": None,
+        }
+        values: dict[str, list[dict[str, Any]]] = {
+            "files": [],
+            "threads": [],
+            "checks": [],
+        }
+        totals = {"files": 0, "threads": 0, "checks": 0}
+        pull: dict[str, Any] | None = None
+        for _page in range(MAX_REST_PAGES):
+            data = self._graphql(
+                """
+                query(
+                  $owner: String!, $name: String!, $number: Int!,
+                  $files: String, $threads: String, $checks: String
+                ) {
+                  repository(owner: $owner, name: $name) {
+                    pullRequest(number: $number) {
+                      number state isDraft mergeable reviewDecision
+                      headRefOid baseRefOid additions deletions changedFiles
+                      files(first: 100, after: $files) {
+                        totalCount
+                        nodes { path }
+                        pageInfo { hasNextPage endCursor }
+                      }
+                      reviewThreads(first: 100, after: $threads) {
+                        totalCount
+                        nodes { id isResolved }
+                        pageInfo { hasNextPage endCursor }
+                      }
+                      commits(last: 1) {
+                        nodes {
+                          commit {
+                            statusCheckRollup {
+                              contexts(first: 100, after: $checks) {
+                                totalCount
+                                nodes {
+                                  __typename
+                                  ... on CheckRun {
+                                    name status conclusion
+                                    isRequired(pullRequestNumber: $number)
+                                  }
+                                  ... on StatusContext {
+                                    context state
+                                    isRequired(pullRequestNumber: $number)
+                                  }
+                                }
+                                pageInfo { hasNextPage endCursor }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                """,
+                {"owner": owner, "name": name, "number": number, **cursors},
+            )
+            repository = data.get("repository")
+            current = (
+                repository.get("pullRequest") if isinstance(repository, dict) else None
+            )
+            if not isinstance(current, dict):
+                raise GitHubError(f"pull request not found: {upstream}#{number}")
+            pull = current
+            commits = current.get("commits")
+            commit_nodes = commits.get("nodes") if isinstance(commits, dict) else []
+            latest = (
+                commit_nodes[0]
+                if isinstance(commit_nodes, list) and commit_nodes
+                else {}
+            )
+            commit = latest.get("commit") if isinstance(latest, dict) else {}
+            rollup = commit.get("statusCheckRollup") if isinstance(commit, dict) else {}
+            connections = {
+                "files": current.get("files"),
+                "threads": current.get("reviewThreads"),
+                "checks": (
+                    rollup.get("contexts") if isinstance(rollup, dict) else None
+                ),
+            }
+            pending = False
+            for key, connection in connections.items():
+                if connection is None and key == "checks":
+                    continue
+                if not isinstance(connection, dict):
+                    raise GitHubError(f"GitHub merge snapshot omitted {key}")
+                nodes = connection.get("nodes")
+                page_info = connection.get("pageInfo")
+                total_count = connection.get("totalCount")
+                if (
+                    not isinstance(nodes, list)
+                    or not isinstance(page_info, dict)
+                    or not isinstance(total_count, int)
+                ):
+                    raise GitHubError(f"GitHub merge snapshot returned invalid {key}")
+                totals[key] = total_count
+                values[key].extend(value for value in nodes if isinstance(value, dict))
+                if bool(page_info.get("hasNextPage")):
+                    cursor = str(page_info.get("endCursor") or "")
+                    if not cursor or cursor == cursors[key]:
+                        raise GitHubError(f"GitHub {key} pagination did not advance")
+                    cursors[key] = cursor
+                    pending = True
+                else:
+                    cursors[key] = str(page_info.get("endCursor") or "") or None
+            if not pending:
+                break
+        else:
+            raise GitHubError("GitHub merge snapshot pagination exceeded its limit")
+
+        assert pull is not None
+        incomplete = [key for key in values if len(values[key]) != totals[key]]
+        if incomplete:
+            raise GitHubError(
+                "GitHub merge snapshot is incomplete: " + ", ".join(incomplete)
+            )
+        checks = []
+        for value in values["checks"]:
+            kind = str(value.get("__typename") or "")
+            if kind == "CheckRun":
+                checks.append(
+                    {
+                        "name": str(value.get("name") or ""),
+                        "status": str(value.get("status") or ""),
+                        "conclusion": str(value.get("conclusion") or ""),
+                        "required": bool(value.get("isRequired")),
+                    }
+                )
+            elif kind == "StatusContext":
+                state = str(value.get("state") or "").casefold()
+                checks.append(
+                    {
+                        "name": str(value.get("context") or ""),
+                        "status": "completed" if state != "pending" else "pending",
+                        "conclusion": "success" if state == "success" else state,
+                        "required": bool(value.get("isRequired")),
+                    }
+                )
+        return {
+            "repository": upstream.casefold(),
+            "pull_number": int(pull["number"]),
+            "head_sha": str(pull.get("headRefOid") or ""),
+            "base_sha": str(pull.get("baseRefOid") or ""),
+            "state": str(pull.get("state") or ""),
+            "draft": bool(pull.get("isDraft")),
+            "mergeable": str(pull.get("mergeable") or ""),
+            "review_decision": str(pull.get("reviewDecision") or ""),
+            "unresolved_conversations": sum(
+                not bool(value.get("isResolved")) for value in values["threads"]
+            ),
+            "files": sorted(
+                {
+                    str(value.get("path") or "")
+                    for value in values["files"]
+                    if value.get("path")
+                }
+            ),
+            "additions": int(pull.get("additions") or 0),
+            "deletions": int(pull.get("deletions") or 0),
+            "checks": sorted(checks, key=lambda value: value["name"].casefold()),
+            "files_complete": True,
+            "conversations_complete": True,
+            "checks_complete": True,
+        }
+
     def reopen_pull_request(
         self,
         upstream: str,

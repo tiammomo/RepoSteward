@@ -136,6 +136,7 @@ def evaluate_merge(
     *,
     expected_head_sha: str,
     expected_base_sha: str,
+    expected_policy_digest: str,
     max_files_changed: int,
     max_diff_lines: int,
     extra_risk_patterns: tuple[str, ...] = (),
@@ -158,6 +159,8 @@ def evaluate_merge(
         block("head_changed", "Pull request head differs from the verified commit.")
     if snapshot.base_sha != expected_base_sha:
         block("base_changed", "Base branch changed after verification.")
+    if snapshot.policy_digest != expected_policy_digest:
+        block("policy_changed", "Repository policy changed after verification.")
     if not snapshot.files_complete:
         block("files_incomplete", "Changed-file data is incomplete.")
     if not snapshot.conversations_complete:

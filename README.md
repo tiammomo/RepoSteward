@@ -296,6 +296,7 @@ REPOSTEWARD_ENABLE_SUBMIT=1 \
 
 ```bash
 uv run reposteward follow-up RUN_ID
+uv run reposteward merge-decision RUN_ID
 ```
 
 第一次调用会把 PR、评论、Review、Review comment 和 checks 按稳定 ID 与内容版本写入事件表，
@@ -303,6 +304,12 @@ uv run reposteward follow-up RUN_ID
 不再把每类前 100 条当成完整历史。GitHub 结构化事件是跟进事实，模型摘要只是可重建的派生信息；
 评论和 Review 正文始终视为不可信数据，不会被自动执行。重复调用是幂等的，事件摄取与水位推进
 分离，进程在生成 Checkpoint 前中断时不会丢失待处理事件。
+
+`merge-decision` 只读获取完整的 changed files、required checks、Review decision 和未解决会话，
+再对照验证时冻结的 head、base、policy digest、规模上限及高风险路径生成确定性结果。每次调用都会
+追加一条本地审计记录，但不会调用 Harness、修改 workspace 或执行 GitHub 写操作。内置 CI、权限、
+Runner、数据库、依赖发布和安全风险规则不能被项目配置削弱；项目只能通过 `merge_risk_paths` 追加
+需要人工合并的路径。
 
 ## 安全约束
 

@@ -206,6 +206,135 @@ class GitHubProjectIssueTests(unittest.TestCase):
 
 
 class GitHubPullRequestTests(unittest.TestCase):
+    def test_merge_snapshot_paginates_and_normalizes_required_checks(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+
+        def page(
+            *,
+            files: list[dict[str, Any]],
+            files_next: bool,
+            file_cursor: str,
+            threads: list[dict[str, Any]],
+            checks: list[dict[str, Any]],
+        ) -> dict[str, Any]:
+            return {
+                "repository": {
+                    "pullRequest": {
+                        "number": 12,
+                        "state": "OPEN",
+                        "isDraft": False,
+                        "mergeable": "MERGEABLE",
+                        "reviewDecision": "APPROVED",
+                        "headRefOid": "a" * 40,
+                        "baseRefOid": "b" * 40,
+                        "additions": 10,
+                        "deletions": 2,
+                        "changedFiles": 2,
+                        "files": {
+                            "totalCount": 2,
+                            "nodes": files,
+                            "pageInfo": {
+                                "hasNextPage": files_next,
+                                "endCursor": file_cursor,
+                            },
+                        },
+                        "reviewThreads": {
+                            "totalCount": 1,
+                            "nodes": threads,
+                            "pageInfo": {
+                                "hasNextPage": False,
+                                "endCursor": "thread-end",
+                            },
+                        },
+                        "commits": {
+                            "nodes": [
+                                {
+                                    "commit": {
+                                        "statusCheckRollup": {
+                                            "contexts": {
+                                                "totalCount": 2,
+                                                "nodes": checks,
+                                                "pageInfo": {
+                                                    "hasNextPage": False,
+                                                    "endCursor": "check-end",
+                                                },
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                }
+            }
+
+        first = page(
+            files=[{"path": "src/b.py"}],
+            files_next=True,
+            file_cursor="file-1",
+            threads=[{"id": "thread-1", "isResolved": False}],
+            checks=[
+                {
+                    "__typename": "CheckRun",
+                    "name": "quality",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "isRequired": True,
+                },
+                {
+                    "__typename": "StatusContext",
+                    "context": "legacy-ci",
+                    "state": "PENDING",
+                    "isRequired": False,
+                },
+            ],
+        )
+        second = page(
+            files=[{"path": "src/a.py"}],
+            files_next=False,
+            file_cursor="file-end",
+            threads=[],
+            checks=[],
+        )
+
+        with patch.object(client, "_graphql", side_effect=[first, second]) as graphql:
+            snapshot = client.pull_request_merge_snapshot("Owner/Repo", 12)
+
+        self.assertEqual(snapshot["files"], ["src/a.py", "src/b.py"])
+        self.assertEqual(snapshot["unresolved_conversations"], 1)
+        self.assertEqual(snapshot["checks"][0]["name"], "legacy-ci")
+        self.assertEqual(snapshot["checks"][0]["status"], "pending")
+        self.assertTrue(snapshot["checks"][1]["required"])
+        self.assertEqual(graphql.call_args_list[1].args[1]["files"], "file-1")
+        self.assertEqual(graphql.call_args_list[1].args[1]["threads"], "thread-end")
+
+    def test_merge_snapshot_rejects_incomplete_connection_data(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        malformed = {
+            "repository": {
+                "pullRequest": {
+                    "number": 12,
+                    "files": {
+                        "totalCount": 1,
+                        "nodes": [],
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    },
+                    "reviewThreads": {
+                        "totalCount": 0,
+                        "nodes": [],
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    },
+                    "commits": {"nodes": []},
+                }
+            }
+        }
+
+        with (
+            patch.object(client, "_graphql", return_value=malformed),
+            self.assertRaisesRegex(GitHubError, "incomplete: files"),
+        ):
+            client.pull_request_merge_snapshot("owner/repo", 12)
+
     def test_pull_request_activity_follows_every_rest_page(self) -> None:
         client = GitHubClient(GitHubConfig(), token="test-token")
         pull = {

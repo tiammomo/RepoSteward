@@ -6,8 +6,10 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from dataclasses import asdict
 from pathlib import Path
 
+from reposteward.merge import MergeCheck, MergeSnapshot, evaluate_merge
 from reposteward.models import Candidate, Issue, RepositoryInfo
 from reposteward.store import SCHEMA_VERSION, Store, StoreError
 
@@ -219,12 +221,31 @@ class StoreTests(unittest.TestCase):
     def test_merge_decision_audit_is_append_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")
-            decision = {
-                "eligible": True,
-                "snapshot_digest": "a" * 64,
-                "decision_digest": "b" * 64,
-                "reasons": [],
-            }
+            snapshot = MergeSnapshot(
+                repository="owner/repo",
+                pull_number=12,
+                head_sha="c" * 40,
+                base_sha="d" * 40,
+                policy_digest="e" * 64,
+                state="OPEN",
+                draft=False,
+                mergeable="MERGEABLE",
+                review_decision="APPROVED",
+                unresolved_conversations=0,
+                files=("src/example.py",),
+                additions=1,
+                deletions=0,
+                checks=(MergeCheck("quality", "COMPLETED", "SUCCESS"),),
+            )
+            evaluated = evaluate_merge(
+                snapshot,
+                expected_head_sha="c" * 40,
+                expected_base_sha="d" * 40,
+                expected_policy_digest="e" * 64,
+                max_files_changed=18,
+                max_diff_lines=700,
+            )
+            decision = {**evaluated.to_dict(), "snapshot": asdict(snapshot)}
 
             first = store.append_merge_decision(
                 repository="Owner/Repo",
@@ -247,6 +268,29 @@ class StoreTests(unittest.TestCase):
         self.assertNotEqual(first["id"], second["id"])
         self.assertEqual(len(audit), 2)
         self.assertTrue(all(value["eligible"] for value in audit))
+
+    def test_merge_decision_audit_rejects_tampered_material(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            decision = {
+                "eligible": True,
+                "snapshot_digest": "a" * 64,
+                "decision_digest": "b" * 64,
+                "reasons": [],
+                "risk_categories": [],
+                "risk_files": [],
+                "snapshot": {},
+            }
+
+            with self.assertRaisesRegex(StoreError, "snapshot.*digest"):
+                store.append_merge_decision(
+                    repository="owner/repo",
+                    pull_number=12,
+                    head_sha="c" * 40,
+                    base_sha="d" * 40,
+                    policy_digest="e" * 64,
+                    decision=decision,
+                )
 
     def test_candidate_round_trip_and_status_preservation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
