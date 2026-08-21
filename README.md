@@ -246,6 +246,17 @@ Context Pack、Checkpoint 和导出包采用 Draft 2020-12 JSON Schema，并在�
 交接包只补充历史 Checkpoint，不覆盖本机的 Issue 快照。`bundle_digest` 用于发现传输损坏，
 不代表签名或来源认证，因此导入内容仍按不可信输入处理。
 
+## 项目级 Skills
+
+RepoSteward 使用 `.agents/skills/<name>/SKILL.md` 保存可跨 Coding Harness 复用的维护流程。本仓库
+提供的 `reposteward-maintainer` skill 覆盖 Issue 审核、聚焦 PR、CI/Reviewer 跟进和上下文交接；
+状态机、凭据隔离、内容摘要、验证与 GitHub 公开写入仍由代码强制执行，不下放给提示词。
+
+Context Pack 只记录最多 8 个项目 skill 的路径和 SHA-256 指纹，不复制完整正文。Harness 在确有
+需要时从工作区读取对应 skill，因此切换 Codex、Claude Code 或 DeepSeek 等实现时可以共享流程，
+又不会让每次调用承担全部 skill 的上下文成本。仓库 skill 与其他仓库文本一样按不可信输入处理，
+不能放宽凭据、网络或公开写入边界。
+
 ## 提交与跟进
 
 公开提交必须使用独立命令，并同时满足环境开关、GitHub 实际身份和人工审阅声明：
