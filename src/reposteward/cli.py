@@ -172,6 +172,18 @@ def _parser() -> argparse.ArgumentParser:
     )
     logs.add_argument("--tail-chars", type=int, default=12000)
 
+    storage = subparsers.add_parser(
+        "storage", help="inspect and maintain local storage"
+    )
+    storage_commands = storage.add_subparsers(dest="storage_command", required=True)
+    storage_stats = storage_commands.add_parser(
+        "stats", help="report local records and bytes by repository and category"
+    )
+    storage_stats.add_argument("--repo", default="", help="limit to owner/name")
+    storage_stats.add_argument(
+        "--since-days", type=int, default=0, help="include only newer records"
+    )
+
     follow_up = subparsers.add_parser(
         "follow-up",
         help="fetch only pull request activity changed since the last check",
@@ -395,6 +407,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             return 0
+        if args.command == "storage":
+            if args.storage_command == "stats":
+                _json(
+                    pipeline.storage_statistics(
+                        repository=args.repo, since_days=args.since_days
+                    )
+                )
+                return 0
+            raise AssertionError(f"unhandled storage command: {args.storage_command}")
         if args.command == "follow-up":
             _json(pipeline.follow_up(args.run_id))
             return 0

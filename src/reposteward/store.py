@@ -1206,6 +1206,119 @@ class Store:
             ).fetchone()
         return bytes(row["payload"]) if row is not None else None
 
+    def storage_statistics(
+        self, *, repository: str = "", cutoff: str = ""
+    ) -> list[dict[str, Any]]:
+        """Return logical payload usage grouped by repository and data category."""
+        repository = repository.casefold()
+        definitions = (
+            (
+                "github_event_index",
+                """
+                SELECT repository, COUNT(*) AS records,
+                       COALESCE(SUM(
+                           length(CAST(repository AS BLOB)) +
+                           length(CAST(event_type AS BLOB)) +
+                           length(CAST(external_id AS BLOB)) +
+                           length(CAST(version_digest AS BLOB)) +
+                           length(CAST(head_sha AS BLOB)) +
+                           length(CAST(source_actor AS BLOB)) +
+                           length(CAST(source_state AS BLOB))
+                       ), 0) AS bytes,
+                       MIN(ingested_at) AS oldest_at, MAX(ingested_at) AS newest_at
+                FROM github_pr_events
+                WHERE (?='' OR repository=?) AND (?='' OR ingested_at>=?)
+                GROUP BY repository
+                """,
+            ),
+            (
+                "github_event_payload",
+                """
+                SELECT refs.repository, COUNT(*) AS records,
+                       COALESCE(SUM(b.size_bytes), 0) AS bytes,
+                       MIN(refs.oldest_at) AS oldest_at,
+                       MAX(refs.newest_at) AS newest_at
+                FROM (
+                    SELECT repository, payload_digest,
+                           MIN(ingested_at) AS oldest_at,
+                           MAX(ingested_at) AS newest_at
+                    FROM github_pr_events
+                    WHERE payload_digest<>'' AND (?='' OR repository=?)
+                      AND (?='' OR ingested_at>=?)
+                    GROUP BY repository, payload_digest
+                ) refs JOIN content_blobs b ON b.digest=refs.payload_digest
+                GROUP BY refs.repository
+                """,
+            ),
+            (
+                "run_metadata",
+                """
+                SELECT repository, COUNT(*) AS records,
+                       COALESCE(SUM(length(CAST(details AS BLOB))), 0) AS bytes,
+                       MIN(created_at) AS oldest_at, MAX(updated_at) AS newest_at
+                FROM runs
+                WHERE (?='' OR repository=?) AND (?='' OR created_at>=?)
+                GROUP BY repository
+                """,
+            ),
+            (
+                "context_pack",
+                """
+                SELECT r.repository, COUNT(*) AS records,
+                       COALESCE(SUM(length(CAST(p.payload AS BLOB))), 0) AS bytes,
+                       MIN(p.created_at) AS oldest_at, MAX(p.created_at) AS newest_at
+                FROM context_packs p JOIN runs r ON r.id=p.run_id
+                WHERE (?='' OR r.repository=?) AND (?='' OR p.created_at>=?)
+                GROUP BY r.repository
+                """,
+            ),
+            (
+                "checkpoint",
+                """
+                SELECT r.repository, COUNT(*) AS records,
+                       COALESCE(SUM(length(CAST(c.payload AS BLOB))), 0) AS bytes,
+                       MIN(c.created_at) AS oldest_at, MAX(c.created_at) AS newest_at
+                FROM checkpoints c JOIN runs r ON r.id=c.run_id
+                WHERE (?='' OR r.repository=?) AND (?='' OR c.created_at>=?)
+                GROUP BY r.repository
+                """,
+            ),
+            (
+                "merge_decision_audit",
+                """
+                SELECT repository, COUNT(*) AS records,
+                       COALESCE(SUM(length(CAST(payload AS BLOB))), 0) AS bytes,
+                       MIN(created_at) AS oldest_at, MAX(created_at) AS newest_at
+                FROM merge_decisions
+                WHERE (?='' OR repository=?) AND (?='' OR created_at>=?)
+                GROUP BY repository
+                """,
+            ),
+        )
+        result: list[dict[str, Any]] = []
+        parameters = (repository, repository, cutoff, cutoff)
+        with self._connection() as connection:
+            for category, query in definitions:
+                for row in connection.execute(query, parameters).fetchall():
+                    result.append(
+                        {
+                            "repository": str(row["repository"]),
+                            "category": category,
+                            "records": int(row["records"]),
+                            "bytes": int(row["bytes"]),
+                            "oldest_at": str(row["oldest_at"] or ""),
+                            "newest_at": str(row["newest_at"] or ""),
+                        }
+                    )
+        return sorted(
+            result, key=lambda value: (value["repository"], value["category"])
+        )
+
+    def run_repositories(self) -> dict[str, str]:
+        with self._connection() as connection:
+            rows = connection.execute("SELECT id, repository FROM runs").fetchall()
+        return {str(row["id"]): str(row["repository"]) for row in rows}
+
     def github_pr_watermark(self, run_id: str) -> dict[str, Any] | None:
         with self._connection() as connection:
             row = connection.execute(
