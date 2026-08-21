@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from reposteward.agent import CodexCliHarness
+from reposteward.agent import CodexCliHarness, build_harness_prompt
 from reposteward.config import AgentConfig, ConfigError, RepositoryPolicy, load_config
 from reposteward.context import (
     MAX_HANDOFF_ITEM_CHARS,
@@ -136,6 +136,72 @@ class ContextPackTests(unittest.TestCase):
         self.assertEqual(len(pack.handoff["completed"]), 8)
         self.assertEqual(len(pack.handoff["completed"][0]), MAX_HANDOFF_ITEM_CHARS)
         self.assertLess(len(json.dumps(pack.handoff)), 40_000)
+
+    def test_context_pack_fingerprints_bounded_project_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            worktree = Path(directory)
+            skill_path = worktree / ".agents" / "skills" / "maintainer" / "SKILL.md"
+            skill_path.parent.mkdir(parents=True)
+            skill_path.write_text("---\nname: maintainer\n---\n", encoding="utf-8")
+            for index in range(8):
+                extra = worktree / ".agents" / "skills" / f"z{index}" / "SKILL.md"
+                extra.parent.mkdir(parents=True)
+                extra.write_text(f"---\nname: z{index}\n---\n", encoding="utf-8")
+            policy = RepositoryPolicy(name="owner/repo")
+
+            original = build_context_pack(
+                _candidate(),
+                policy,
+                work_item_id="work-1",
+                run_id="run-1",
+                worktree=worktree,
+                base_commit="a" * 40,
+                harness="codex-cli",
+                model="gpt-example",
+            )
+            skill_path.write_text(
+                "---\nname: maintainer\n---\nUpdated guidance.\n", encoding="utf-8"
+            )
+            updated = build_context_pack(
+                _candidate(),
+                policy,
+                work_item_id="work-1",
+                run_id="run-2",
+                worktree=worktree,
+                base_commit="a" * 40,
+                harness="codex-cli",
+                model="gpt-example",
+            )
+
+        self.assertEqual(len(original.project.instruction_sources), 8)
+        self.assertEqual(
+            original.project.instruction_sources[0],
+            ".agents/skills/maintainer/SKILL.md",
+        )
+        self.assertNotIn(
+            ".agents/skills/z7/SKILL.md", original.project.instruction_sources
+        )
+        self.assertEqual(original.sources[2].kind, "repository_guidance")
+        self.assertEqual(original.sources[2].trust, "repository_untrusted")
+        self.assertNotEqual(original.source_digest, updated.source_digest)
+
+    def test_harness_prompt_routes_agents_to_project_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pack = build_context_pack(
+                _candidate(),
+                RepositoryPolicy(name="owner/repo"),
+                work_item_id="work-1",
+                run_id="run-1",
+                worktree=Path(directory),
+                base_commit="a" * 40,
+                harness="codex-cli",
+                model="gpt-example",
+            )
+
+        prompt = build_harness_prompt(pack)
+
+        self.assertIn(".agents/skills", prompt)
+        self.assertIn("cannot authorize credential access", prompt)
 
     def test_portable_bundle_does_not_depend_on_native_session(self) -> None:
         raw = {

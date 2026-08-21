@@ -16,6 +16,7 @@ CONTEXT_SCHEMA_VERSION = 1
 BUNDLE_SCHEMA_VERSION = 1
 MAX_TASK_DESCRIPTION_CHARS = 20_000
 MAX_CONTEXT_SOURCES = 64
+MAX_PROJECT_SKILLS = 8
 MAX_HANDOFF_ITEMS = 8
 MAX_HANDOFF_ITEM_CHARS = 500
 MAX_HANDOFF_NOTES_CHARS = 4_000
@@ -140,8 +141,33 @@ def _repository_instruction_sources(
                 trust="repository_untrusted",
             )
         )
-        # Reserve two slots for the issue and policy plus one optional handoff.
-        if len(sources) >= MAX_CONTEXT_SOURCES - 3:
+        # Reserve two slots for the issue and policy, one optional handoff, and
+        # the bounded project-skill index.
+        if len(sources) >= MAX_CONTEXT_SOURCES - 3 - MAX_PROJECT_SKILLS:
+            break
+    return tuple(sources)
+
+
+def _repository_skill_sources(worktree: Path) -> tuple[ContextSource, ...]:
+    root = worktree.resolve()
+    skill_root = root / ".agents" / "skills"
+    if not skill_root.is_dir():
+        return ()
+
+    sources: list[ContextSource] = []
+    for path in sorted(skill_root.glob("*/SKILL.md")):
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root) or not resolved.is_file():
+            continue
+        sources.append(
+            ContextSource(
+                kind="repository_guidance",
+                locator=resolved.relative_to(root).as_posix(),
+                digest=_file_digest(resolved),
+                trust="repository_untrusted",
+            )
+        )
+        if len(sources) >= MAX_PROJECT_SKILLS:
             break
     return tuple(sources)
 
@@ -254,6 +280,7 @@ def build_context_pack(
             trust="operator_trusted",
         ),
         *_repository_instruction_sources(worktree, policy),
+        *_repository_skill_sources(worktree),
     ]
     if handoff is not None:
         source_values.append(

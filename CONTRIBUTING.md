@@ -35,12 +35,18 @@ uv run reposteward image build
 
 ## 分支与提交
 
+- 不要直接在 `main` 上提交或推送代码；所有代码变更必须关联已审核的开放 Issue，并通过独立
+  分支或 worktree 上的 PR 合并。安全事件按 `SECURITY.md` 私下处理，不先创建公开 Issue。
 - 从最新 `main` 创建短生命周期分支，例如 `feat/context-redaction`、
   `fix/import-idempotency` 或 `perf/checkpoint-query`。
 - 每个 PR 只解决一个 Issue，避免捆绑无关重构、格式化或依赖升级。
 - 提交标题使用 Conventional Commits，例如 `feat(context): import portable bundles`。
 - 提交不得包含 token、私钥、账号缓存、数据库、`.env`、运行日志或本机绝对路径。
 - 使用 Coding Harness 时，仍需由提交者检查完整 diff、测试结果和公开说明。
+
+仓库内的 `.agents/skills/reposteward-maintainer/SKILL.md` 提供从 Issue 审核、实现、验证到
+CI/Reviewer 跟进的可复用流程，适用于不同 Coding Harness；它不会替代 RepoSteward 代码中的
+身份、凭据、摘要和公开写入门禁。
 
 ## Pull Request
 
