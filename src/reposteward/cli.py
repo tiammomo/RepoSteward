@@ -195,12 +195,6 @@ def _parser() -> argparse.ArgumentParser:
     )
     follow_up.add_argument("run_id")
 
-    repair = subparsers.add_parser(
-        "repair",
-        help="prepare and verify one contributor repair from new PR activity",
-    )
-    repair.add_argument("run_id", help="submitted run whose pull request changed")
-
     merge_decision = subparsers.add_parser(
         "merge-decision", help="evaluate and audit read-only PR merge eligibility"
     )
@@ -432,9 +426,6 @@ def main(argv: list[str] | None = None) -> int:
             raise AssertionError(f"unhandled storage command: {args.storage_command}")
         if args.command == "follow-up":
             _json(pipeline.follow_up(args.run_id))
-            return 0
-        if args.command == "repair":
-            _json(pipeline.prepare_repair(args.run_id))
             return 0
         if args.command == "merge-decision":
             _json(pipeline.merge_decision(args.run_id))

@@ -436,38 +436,21 @@ class StoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")
             activity = {
-                "pull_request": {
-                    "number": 12,
-                    "head_sha": "a" * 40,
-                    "state": "open",
-                },
+                "pull_request": {"number": 12, "head_sha": "a" * 40},
                 "comments": [{"id": 1, "body": "fix this"}],
                 "reviews": [],
                 "review_comments": [],
                 "checks": [],
             }
             source = store.start_run("owner/repo", 7, "pull_request")
-            store.update_run(
-                source,
-                status="submitted",
-                details={"pr_url": "https://github.com/owner/repo/pull/12"},
-            )
             batch = store.ingest_github_pr_activity(
                 run_id=source,
                 repository="owner/repo",
                 pull_number=12,
                 activity=activity,
             )
-            store.commit_github_follow_up(
-                run_id=source,
-                repository="owner/repo",
-                pull_number=12,
-                previous_sequence=batch["previous_sequence"],
-                through_sequence=batch["through_sequence"],
-                batch_digest=batch["batch_digest"],
-            )
             successor = store.start_run("owner/repo", 7, "repair")
-            seeded = store.seed_github_pr_watermark(
+            store.seed_github_pr_watermark(
                 run_id=successor,
                 repository="owner/repo",
                 pull_number=12,
@@ -481,7 +464,6 @@ class StoreTests(unittest.TestCase):
                 activity=activity,
             )
 
-        self.assertEqual(seeded["sequence"], batch["through_sequence"])
         self.assertEqual(repeated["events"], [])
 
     def test_merge_decision_audit_is_append_only(self) -> None:

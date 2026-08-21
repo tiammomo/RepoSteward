@@ -1858,56 +1858,6 @@ class Pipeline:
             )
             raise
 
-    def _validate_repair_submission(
-        self,
-        *,
-        client: GitHubClient,
-        policy: RepositoryPolicy,
-        details: dict[str, Any],
-    ) -> None:
-        guard = details.get("repair_guard")
-        if not isinstance(guard, dict):
-            return
-        if policy.mode != "contributor" or policy.submission_strategy != "fork":
-            raise PolicyError("prepared contributor repair has an invalid policy mode")
-        source_run_id = str(guard.get("source_run_id") or "")
-        source_run = self.store.run(source_run_id)
-        if source_run is None or str(source_run.get("status")) != "submitted":
-            raise PolicyError("prepared repair source run is unavailable")
-        pull_number = int(guard.get("pull_number") or 0)
-        activity = client.pull_request_activity(policy.name, pull_number)
-        event_batch = self.store.ingest_github_pr_activity(
-            run_id=source_run_id,
-            repository=policy.name,
-            pull_number=pull_number,
-            activity=activity,
-        )
-        snapshot = client.pull_request_merge_snapshot(policy.name, pull_number)
-        pull = activity["pull_request"]
-        expected_sequence = int(guard.get("event_watermark") or 0)
-        stale: list[str] = []
-        if (
-            int(event_batch["previous_sequence"]) != expected_sequence
-            or int(event_batch["through_sequence"]) != expected_sequence
-        ):
-            stale.append("event_watermark")
-        if str(pull.get("head_sha") or "") != str(guard.get("parent_commit") or ""):
-            stale.append("head")
-        if str(pull.get("base_branch") or "") != str(guard.get("base_branch") or ""):
-            stale.append("base_branch")
-        if str(snapshot.get("base_sha") or "") != str(guard.get("base_sha") or ""):
-            stale.append("base")
-        if repository_policy_digest(policy) != str(guard.get("policy_digest") or ""):
-            stale.append("policy")
-        if _canonical_digest(snapshot) != str(guard.get("snapshot_digest") or ""):
-            stale.append("github_snapshot")
-        if stale:
-            raise PolicyError(
-                "prepared repair is stale ("
-                + ", ".join(dict.fromkeys(stale))
-                + "); run follow-up and prepare a new repair"
-            )
-
     def merge_decision(self, run_id: str) -> dict[str, Any]:
         """Evaluate and audit current merge eligibility without writing to GitHub."""
         run = self.store.run(run_id)
@@ -2044,11 +1994,6 @@ class Pipeline:
             raise PolicyError("publication branch must differ from the base branch")
 
         client = GitHubClient(self.config.github, token)
-        self._validate_repair_submission(
-            client=client,
-            policy=policy,
-            details=details,
-        )
         destination, head_owner = self._publication_target(client, policy)
         self._validate_contribution_contract(worktree, policy)
         body = self._pull_request_body(
