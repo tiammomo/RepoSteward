@@ -13,7 +13,7 @@ from typing import Any
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -230,6 +230,27 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
             updated_at TEXT NOT NULL,
             FOREIGN KEY(run_id) REFERENCES runs(id)
         )
+        """,
+    ),
+    6: (
+        """
+        CREATE TABLE IF NOT EXISTS merge_decisions (
+            id TEXT PRIMARY KEY,
+            repository TEXT NOT NULL,
+            pull_number INTEGER NOT NULL,
+            head_sha TEXT NOT NULL,
+            base_sha TEXT NOT NULL,
+            policy_digest TEXT NOT NULL,
+            snapshot_digest TEXT NOT NULL,
+            eligible INTEGER NOT NULL,
+            decision_digest TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS merge_decisions_for_pull
+        ON merge_decisions(repository, pull_number, created_at DESC)
         """,
     ),
 }
@@ -1496,6 +1517,78 @@ class Store:
             return None
         result = dict(row)
         result["details"] = json.loads(result["details"])
+        return result
+
+    def append_merge_decision(
+        self,
+        *,
+        repository: str,
+        pull_number: int,
+        head_sha: str,
+        base_sha: str,
+        policy_digest: str,
+        decision: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Append one immutable merge evaluation, including repeated evaluations."""
+        if pull_number < 1:
+            raise ValueError("pull_number must be positive")
+        decision_id = uuid.uuid4().hex
+        now = utc_now()
+        payload = _canonical_json(decision)
+        snapshot_digest = str(decision.get("snapshot_digest", ""))
+        decision_digest = str(decision.get("decision_digest", ""))
+        if not snapshot_digest or not decision_digest:
+            raise StoreError("merge decision is missing its audit digests")
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO merge_decisions(
+                    id, repository, pull_number, head_sha, base_sha,
+                    policy_digest, snapshot_digest, eligible,
+                    decision_digest, payload, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision_id,
+                    repository.casefold(),
+                    pull_number,
+                    head_sha,
+                    base_sha,
+                    policy_digest,
+                    snapshot_digest,
+                    int(bool(decision.get("eligible"))),
+                    decision_digest,
+                    payload,
+                    now,
+                ),
+            )
+        return {
+            "id": decision_id,
+            "repository": repository.casefold(),
+            "pull_number": pull_number,
+            "decision_digest": decision_digest,
+            "created_at": now,
+        }
+
+    def merge_decisions(
+        self, repository: str, pull_number: int, *, limit: int = 30
+    ) -> list[dict[str, Any]]:
+        limit = min(max(limit, 1), 100)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM merge_decisions
+                WHERE repository=? AND pull_number=?
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (repository.casefold(), pull_number, limit),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            value["eligible"] = bool(value["eligible"])
+            value["payload"] = json.loads(value["payload"])
+            result.append(value)
         return result
 
     def record_submission(

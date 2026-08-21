@@ -138,6 +138,7 @@ require_verification = false
 forbidden_paths = []
 [repositories."owner/repo"]
 max_diff_lines = 99
+merge_risk_paths = ["docs/operator/**"]
 """,
                 encoding="utf-8",
             )
@@ -179,6 +180,10 @@ max_diff_lines = 99
         )
         self.assertTrue(config.state_namespace)
         self.assertEqual(config.repositories["owner/repo"].max_diff_lines, 99)
+        self.assertEqual(
+            config.repositories["owner/repo"].merge_risk_paths,
+            ("docs/operator/**",),
+        )
 
     def test_configuration_is_not_pinned_to_one_github_login(self) -> None:
         with TemporaryDirectory() as directory:
