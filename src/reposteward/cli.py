@@ -191,6 +191,14 @@ def _parser() -> argparse.ArgumentParser:
     storage_gc.add_argument("--repo", default="", help="limit to owner/name")
     storage_gc.add_argument("--apply", action="store_true")
 
+    ci = subparsers.add_parser("ci", help="inspect CI failures without rerunning jobs")
+    ci_commands = ci.add_subparsers(dest="ci_command", required=True)
+    ci_diagnose = ci_commands.add_parser(
+        "diagnose", help="fingerprint and classify current pull request failures"
+    )
+    ci_diagnose.add_argument("repository")
+    ci_diagnose.add_argument("pull_number", type=int)
+
     portfolio = subparsers.add_parser(
         "portfolio", help="inspect repository-wide pull request state"
     )
@@ -486,6 +494,11 @@ def main(argv: list[str] | None = None) -> int:
                 _json(pipeline.storage_gc(repository=args.repo, apply=args.apply))
                 return 0
             raise AssertionError(f"unhandled storage command: {args.storage_command}")
+        if args.command == "ci":
+            if args.ci_command == "diagnose":
+                _json(pipeline.ci_failure_analysis(args.repository, args.pull_number))
+                return 0
+            raise AssertionError(f"unhandled ci command: {args.ci_command}")
         if args.command == "portfolio":
             if args.portfolio_command == "inspect":
                 result = pipeline.portfolio_snapshot(

@@ -398,6 +398,20 @@ UTF-8 字节安全截断，初次 `prepare` 语义不变；若仍超限，会先
 始终保留安全事实及至少一条可执行反馈。最终估算和裁剪数量记录在 `context_budget` 与
 `context_plan.stats.final_prompt_budget` 中，无法容纳最小必要集合时明确失败。
 
+失败 check 可以先用确定性 CI 诊断读取，而不立即把日志发送给 Harness 或盲目重跑：
+
+```bash
+uv run reposteward ci diagnose owner/repository 123
+```
+
+该命令完整分页读取目标 workflow run 的 job/step 元数据，只对当前失败 job 及同 job/platform 的
+有限失败对照下载日志。当前失败日志和对照日志分别最多读取 24 个；下载使用不携带 GitHub
+Authorization 的短期签名 URL 和 256 KiB Range 上限；日志先脱敏，
+再提取最多 12 条错误片段生成稳定指纹，完整原始日志不会进入输出或本地数据库。比较范围固定为
+同一 workflow run 的其他 attempt、同 PR 最近 12 个 run，以及当前 base SHA 最近 12 个 push run。
+结果只在证据充分时标记 `introduced`、`inherited`、`flaky` 或 `infrastructure`；第三方 check、
+日志不可读、比较不完整或矛盾时返回 `unknown`。命令不调用 Harness、不修改 PR，也不触发 rerun。
+
 `merge-decision` 只读获取完整的 changed files、required checks、Review decision 和未解决会话，
 再对照验证时冻结的 head、base、policy digest、规模上限及高风险路径生成确定性结果。每次调用都会
 追加一条本地审计记录，但不会调用 Harness、修改 workspace 或执行 GitHub 写操作。内置 CI、权限、
@@ -466,6 +480,7 @@ apply 前会追加 `applying` 审计，删除后再追加 `completed` 审计；�
 
 - GitHub 凭据不会传给 Agent、测试、仓库 hooks、Git push 或 Docker 容器。
 - Issue、仓库内容、评论和 Review 正文都视为不可信输入。
+- CI 日志先限长和脱敏，只保存或输出可解释的有界片段与摘要。
 - 安全报告、已认领 Issue、竞争 PR 和仓库贡献门禁可以阻断流水线。
 - `.github/workflows`、凭据路径和超出配置限额的 diff 默认不可提交。
 - 依赖安装可以在无凭据容器中联网，实际验证命令在 `--network none` 下运行。

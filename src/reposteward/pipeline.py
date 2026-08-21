@@ -12,6 +12,20 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .ci import (
+    FAILED_CONCLUSIONS,
+    MAX_COMPARISON_LOGS,
+    MAX_COMPARISON_RUNS,
+    MAX_CURRENT_LOGS,
+    MAX_LOG_BYTES,
+    classify_failure,
+    compact_check,
+    compact_job,
+    finalize_ci_analysis,
+    fingerprint_failure,
+    redact_ci_log,
+    same_job,
+)
 from .config import AppConfig, RepositoryPolicy
 from .context import (
     CONTEXT_SCHEMA_VERSION,
@@ -235,6 +249,380 @@ class Pipeline:
                 "url": pull.url,
             }
         return result
+
+    @staticmethod
+    def _recent_ci_runs(
+        runs: tuple[dict[str, Any], ...], *, exclude_sha: str = ""
+    ) -> list[dict[str, Any]]:
+        values = [
+            value
+            for value in runs
+            if not exclude_sha or str(value.get("head_sha") or "") != exclude_sha
+        ]
+        return sorted(
+            values,
+            key=lambda value: (
+                str(value.get("created_at") or ""),
+                int(value.get("id") or 0),
+            ),
+            reverse=True,
+        )[:MAX_COMPARISON_RUNS]
+
+    def _ci_jobs_for_runs(
+        self,
+        repository: str,
+        runs: list[dict[str, Any]],
+        *,
+        source: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        jobs: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for run in runs:
+            try:
+                run_jobs = self.github.workflow_jobs(repository, int(run["id"]))
+            except GitHubError as exc:
+                errors.append(
+                    {
+                        "source": source,
+                        "run_id": int(run["id"]),
+                        "reason": redact_ci_log(str(exc))[:500],
+                    }
+                )
+                continue
+            for job in run_jobs:
+                jobs.append(
+                    {
+                        **job,
+                        "head_sha": str(
+                            job.get("head_sha") or run.get("head_sha") or ""
+                        ),
+                        "workflow_name": str(
+                            job.get("workflow_name") or run.get("name") or ""
+                        ),
+                    }
+                )
+        return jobs, errors
+
+    def ci_failure_analysis(self, repository: str, pull_number: int) -> dict[str, Any]:
+        """Classify current CI failures without writes, reruns, or Harness calls."""
+        policy = self.policy(repository)
+        if pull_number < 1:
+            raise ValueError("pull_number must be positive")
+        pull = self.github.pull_request(policy.name, pull_number)
+        if not re.fullmatch(r"[a-f0-9]{40}", pull.head_sha):
+            raise GitHubError("pull request head SHA is unavailable")
+        checks = self.github.check_runs(policy.name, pull.head_sha)
+        failed_checks = [
+            value
+            for value in checks
+            if str(value.get("conclusion") or "").casefold() in FAILED_CONCLUSIONS
+        ]
+        if not failed_checks:
+            material = {
+                "schema_version": 1,
+                "repository": policy.name.casefold(),
+                "pull_number": pull_number,
+                "head_sha": pull.head_sha,
+                "base_sha": pull.base_sha,
+                "complete": True,
+                "failures": [],
+                "errors": [],
+                "errors_omitted": 0,
+                "comparison": {
+                    "current_head_run_ids": [],
+                    "same_pr_history_run_ids": [],
+                    "base_run_ids": [],
+                },
+            }
+            return {
+                **finalize_ci_analysis(material),
+                "harness_invoked": False,
+                "workflow_rerun": False,
+                "raw_logs_persisted": False,
+                "local_write": False,
+                "public_write": False,
+            }
+
+        analyzable_checks = [
+            value
+            for value in sorted(failed_checks, key=lambda item: int(item["id"]))
+            if str(value.get("app_slug") or "") == "github-actions"
+        ][:MAX_CURRENT_LOGS]
+        analyzable_check_ids = {int(value["id"]) for value in analyzable_checks}
+        current_run_ids = sorted(
+            {
+                int(match.group(1))
+                for check in analyzable_checks
+                if (
+                    match := re.search(
+                        r"/actions/runs/(\d+)(?:/job/\d+)?/?$",
+                        str(check.get("url") or ""),
+                    )
+                )
+            }
+        )
+        current_runs = [
+            {"id": value, "head_sha": pull.head_sha} for value in current_run_ids
+        ]
+        base_runs = (
+            self._recent_ci_runs(
+                self.github.workflow_runs(
+                    policy.name,
+                    head_sha=pull.base_sha,
+                    event="push",
+                    limit=MAX_COMPARISON_RUNS,
+                )
+            )
+            if analyzable_checks and re.fullmatch(r"[a-f0-9]{40}", pull.base_sha)
+            else []
+        )
+        history_runs = (
+            self._recent_ci_runs(
+                tuple(
+                    value
+                    for value in self.github.workflow_runs(
+                        policy.name,
+                        branch=pull.head_branch,
+                        event="pull_request",
+                        limit=MAX_COMPARISON_RUNS * 2,
+                    )
+                    if pull_number in value.get("pull_numbers", ())
+                ),
+                exclude_sha=pull.head_sha,
+            )
+            if analyzable_checks and pull.head_branch
+            else []
+        )
+        current_jobs, current_errors = self._ci_jobs_for_runs(
+            policy.name, current_runs, source="current_head"
+        )
+        history_jobs, history_errors = self._ci_jobs_for_runs(
+            policy.name, history_runs, source="same_pr_history"
+        )
+        base_jobs, base_errors = self._ci_jobs_for_runs(
+            policy.name, base_runs, source="current_base"
+        )
+        errors = [*current_errors, *history_errors, *base_errors]
+        log_cache: dict[int, dict[str, Any]] = {}
+        current_log_count = 0
+        comparison_log_count = 0
+
+        def fingerprint(job: dict[str, Any], *, comparison: bool) -> dict[str, Any]:
+            nonlocal comparison_log_count, current_log_count
+            job_id = int(job.get("id") or 0)
+            cached = log_cache.get(job_id)
+            if cached is not None:
+                return {**job, **cached}
+            if comparison and comparison_log_count >= MAX_COMPARISON_LOGS:
+                result = {"fingerprint": "", "log_error": "comparison_log_limit"}
+                errors.append(
+                    {
+                        "source": "comparison_log",
+                        "job_id": job_id,
+                        "reason": "comparison_log_limit",
+                    }
+                )
+                log_cache[job_id] = result
+                return {**job, **result}
+            if not comparison and current_log_count >= MAX_CURRENT_LOGS:
+                result = {"fingerprint": "", "log_error": "current_log_limit"}
+                errors.append(
+                    {
+                        "source": "current_log",
+                        "job_id": job_id,
+                        "reason": "current_log_limit",
+                    }
+                )
+                log_cache[job_id] = result
+                return {**job, **result}
+            if comparison:
+                comparison_log_count += 1
+            else:
+                current_log_count += 1
+            try:
+                log = self.github.workflow_job_log(
+                    policy.name, job_id, max_bytes=MAX_LOG_BYTES
+                )
+            except GitHubError as exc:
+                result = {
+                    "fingerprint": "",
+                    "log_error": redact_ci_log(str(exc))[:500],
+                }
+                errors.append(
+                    {
+                        "source": "comparison_log" if comparison else "current_log",
+                        "job_id": job_id,
+                        "reason": result["log_error"],
+                    }
+                )
+            else:
+                result = fingerprint_failure(
+                    job,
+                    log=str(log["text"]),
+                    log_bytes=int(log["bytes_read"]),
+                    log_truncated=bool(log["truncated"]),
+                )
+            log_cache[job_id] = result
+            return {**job, **result}
+
+        failures = []
+        for check in sorted(failed_checks, key=lambda value: int(value["id"])):
+            if (
+                str(check.get("app_slug") or "") == "github-actions"
+                and int(check["id"]) not in analyzable_check_ids
+            ):
+                errors.append(
+                    {
+                        "source": "current_log",
+                        "check_run_id": int(check["id"]),
+                        "reason": "current_log_limit",
+                    }
+                )
+                failures.append(
+                    {
+                        "check": compact_check(check),
+                        "classification": "unknown",
+                        "confidence": "none",
+                        "reason": "current failure exceeds the bounded analysis limit",
+                        "compared_run_ids": [],
+                        "same_pr_history_run_ids": [],
+                        "log_error": "current_log_limit",
+                    }
+                )
+                continue
+            candidates = [
+                job
+                for job in current_jobs
+                if int(job.get("check_run_id") or 0) == int(check["id"])
+            ]
+            if not candidates:
+                run_match = re.search(
+                    r"/actions/runs/(\d+)(?:/job/\d+)?/?$",
+                    str(check.get("url") or ""),
+                )
+                expected_run_id = int(run_match.group(1)) if run_match else 0
+                candidates = [
+                    job
+                    for job in current_jobs
+                    if int(job.get("run_id") or 0) == expected_run_id
+                    if str(job.get("name") or "").casefold()
+                    == str(check.get("name") or "").casefold()
+                    and str(job.get("conclusion") or "").casefold()
+                    in FAILED_CONCLUSIONS
+                ]
+            if str(check.get("app_slug") or "") != "github-actions" or not candidates:
+                failures.append(
+                    {
+                        "check": compact_check(check),
+                        "classification": "unknown",
+                        "confidence": "none",
+                        "reason": "no readable GitHub Actions job matched this check",
+                        "compared_run_ids": [],
+                        "same_pr_history_run_ids": [],
+                    }
+                )
+                continue
+            current_job = fingerprint(
+                max(
+                    candidates,
+                    key=lambda value: (
+                        int(value.get("run_attempt") or 0),
+                        int(value.get("id") or 0),
+                    ),
+                ),
+                comparison=False,
+            )
+
+            evidence_complete = not errors and bool(current_job.get("fingerprint"))
+
+            def comparable(
+                values: list[dict[str, Any]], reference: dict[str, Any] = current_job
+            ) -> list[dict[str, Any]]:
+                nonlocal evidence_complete
+                result = []
+                for value in values:
+                    if int(value.get("id") or 0) == int(reference.get("id") or 0):
+                        continue
+                    if not same_job(reference, value):
+                        continue
+                    if (
+                        str(value.get("conclusion") or "").casefold()
+                        in FAILED_CONCLUSIONS
+                    ):
+                        value = fingerprint(value, comparison=True)
+                        if not value.get("fingerprint"):
+                            evidence_complete = False
+                    result.append(value)
+                return result
+
+            same_head = comparable(current_jobs)
+            pull_history = comparable(history_jobs)
+            baseline = comparable(base_jobs)
+            classification = classify_failure(
+                {
+                    "job": current_job,
+                    "fingerprint": current_job.get("fingerprint", ""),
+                    "infrastructure_signals": current_job.get(
+                        "infrastructure_signals", []
+                    ),
+                },
+                same_head=same_head,
+                pull_history=pull_history,
+                baseline=baseline,
+                evidence_complete=evidence_complete,
+            )
+            failures.append(
+                {
+                    "check": compact_check(check),
+                    "job": compact_job(current_job),
+                    "fingerprint": str(current_job.get("fingerprint") or ""),
+                    "fingerprint_material": current_job.get("fingerprint_material", {}),
+                    "log_excerpt": current_job.get("log_excerpt", []),
+                    "log_bytes_read": int(current_job.get("log_bytes_read") or 0),
+                    "log_truncated": bool(current_job.get("log_truncated")),
+                    "log_error": str(current_job.get("log_error") or ""),
+                    "infrastructure_signals": current_job.get(
+                        "infrastructure_signals", []
+                    ),
+                    **classification,
+                }
+            )
+
+        complete = (
+            not errors
+            and all(
+                bool(value.get("fingerprint"))
+                for value in failures
+                if value.get("job") is not None
+            )
+            and all(value.get("job") is not None for value in failures)
+        )
+        material = {
+            "schema_version": 1,
+            "repository": policy.name.casefold(),
+            "pull_number": pull_number,
+            "head_sha": pull.head_sha,
+            "base_sha": pull.base_sha,
+            "complete": complete,
+            "failures": failures,
+            "errors": errors[:50],
+            "errors_omitted": max(0, len(errors) - 50),
+            "comparison": {
+                "current_head_run_ids": current_run_ids,
+                "same_pr_history_run_ids": sorted(
+                    int(value["id"]) for value in history_runs
+                ),
+                "base_run_ids": sorted(int(value["id"]) for value in base_runs),
+            },
+        }
+        return {
+            **finalize_ci_analysis(material),
+            "harness_invoked": False,
+            "workflow_rerun": False,
+            "raw_logs_persisted": False,
+            "local_write": False,
+            "public_write": False,
+        }
 
     def portfolio_dependency_plan(
         self, repository: str, *, expected_digest: str = ""

@@ -25,6 +25,11 @@ class GitHubError(RuntimeError):
     """A GitHub API request failed."""
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _canonical_digest(value: object) -> str:
     encoded = json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -196,6 +201,7 @@ class GitHubClient:
         *,
         container: str = "",
         query: dict[str, str | int] | None = None,
+        max_items: int = 0,
     ) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         page = 1
@@ -216,6 +222,8 @@ class GitHubClient:
                 label = container or "response"
                 raise GitHubError(f"GitHub paginated {label} was not a list")
             result.extend(values)
+            if max_items and len(result) >= max_items:
+                return result[:max_items]
             if not self._response_has_next_page(response):
                 return result
             if page >= MAX_REST_PAGES:
@@ -835,6 +843,162 @@ class GitHubClient:
                 }
                 for value in check_runs
             ],
+        }
+
+    def check_runs(self, upstream: str, ref: str) -> tuple[dict[str, Any], ...]:
+        values = self._paginated_rest_values(
+            f"/repos/{upstream}/commits/{urllib.parse.quote(ref, safe='')}/check-runs",
+            container="check_runs",
+        )
+        return tuple(
+            {
+                "id": int(value["id"]),
+                "name": str(value.get("name") or ""),
+                "status": str(value.get("status") or ""),
+                "conclusion": str(value.get("conclusion") or ""),
+                "url": str(value.get("details_url") or ""),
+                "app_slug": str((value.get("app") or {}).get("slug") or ""),
+            }
+            for value in values
+        )
+
+    def workflow_runs(
+        self,
+        upstream: str,
+        *,
+        head_sha: str = "",
+        branch: str = "",
+        event: str = "",
+        limit: int = 0,
+    ) -> tuple[dict[str, Any], ...]:
+        query: dict[str, str | int] = {"status": "completed"}
+        if head_sha:
+            query["head_sha"] = head_sha
+        if branch:
+            query["branch"] = branch
+        if event:
+            query["event"] = event
+        values = self._paginated_rest_values(
+            f"/repos/{upstream}/actions/runs",
+            container="workflow_runs",
+            query=query,
+            max_items=limit,
+        )
+        return tuple(
+            {
+                "id": int(value["id"]),
+                "name": str(value.get("name") or ""),
+                "event": str(value.get("event") or ""),
+                "status": str(value.get("status") or ""),
+                "conclusion": str(value.get("conclusion") or ""),
+                "head_branch": str(value.get("head_branch") or ""),
+                "head_sha": str(value.get("head_sha") or ""),
+                "run_attempt": int(value.get("run_attempt") or 0),
+                "created_at": str(value.get("created_at") or ""),
+                "updated_at": str(value.get("updated_at") or ""),
+                "url": str(value.get("html_url") or ""),
+                "pull_numbers": sorted(
+                    int(pull["number"])
+                    for pull in (value.get("pull_requests") or ())
+                    if isinstance(pull, dict) and pull.get("number")
+                ),
+            }
+            for value in values
+        )
+
+    def workflow_jobs(self, upstream: str, run_id: int) -> tuple[dict[str, Any], ...]:
+        values = self._paginated_rest_values(
+            f"/repos/{upstream}/actions/runs/{run_id}/jobs",
+            container="jobs",
+            query={"filter": "all"},
+        )
+        result = []
+        for value in values:
+            check_run_match = re.search(
+                r"/check-runs/(\d+)$", str(value.get("check_run_url") or "")
+            )
+            result.append(
+                {
+                    "id": int(value["id"]),
+                    "run_id": int(value.get("run_id") or run_id),
+                    "run_attempt": int(value.get("run_attempt") or 0),
+                    "head_sha": str(value.get("head_sha") or ""),
+                    "workflow_name": str(value.get("workflow_name") or ""),
+                    "name": str(value.get("name") or ""),
+                    "status": str(value.get("status") or ""),
+                    "conclusion": str(value.get("conclusion") or ""),
+                    "started_at": str(value.get("started_at") or ""),
+                    "completed_at": str(value.get("completed_at") or ""),
+                    "url": str(value.get("html_url") or ""),
+                    "labels": [str(label) for label in (value.get("labels") or ())],
+                    "runner_group_name": str(value.get("runner_group_name") or ""),
+                    "check_run_id": (
+                        int(check_run_match.group(1)) if check_run_match else 0
+                    ),
+                    "steps": [
+                        {
+                            "number": int(step.get("number") or 0),
+                            "name": str(step.get("name") or ""),
+                            "status": str(step.get("status") or ""),
+                            "conclusion": str(step.get("conclusion") or ""),
+                        }
+                        for step in (value.get("steps") or ())
+                        if isinstance(step, dict)
+                    ],
+                }
+            )
+        return tuple(result)
+
+    def workflow_job_log(
+        self, upstream: str, job_id: int, *, max_bytes: int
+    ) -> dict[str, Any]:
+        """Download a bounded job log without forwarding auth to its signed URL."""
+        if job_id < 1 or max_bytes < 1:
+            raise ValueError("job_id and max_bytes must be positive")
+        api_url = f"{self.config.api_url}/repos/{upstream}/actions/jobs/{job_id}/logs"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "reposteward/0.1",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        request = urllib.request.Request(api_url, headers=headers, method="GET")
+        opener = urllib.request.build_opener(_NoRedirectHandler())
+        try:
+            response = opener.open(request, timeout=30)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 302:
+                raise GitHubError(f"GitHub GET job log failed ({exc.code})") from exc
+            location = str(exc.headers.get("Location") or "")
+            exc.close()
+        except urllib.error.URLError as exc:
+            raise GitHubError("GitHub GET job log failed") from exc
+        else:
+            response.close()
+            raise GitHubError("GitHub job log endpoint did not return a redirect")
+        parsed = urllib.parse.urlparse(location)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise GitHubError("GitHub job log returned an unsafe redirect")
+        download = urllib.request.Request(
+            location,
+            headers={
+                "User-Agent": "reposteward/0.1",
+                "Range": f"bytes=-{max_bytes}",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(download, timeout=30) as response:
+                payload = response.read(max_bytes + 1)
+        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+            raise GitHubError("GitHub signed job log download failed") from exc
+        truncated = len(payload) > max_bytes
+        bounded = payload[:max_bytes]
+        return {
+            "text": bounded.decode("utf-8", errors="replace"),
+            "bytes_read": len(bounded),
+            "truncated": truncated,
         }
 
     def pull_request_merge_snapshot(self, upstream: str, number: int) -> dict[str, Any]:

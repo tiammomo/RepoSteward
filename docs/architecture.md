@@ -151,6 +151,14 @@ successor 从已提交水位开始，避免重新注入完整 PR 历史。修复
 进入本地 `ready` 状态；每个新 commit 都需要新的 submit 身份确认。准备时冻结 head、base、policy
 digest、事件水位和完整 GitHub 结构化快照，公开 push 前逐项复核，任一变化都使准备失效。
 
+CI Failure Analyzer 是 follow-up 与 Repair 之间的只读证据层。当前失败 check 通过 Actions run/job
+结构化关联定位，job/step 元数据完整分页，日志只从一分钟有效的签名 URL 读取；GitHub Authorization
+不得转发到下载主机。每类最多读取 24 个日志，每个使用 256 KiB Range 上限，随后先脱敏再提取有界
+错误片段，完整日志不持久化。
+指纹由 workflow、job、平台标签、失败 step、测试标识和规范化错误片段组成。分类只使用同 head 的
+其他 attempt、同 PR 历史和当前 base SHA 的 push run；证据不完整、第三方 provider 或结果矛盾时
+返回 unknown。该层不调用 Harness、重跑 job、修改 PR，也不把 inherited 等同于通过。
+
 Merge Decision Engine 位于执行器之前。它完整分页读取 GitHub 结构化状态，并以纯函数检查已验证
 head/base、策略摘要、审批、required checks、未解决会话、规模和不可削弱的高风险路径。结果只表示
 当前快照是否具备资格，不执行 merge，也不以 Harness 推理替代确定性事实。任何不完整快照都失败
