@@ -78,6 +78,7 @@ class MergeSnapshot:
     additions: int
     deletions: int
     checks: tuple[MergeCheck, ...]
+    activity_digest: str = ""
     files_complete: bool = True
     conversations_complete: bool = True
     checks_complete: bool = True
@@ -167,6 +168,8 @@ def evaluate_merge(
         block("conversations_incomplete", "Review-conversation data is incomplete.")
     if not snapshot.checks_complete:
         block("checks_incomplete", "Check data is incomplete.")
+    if not snapshot.activity_digest:
+        block("activity_incomplete", "Pull-request activity digest is unavailable.")
     if snapshot.review_decision.casefold() != "approved":
         block("review_not_approved", "The current review decision is not approved.")
     if snapshot.unresolved_conversations:

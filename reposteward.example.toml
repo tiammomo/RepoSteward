@@ -49,6 +49,8 @@ follow_up_max_tokens = 24000
 [repositories."owner/repository"]
 enabled = true
 auto_prepare = false
+auto_merge = false
+auto_merge_method = "squash"
 mode = "contributor"
 submission_strategy = "fork"
 require_no_competing_work = true

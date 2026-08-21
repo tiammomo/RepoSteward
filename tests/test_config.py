@@ -371,6 +371,57 @@ submission_strategy = "same-repository"
             with self.assertRaisesRegex(ConfigError, "only in maintainer mode"):
                 load_config(path)
 
+    def test_auto_merge_requires_explicit_maintainer_same_repository_mode(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+auto_merge = true
+mode = "contributor"
+submission_strategy = "fork"
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "auto_merge only"):
+                load_config(path)
+
+            path.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+auto_merge = true
+auto_merge_method = "squash"
+mode = "maintainer"
+submission_strategy = "same-repository"
+""",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+
+        self.assertTrue(config.repositories["owner/repo"].auto_merge)
+        self.assertEqual(config.repositories["owner/repo"].auto_merge_method, "squash")
+
+    def test_auto_merge_method_is_restricted(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+auto_merge_method = "octopus"
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "auto_merge_method"):
+                load_config(path)
+
     def test_quoted_boolean_is_rejected_instead_of_becoming_true(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"

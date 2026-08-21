@@ -206,6 +206,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     merge_decision.add_argument("run_id")
 
+    merge = subparsers.add_parser(
+        "merge", help="execute one fresh opt-in maintainer merge decision"
+    )
+    merge.add_argument("run_id")
+    merge.add_argument("--decision-id", required=True)
+    merge.add_argument("--reviewed-by", required=True)
+
     submit = subparsers.add_parser(
         "submit", help="push a reviewed change and create or reopen a PR"
     )
@@ -438,6 +445,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "merge-decision":
             _json(pipeline.merge_decision(args.run_id))
+            return 0
+        if args.command == "merge":
+            _json(
+                pipeline.execute_merge(
+                    args.run_id,
+                    decision_id=args.decision_id,
+                    reviewed_by=args.reviewed_by,
+                )
+            )
             return 0
         if args.command == "submit":
             _json(

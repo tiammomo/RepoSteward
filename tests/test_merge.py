@@ -23,6 +23,7 @@ class MergeDecisionTests(unittest.TestCase):
             additions=20,
             deletions=5,
             checks=(MergeCheck("quality", "COMPLETED", "SUCCESS"),),
+            activity_digest="d" * 64,
         )
 
     def evaluate(self, snapshot: MergeSnapshot | None = None, **kwargs):
@@ -55,6 +56,12 @@ class MergeDecisionTests(unittest.TestCase):
                 conversations_complete=False,
                 checks_complete=False,
             )
+        )
+
+        missing_activity = self.evaluate(replace(self.snapshot, activity_digest=""))
+        self.assertEqual(
+            [reason.code for reason in missing_activity.reasons],
+            ["activity_incomplete"],
         )
 
         self.assertFalse(result.eligible)

@@ -136,6 +136,7 @@ class StorageGcTests(unittest.TestCase):
         self.assertEqual(result["estimated_reclaimable_bytes"], 12)
         self.assertEqual(store.audit, [])
         self.assertIn("merge_decision_audit", result["protected_categories"])
+        self.assertIn("merge_execution_audit", result["protected_categories"])
 
     def test_gc_apply_requires_switch_then_audits_and_deletes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

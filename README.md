@@ -336,6 +336,32 @@ diff 不可用等原因。安全阻塞、当前 head/base、失败 check 和阻�
 Runner、数据库、依赖发布和安全风险规则不能被项目配置削弱；项目只能通过 `merge_risk_paths` 追加
 需要人工合并的路径。
 
+Maintainer 可以为单个仓库显式启用合并执行器；默认仍关闭：
+
+```toml
+[repositories."owner/repository"]
+mode = "maintainer"
+submission_strategy = "same-repository"
+auto_merge = true
+auto_merge_method = "squash"
+```
+
+执行器只消费一次指定的 eligible 决策，不会自己生成资格。先运行 `merge-decision`，人工检查返回的
+决策和 `audit.id`，再显式执行：
+
+```bash
+REPOSTEWARD_ENABLE_MERGE=1 \
+  uv run reposteward merge RUN_ID \
+  --decision-id MERGE_DECISION_AUDIT_ID \
+  --reviewed-by your-github-login
+```
+
+命令会核对配置身份、token 实际身份和仓库 push 权限，并在写入前两次读取完整 PR 活动与合并快照。
+任何评论或 Review 编辑、check、会话、head/base、策略、规模或风险变化都会使旧决策失效；请求还会
+绑定精确 head SHA。网络结果不确定时先回读 GitHub，已在相同 head 合并则作为幂等成功，否则失败
+关闭。每次尝试的意图和结果都追加到本地审计。Contributor mode、高风险路径、超限 PR、后台轮询、
+Reviewer 回复和自动开启 GitHub auto-merge 均不在该执行器范围内。
+
 本地占用可以按仓库、数据类别和时间范围只读查看：
 
 ```bash
@@ -356,7 +382,7 @@ uv run reposteward storage gc --repo owner/repository
 默认候选只有超过用户级 `cache_retention_days` 且已有终态 Checkpoint 的验证日志。原始 GitHub
 事件正文没有默认期限；只有仓库显式配置 `event_payload_retention_days` 后，超过期限且每个 run 水位
 都已覆盖的正文才进入候选。计划会列出每个候选、预计可回收字节及保留原因汇总，并始终保护事件
-索引、Checkpoint、Merge Decision 和 GC 审计。
+索引、Checkpoint、Merge Decision、Merge Execution 和 GC 审计。
 
 实际应用需要命令参数和独立环境开关同时存在：
 
