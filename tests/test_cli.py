@@ -348,6 +348,77 @@ class CliSetupTests(unittest.TestCase):
             ],
         )
 
+    def test_queue_commands_route_bounded_control_plane_arguments(self) -> None:
+        pipeline = MagicMock()
+        pipeline.enqueue_task.return_value = {"task": {"id": "task-1"}}
+        pipeline.apply_queue.return_value = {"outcomes": [], "public_write": False}
+
+        with (
+            patch("reposteward.cli.load_config", return_value=object()),
+            patch("reposteward.cli.Pipeline", return_value=pipeline),
+            redirect_stdout(io.StringIO()),
+        ):
+            enqueue_code = main(
+                [
+                    "queue",
+                    "enqueue",
+                    "owner/repo",
+                    "submit",
+                    "--issue",
+                    "7",
+                    "--priority",
+                    "12",
+                    "--depends-on",
+                    "task-0",
+                    "--max-attempts",
+                    "4",
+                    "--reviewed-by",
+                    "alice",
+                    "--reopen",
+                    "19",
+                ]
+            )
+            apply_code = main(
+                [
+                    "queue",
+                    "apply",
+                    "--repo",
+                    "owner/repo",
+                    "--worker",
+                    "worker-1",
+                    "--limit",
+                    "3",
+                    "--lease-seconds",
+                    "60",
+                ]
+            )
+
+        self.assertEqual(
+            (enqueue_code, apply_code),
+            (0, 0),
+        )
+        pipeline.enqueue_task.assert_called_once_with(
+            "owner/repo",
+            action="submit",
+            issue_number=7,
+            pull_number=0,
+            run_id="",
+            work_item_id="",
+            priority=12,
+            depends_on_task_id="task-0",
+            max_attempts=4,
+            idempotency_key="",
+            reviewed_by="alice",
+            decision_id="",
+            reopen_pull_request=19,
+        )
+        pipeline.apply_queue.assert_called_once_with(
+            repository="owner/repo",
+            worker="worker-1",
+            limit=3,
+            lease_seconds=60,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

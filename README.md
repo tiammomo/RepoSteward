@@ -257,6 +257,44 @@ uv run reposteward list --all
 uv run reposteward inbox --repo owner/repository --format text
 ```
 
+需要跨进程、账号或 Harness 保存批量待办顺序时，可先把稳定控制面引用写入本地任务队列；enqueue
+不会执行任务、调用 Harness 或写入 GitHub：
+
+```bash
+uv run reposteward queue enqueue owner/repository prepare --issue 123 --priority 20
+uv run reposteward queue enqueue owner/repository follow-up --run-id RUN_ID
+uv run reposteward queue enqueue owner/repository submit --issue 123 \
+  --reviewed-by your-github-login --depends-on PREVIOUS_TASK_ID
+uv run reposteward queue inspect --repo owner/repository
+uv run reposteward queue inspect --task-id TASK_ID
+```
+
+同一仓库、动作、稳定引用、参数摘要和依赖的重复 enqueue 返回原任务；需要显式创建新一轮时传入新的
+`--idempotency-key`。任务按 priority 和入队顺序 claim，只有前置任务 completed 后才可执行。失败会
+区分可重试与 `manual_required`；瞬时错误按 5 秒起、最多 300 秒退避，并受 `--max-attempts` 限制。
+人工修正后可以显式 retry，未运行或租约已过期的任务可以 cancel：
+
+```bash
+REPOSTEWARD_ENABLE_QUEUE_APPLY=1 \
+  uv run reposteward queue retry TASK_ID --by your-github-login
+
+REPOSTEWARD_ENABLE_QUEUE_APPLY=1 \
+  uv run reposteward queue cancel TASK_ID --by your-github-login --reason superseded
+```
+
+执行队列需要独立开关；`submit`、owner attestation 和 `merge` 仍分别要求自己的原有开关与身份门禁，
+队列不会代为开启：
+
+```bash
+REPOSTEWARD_ENABLE_QUEUE_APPLY=1 \
+  uv run reposteward queue apply --repo owner/repository --limit 4
+```
+
+每个任务在慢 Harness、Runner 或 GitHub 调用期间由短 SQLite 事务续租，不持有数据库写锁。进程崩溃
+后过期任务可由新 worker 接管，旧 generation 不能提交结果。任务只保存 work item/run/Issue/PR ID、
+动作白名单和有界标量参数，不保存 prompt、token、评论正文或绝对工作区路径；attempt 审计不参与
+普通 GC。
+
 检查贡献门禁并准备修复：
 
 ```bash
@@ -571,7 +609,8 @@ uv run reposteward storage gc --repo owner/repository
 submitted run 或远端引用证明可恢复；活跃、未知、脏、未推送、路径异常和符号链接工作区都会保留。
 原始 GitHub 事件正文没有默认期限；只有仓库显式配置 `event_payload_retention_days` 后，超过期限且
 每个 run 水位都已覆盖的正文才进入候选。计划会列出每个候选、预计可回收字节及保留原因汇总，并
-始终保护事件索引、Checkpoint、Publication Attempt、Merge Decision、Merge Execution 和 GC 审计。
+始终保护事件索引、Checkpoint、Task Queue、Publication Attempt、Merge Decision、Merge Execution
+和 GC 审计。
 
 实际应用需要命令参数和独立环境开关同时存在：
 

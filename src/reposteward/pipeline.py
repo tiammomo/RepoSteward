@@ -68,7 +68,7 @@ from .portfolio import build_portfolio_snapshot
 from .protocol import read_context_bundle, validate_context_bundle
 from .repair_prompt import build_budgeted_repair_context_pack
 from .review import compact_command, compact_run
-from .store import RunLease, Store, StoreError
+from .store import QueueLease, RunLease, Store, StoreError
 from .usage import (
     build_usage_report,
     compact_usage_budget,
@@ -2227,6 +2227,8 @@ class Pipeline:
                 "merge_decision_audit",
                 "merge_execution_audit",
                 "publication_attempt_audit",
+                "task_queue_control",
+                "task_queue_attempt_audit",
                 "portfolio_dependency_audit",
                 "storage_gc_audit",
             ],
@@ -2346,6 +2348,336 @@ class Pipeline:
             payload=applied,
         )
         return {**result, "audit": [applying, completed], "applied": applied}
+
+    def enqueue_task(
+        self,
+        repository: str,
+        *,
+        action: str,
+        issue_number: int = 0,
+        pull_number: int = 0,
+        run_id: str = "",
+        work_item_id: str = "",
+        priority: int = 0,
+        depends_on_task_id: str = "",
+        max_attempts: int = 3,
+        idempotency_key: str = "",
+        reviewed_by: str = "",
+        decision_id: str = "",
+        reopen_pull_request: int = 0,
+    ) -> dict[str, Any]:
+        """Persist one bounded control-plane task without executing it."""
+        policy = self.policy(repository)
+        parameters: dict[str, Any] = {}
+        if action in {"submit", "merge-attest", "merge"}:
+            parameters["reviewed_by"] = reviewed_by
+        if action == "merge":
+            parameters["decision_id"] = decision_id
+        if action == "submit" and reopen_pull_request:
+            parameters["reopen_pull_request"] = reopen_pull_request
+        task = self.store.enqueue_queue_task(
+            policy.name,
+            action=action,
+            enqueued_by=self.config.github.login,
+            work_item_id=work_item_id,
+            run_id=run_id,
+            issue_number=issue_number,
+            pull_number=pull_number,
+            parameters=parameters,
+            priority=priority,
+            depends_on_task_id=depends_on_task_id,
+            max_attempts=max_attempts,
+            idempotency_key=idempotency_key,
+        )
+        return {"task": task, "public_write": False}
+
+    def queue_inspect(
+        self,
+        *,
+        repository: str = "",
+        task_id: str = "",
+        states: tuple[str, ...] = (),
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Return queue state and attempt metadata without invoking a Harness."""
+        normalized = self.policy(repository).name if repository else ""
+        tasks = self.store.queue_tasks(
+            repository=normalized,
+            task_id=task_id,
+            states=states,
+            limit=limit,
+        )
+        summary = self.store.queue_task_summary(repository=normalized)
+        if task_id:
+            summary = {
+                "counts": {
+                    state: sum(task["state"] == state for task in tasks)
+                    for state in (
+                        "pending",
+                        "running",
+                        "completed",
+                        "failed",
+                        "cancelled",
+                    )
+                },
+                "manual_required": sum(bool(task["manual_required"]) for task in tasks),
+                "dependency_blocked": sum(
+                    bool(task["blocked_by_dependency"]) for task in tasks
+                ),
+            }
+        result: dict[str, Any] = {
+            "repository": normalized,
+            "task_id": task_id,
+            **summary,
+            "tasks": tasks,
+            "public_write": False,
+        }
+        if task_id:
+            result["attempts"] = self.store.queue_attempts(task_id, limit=limit)
+        return result
+
+    @staticmethod
+    def _queue_result(task: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+        stable: dict[str, Any] = {}
+        for key in (
+            "run_id",
+            "status",
+            "stage",
+            "pr_number",
+            "pr_url",
+            "merge_commit_sha",
+            "merged",
+            "idempotent",
+            "public_write",
+            "next_action",
+        ):
+            value = result.get(key)
+            if isinstance(value, (str, int, bool)) and value != "":
+                stable[key] = value
+        audit = result.get("audit")
+        if task["action"] == "merge-decision" and isinstance(audit, dict):
+            decision_id = audit.get("id")
+            if isinstance(decision_id, str):
+                stable["decision_id"] = decision_id
+        if "run_id" not in stable and task.get("run_id"):
+            stable["run_id"] = str(task["run_id"])
+        stable.setdefault("public_write", False)
+        return stable
+
+    @staticmethod
+    def _queue_failure(exc: Exception) -> tuple[str, bool]:
+        if isinstance(exc, GitHubError):
+            transient = exc.status_code in {408, 425, 429} or (
+                exc.status_code is not None and exc.status_code >= 500
+            )
+            return ("github_transient" if transient else "github_rejected", transient)
+        if isinstance(exc, sqlite3.OperationalError):
+            return "storage_busy", True
+        if isinstance(exc, (WorkspaceError, OSError)):
+            return "workspace_or_io_error", True
+        if isinstance(exc, PolicyError):
+            return "policy_blocked", False
+        if isinstance(exc, (KeyError, TypeError, ValueError)):
+            return "invalid_task", False
+        return "execution_failed", False
+
+    def _execute_queued_action(self, task: dict[str, Any]) -> dict[str, Any]:
+        action = str(task["action"])
+        repository = str(task["repository"])
+        parameters = dict(task["parameters"])
+        run_id = str(task.get("run_id") or "")
+        if action == "prepare":
+            return self.prepare(repository, int(task["issue_number"]))
+        if action == "follow-up":
+            return self.follow_up(run_id)
+        if action == "repair":
+            return self.prepare_repair(run_id)
+        if action == "submit":
+            return self.submit(
+                repository,
+                int(task["issue_number"]),
+                reviewed_by=str(parameters["reviewed_by"]),
+                reopen_pull_request=int(parameters.get("reopen_pull_request") or 0),
+            )
+        if action == "merge-decision":
+            return self.merge_decision(run_id)
+        if action == "merge-attest":
+            return self.attest_owner_review(
+                run_id, reviewed_by=str(parameters["reviewed_by"])
+            )
+        if action == "merge":
+            return self.execute_merge(
+                run_id,
+                decision_id=str(parameters["decision_id"]),
+                reviewed_by=str(parameters["reviewed_by"]),
+            )
+        raise PolicyError(f"unsupported queued action: {action!r}")
+
+    @staticmethod
+    def _queue_lease_heartbeat(
+        store: Store,
+        lease: QueueLease,
+        *,
+        lease_seconds: int,
+        stopped: threading.Event,
+        lease_lost: threading.Event,
+    ) -> None:
+        interval = max(1, min(30, lease_seconds // 3))
+        while not stopped.wait(interval):
+            try:
+                store.renew_queue_lease(lease, lease_seconds=lease_seconds)
+            except StoreError:
+                lease_lost.set()
+                return
+            except (OSError, sqlite3.Error):
+                continue
+
+    def apply_queue(
+        self,
+        *,
+        repository: str = "",
+        worker: str = "",
+        limit: int = 1,
+        lease_seconds: int = 900,
+    ) -> dict[str, Any]:
+        """Explicitly execute persisted tasks through their existing Pipeline gates."""
+        if os.environ.get("REPOSTEWARD_ENABLE_QUEUE_APPLY") != "1":
+            raise PolicyError(
+                "queue apply is disabled; set REPOSTEWARD_ENABLE_QUEUE_APPLY=1"
+            )
+        if not 1 <= limit <= 100:
+            raise ValueError("queue apply limit must be between 1 and 100")
+        if not 5 <= lease_seconds <= 86_400:
+            raise ValueError("queue lease_seconds must be between 5 and 86400")
+        normalized = self.policy(repository).name if repository else ""
+        queue_worker = worker.strip() or f"{os.getpid()}:{uuid.uuid4().hex}"
+        outcomes: list[dict[str, Any]] = []
+        any_public_write = False
+        for _index in range(limit):
+            claimed = self.store.claim_queue_tasks(
+                worker=queue_worker,
+                limit=1,
+                lease_seconds=lease_seconds,
+                repository=normalized,
+            )
+            if not claimed:
+                break
+            task = claimed[0]
+            lease = task.pop("lease")
+            if not isinstance(lease, QueueLease):
+                raise StoreError("queue claim returned an invalid lease")
+            stopped = threading.Event()
+            lease_lost = threading.Event()
+
+            thread = threading.Thread(
+                target=self._queue_lease_heartbeat,
+                args=(self.store, lease),
+                kwargs={
+                    "lease_seconds": lease_seconds,
+                    "stopped": stopped,
+                    "lease_lost": lease_lost,
+                },
+                name=f"reposteward-queue-{task['id']}",
+                daemon=True,
+            )
+            thread.start()
+            try:
+                result = self._execute_queued_action(task)
+            except (
+                GitHubError,
+                KeyError,
+                OSError,
+                PolicyError,
+                RuntimeError,
+                sqlite3.Error,
+                subprocess.SubprocessError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                stopped.set()
+                thread.join(timeout=1)
+                error_code, retryable = self._queue_failure(exc)
+                if lease_lost.is_set():
+                    outcomes.append(
+                        {
+                            "task_id": task["id"],
+                            "action": task["action"],
+                            "status": "lease_lost",
+                            "error_code": error_code,
+                        }
+                    )
+                    continue
+                failed = self.store.fail_queue_task(
+                    lease, error_code=error_code, retryable=retryable
+                )
+                outcomes.append(
+                    {
+                        "task_id": task["id"],
+                        "action": task["action"],
+                        "status": "failed",
+                        "error_code": error_code,
+                        "retryable": retryable,
+                        "manual_required": bool(failed["manual_required"]),
+                    }
+                )
+                continue
+            finally:
+                stopped.set()
+                thread.join(timeout=1)
+            if lease_lost.is_set():
+                outcomes.append(
+                    {
+                        "task_id": task["id"],
+                        "action": task["action"],
+                        "status": "lease_lost",
+                    }
+                )
+                continue
+            stable_result = self._queue_result(task, result)
+            completed = self.store.complete_queue_task(lease, result=stable_result)
+            any_public_write = any_public_write or bool(
+                stable_result.get("public_write")
+            )
+            outcomes.append(
+                {
+                    "task_id": task["id"],
+                    "action": task["action"],
+                    "status": completed["state"],
+                    "result": stable_result,
+                }
+            )
+        return {
+            "repository": normalized,
+            "worker": queue_worker,
+            "requested_limit": limit,
+            "processed": len(outcomes),
+            "outcomes": outcomes,
+            "public_write": any_public_write,
+        }
+
+    def cancel_task(
+        self, task_id: str, *, cancelled_by: str, reason_code: str
+    ) -> dict[str, Any]:
+        if os.environ.get("REPOSTEWARD_ENABLE_QUEUE_APPLY") != "1":
+            raise PolicyError(
+                "queue mutation is disabled; set REPOSTEWARD_ENABLE_QUEUE_APPLY=1"
+            )
+        return {
+            "task": self.store.cancel_queue_task(
+                task_id, cancelled_by=cancelled_by, reason_code=reason_code
+            ),
+            "public_write": False,
+        }
+
+    def requeue_task(self, task_id: str, *, requeued_by: str) -> dict[str, Any]:
+        if os.environ.get("REPOSTEWARD_ENABLE_QUEUE_APPLY") != "1":
+            raise PolicyError(
+                "queue mutation is disabled; set REPOSTEWARD_ENABLE_QUEUE_APPLY=1"
+            )
+        return {
+            "task": self.store.requeue_queue_task(task_id, requeued_by=requeued_by),
+            "public_write": False,
+        }
 
     @staticmethod
     def _follow_up_diff_snippets(
