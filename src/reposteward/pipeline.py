@@ -52,6 +52,7 @@ from .dependencies import (
 from .discovery import score_issue
 from .github import GitHubClient, GitHubError, PullRequest, resolve_token
 from .harness import Harness, HarnessRequest, create_harness, harness_capabilities
+from .inbox import build_maintainer_inbox
 from .issues import (
     attach_proposal_marker,
     issue_review_digest,
@@ -221,6 +222,26 @@ class Pipeline:
         pulls = self.github.open_pull_requests(policy.name)
         return self._portfolio_snapshot_from_pulls(
             policy, pulls, expected_digest=expected_digest
+        )
+
+    def maintainer_inbox(self, repository: str, *, limit: int = 50) -> dict[str, Any]:
+        """Aggregate bounded local and online facts without invoking a Harness."""
+        policy = self.policy(repository)
+        observed_at = datetime.now(UTC).replace(microsecond=0).isoformat()
+        portfolio = None
+        error = ""
+        try:
+            portfolio = self.portfolio_snapshot(policy.name)
+        except GitHubError as exc:
+            error = str(exc)
+        return build_maintainer_inbox(
+            policy.name,
+            proposals=self.store.staged_issue_proposals(policy.name),
+            runs=self.store.latest_runs_for_repository(policy.name),
+            portfolio=portfolio,
+            observed_at=observed_at,
+            error=error,
+            limit=min(max(limit, 1), 500),
         )
 
     def _portfolio_snapshot_from_pulls(
