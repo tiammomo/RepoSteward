@@ -15,6 +15,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .batch import build_batch_plan
 from .capacity import effective_capacity_limit, pull_request_capacity
 from .ci import (
     FAILED_CONCLUSIONS,
@@ -76,7 +77,7 @@ from .usage import (
     session_resume_outcome,
 )
 from .verifier import DockerVerifier
-from .workspace import WorkspaceError, WorkspaceManager
+from .workspace import WorkspaceError, WorkspaceManager, sanitized_environment
 from .workspace_storage import (
     WORKSPACE_KIND,
     delete_workspace,
@@ -127,6 +128,18 @@ def _repair_feedback(
             if isinstance(value, dict):
                 actionable.append({"kind": "failed_check", **value})
     return tuple(actionable), tuple(suggestions)
+
+
+class BatchDeferred(RuntimeError):
+    """A batch step made progress but must wait for fresh online facts."""
+
+    def __init__(self, reason: str, *, public_write: bool = False) -> None:
+        super().__init__(reason)
+        self.public_write = public_write
+
+
+class BatchConflictError(PolicyError):
+    """A deterministic replay conflicted and requires bounded human repair."""
 
 
 class Pipeline:
@@ -736,6 +749,19 @@ class Pipeline:
                 "expected dependency plan digest must be 64 lowercase hex chars"
             )
         pulls = self.github.open_pull_requests(policy.name)
+        _portfolio, result = self._portfolio_dependency_plan_from_pulls(policy, pulls)
+        digest = str(result["plan_digest"])
+        return {
+            **result,
+            "expected_digest": expected_digest,
+            "matches_expected_digest": (
+                digest == expected_digest if expected_digest else None
+            ),
+        }
+
+    def _portfolio_dependency_plan_from_pulls(
+        self, policy: RepositoryPolicy, pulls: tuple[PullRequest, ...]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         portfolio = self._portfolio_snapshot_from_pulls(policy, pulls)
         snapshot = {
             **portfolio["snapshot"],
@@ -775,12 +801,8 @@ class Pipeline:
             snapshot, declarations, attestations, target_states
         )
         digest = str(plan.pop("plan_digest"))
-        return {
+        return portfolio, {
             "plan_digest": digest,
-            "expected_digest": expected_digest,
-            "matches_expected_digest": (
-                digest == expected_digest if expected_digest else None
-            ),
             "plan": plan,
             "harness_invoked": False,
             "workspace_modified": False,
@@ -892,6 +914,435 @@ class Pipeline:
             ],
             "public_write": False,
         }
+
+    def batch_plan(
+        self,
+        repository: str,
+        *,
+        expected_digest: str = "",
+        max_parallel: int = 4,
+    ) -> dict[str, Any]:
+        """Build a stable merge-train plan without writes or Harness calls."""
+        policy = self.policy(repository)
+        if expected_digest and not re.fullmatch(r"[a-f0-9]{64}", expected_digest):
+            raise ValueError("expected batch digest must be 64 lowercase hex chars")
+        pulls = self.github.open_pull_requests(policy.name)
+        portfolio, dependency = self._portfolio_dependency_plan_from_pulls(
+            policy, pulls
+        )
+        snapshot = {
+            **portfolio["snapshot"],
+            "snapshot_digest": portfolio["snapshot_digest"],
+        }
+        dependency_plan = {
+            **dependency["plan"],
+            "plan_digest": dependency["plan_digest"],
+        }
+        runs = self.store.latest_runs_for_repository(policy.name)
+        for run in runs:
+            details = run.get("details")
+            worktree = (
+                Path(str(details.get("worktree") or "")).expanduser()
+                if isinstance(details, dict)
+                else Path()
+            )
+            run["batch_worktree_available"] = bool(
+                isinstance(details, dict)
+                and details.get("worktree")
+                and (worktree / ".git").exists()
+            )
+        plan = build_batch_plan(
+            snapshot,
+            dependency_plan,
+            runs,
+            wip_limit=effective_capacity_limit(
+                self.config.safety.max_active_pull_requests,
+                policy.max_active_pull_requests,
+            ),
+            max_parallel=max_parallel,
+        )
+        digest = str(plan.pop("batch_digest"))
+        return {
+            "batch_digest": digest,
+            "expected_digest": expected_digest,
+            "matches_expected_digest": (
+                digest == expected_digest if expected_digest else None
+            ),
+            "plan": plan,
+            "harness_invoked": False,
+            "workspace_modified": False,
+            "local_write": False,
+            "public_write": False,
+        }
+
+    def batch_apply(
+        self,
+        repository: str,
+        *,
+        expected_digest: str,
+        reviewed_by: str,
+        max_parallel: int = 4,
+        priority: int = 100,
+    ) -> dict[str, Any]:
+        """Revalidate one reviewed plan and persist its serialized train tasks."""
+        if os.environ.get("REPOSTEWARD_ENABLE_BATCH_APPLY") != "1":
+            raise PolicyError(
+                "batch apply is disabled; set REPOSTEWARD_ENABLE_BATCH_APPLY=1"
+            )
+        actor = reviewed_by.strip()
+        if actor.casefold() != self.config.github.login.casefold():
+            raise PolicyError("--reviewed-by must match the configured GitHub login")
+        if not expected_digest:
+            raise ValueError("batch apply requires a reviewed --expected-digest")
+        result = self.batch_plan(
+            repository,
+            expected_digest=expected_digest,
+            max_parallel=max_parallel,
+        )
+        if not result["matches_expected_digest"]:
+            raise PolicyError("batch plan is stale; inspect and review the latest plan")
+        plan = result["plan"]
+        if not plan["complete"]:
+            raise PolicyError("batch facts are incomplete; no tasks were enqueued")
+        entries = {int(value["pull_number"]): value for value in plan["pull_requests"]}
+        tasks = []
+        dependency_task_id = ""
+        order = list(plan["queue_order"])
+        for offset, pull_number in enumerate(order):
+            entry = entries[int(pull_number)]
+            task = self.enqueue_task(
+                repository,
+                action="batch-advance",
+                issue_number=int(entry["issue_number"]),
+                pull_number=int(entry["pull_number"]),
+                run_id=str(entry["run_id"]),
+                priority=max(-1_000, min(1_000, priority - offset)),
+                depends_on_task_id=dependency_task_id,
+                max_attempts=20,
+                idempotency_key=f"batch:{expected_digest}:{pull_number}",
+                reviewed_by=actor,
+                batch_plan_digest=expected_digest,
+                batch_head_sha=str(entry["head_sha"]),
+                batch_base_sha=str(entry["base_sha"]),
+                batch_verified_base_sha=str(entry["verified_base_sha"]),
+            )["task"]
+            dependency_task_id = str(task["id"])
+            tasks.append(
+                {
+                    key: task[key]
+                    for key in (
+                        "id",
+                        "action",
+                        "pull_number",
+                        "state",
+                        "depends_on_task_id",
+                        "idempotent",
+                    )
+                }
+            )
+        return {
+            "repository": plan["repository"],
+            "batch_digest": expected_digest,
+            "queue_order": order,
+            "tasks": tasks,
+            "blocked_pull_requests": plan["blocked_pull_requests"],
+            "local_write": bool(tasks),
+            "public_write": False,
+            "next_action": "review queue state, then explicitly run queue apply",
+        }
+
+    @staticmethod
+    def _batch_git(
+        worktree: Path, arguments: list[str], *, check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=worktree,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=sanitized_environment(keep_codex_credentials=False),
+        )
+        if check and result.returncode:
+            message = result.stderr.strip() or result.stdout.strip()
+            raise WorkspaceError(f"git {' '.join(arguments[:2])} failed: {message}")
+        return result
+
+    def _batch_replay(
+        self,
+        source_run: dict[str, Any],
+        *,
+        pull_number: int,
+        reviewed_by: str,
+        batch_plan_digest: str,
+        root_run_id: str,
+        planned_base_sha: str,
+    ) -> dict[str, Any]:
+        repository = str(source_run["repository"])
+        issue_number = int(source_run["issue_number"])
+        with self._mutation_lease(repository, issue_number) as lease:
+            current = self.store.latest_run(repository, issue_number)
+            if current is None or str(current["id"]) != str(source_run["id"]):
+                raise PolicyError("batch source run changed before replay")
+            if str(current["status"]) != "submitted":
+                raise PolicyError("batch replay requires a submitted run")
+            details = current.get("details", {})
+            if not isinstance(details, dict):
+                raise PolicyError("batch source run details are unavailable")
+            snapshot = self.github.pull_request_merge_snapshot(repository, pull_number)
+            if str(snapshot.get("state") or "").casefold() != "open":
+                raise PolicyError("batch pull request is no longer open")
+            if str(snapshot.get("head_sha") or "") != str(
+                details.get("commit_sha") or ""
+            ):
+                raise PolicyError("batch pull request head changed before replay")
+            if str(snapshot.get("base_branch") or "") != str(
+                details.get("base_branch") or ""
+            ):
+                raise PolicyError("batch pull request base branch changed")
+            old_base = str(details.get("base_commit") or "")
+            new_base = str(snapshot.get("base_sha") or "")
+            if old_base == new_base:
+                raise BatchDeferred("base already current; re-read merge facts")
+            worktree = Path(str(details.get("worktree") or "")).expanduser().resolve()
+            if not (worktree / ".git").exists():
+                raise PolicyError("batch replay worktree is unavailable")
+            if self._batch_git(worktree, ["status", "--porcelain"]).stdout.strip():
+                raise PolicyError("batch replay worktree has uncommitted changes")
+            head = self._revision(worktree)
+            if head != str(details.get("commit_sha") or ""):
+                raise PolicyError("batch replay worktree head changed")
+            base_branch = str(details["base_branch"])
+            self._batch_git(
+                worktree,
+                [
+                    "fetch",
+                    "--no-tags",
+                    "origin",
+                    f"+refs/heads/{base_branch}:refs/remotes/origin/{base_branch}",
+                ],
+            )
+            if self._revision(worktree, f"origin/{base_branch}") != new_base:
+                raise PolicyError("fetched base differs from reviewed GitHub facts")
+            if (
+                self._batch_git(
+                    worktree,
+                    ["merge-base", "--is-ancestor", planned_base_sha, new_base],
+                    check=False,
+                ).returncode
+                != 0
+            ):
+                raise PolicyError("base history was rewritten after batch planning")
+            ancestry = self._batch_git(
+                worktree,
+                ["merge-base", "--is-ancestor", old_base, head],
+                check=False,
+            )
+            if ancestry.returncode:
+                raise PolicyError("verified base is not an ancestor of the batch head")
+            if self._batch_git(
+                worktree, ["rev-list", "--merges", f"{old_base}..{head}"]
+            ).stdout.strip():
+                raise PolicyError("batch replay does not rewrite merge commits")
+            if (
+                self._batch_git(
+                    worktree,
+                    ["merge-base", "--is-ancestor", new_base, head],
+                    check=False,
+                ).returncode
+                != 0
+            ):
+                signing = "true" if self.config.github.sign_commits else "false"
+                replay = self._batch_git(
+                    worktree,
+                    [
+                        "-c",
+                        f"commit.gpgsign={signing}",
+                        "rebase",
+                        "--onto",
+                        new_base,
+                        old_base,
+                    ],
+                    check=False,
+                )
+                if replay.returncode:
+                    aborted = self._batch_git(
+                        worktree, ["rebase", "--abort"], check=False
+                    )
+                    if aborted.returncode:
+                        raise WorkspaceError(
+                            "batch replay conflicted and git rebase --abort failed"
+                        )
+                    raise BatchConflictError(
+                        "batch replay conflicted; worktree was restored for manual repair"
+                    )
+            agent = details.get("agent_result", {})
+            if not isinstance(agent, dict):
+                raise PolicyError("batch source verification commands are unavailable")
+            raw_commands = agent.get("verification_commands", ())
+            commands = (
+                tuple(str(value) for value in raw_commands)
+                if isinstance(raw_commands, (list, tuple))
+                else ()
+            )
+            if not commands:
+                raise PolicyError("batch replay cannot reproduce source verification")
+            packet = self._adopt_leased(
+                repository,
+                issue_number,
+                worktree=worktree,
+                summary_text=str(
+                    agent.get("summary") or "Replayed onto the latest base."
+                ),
+                implementation_notes=(
+                    "Deterministic Git replay onto the reviewed base; reused the exact "
+                    "source verification commands without invoking a Harness."
+                ),
+                verification_commands=commands,
+            )
+            successor = self.store.latest_run(repository, issue_number)
+            if successor is None or str(successor["id"]) != str(packet["run_id"]):
+                raise StoreError("batch replay successor run was not persisted")
+            successor_details = dict(successor["details"])
+            successor_details["batch_replay"] = {
+                "root_run_id": root_run_id,
+                "source_run_id": str(source_run["id"]),
+                "batch_plan_digest": batch_plan_digest,
+                "source_head_sha": head,
+                "base_sha": new_base,
+            }
+            self.store.update_run(
+                str(successor["id"]),
+                status="ready",
+                details=successor_details,
+                lease=lease,
+            )
+            return self._submit_leased(
+                repository,
+                issue_number,
+                reviewed_by=reviewed_by,
+                mutation_lease=lease,
+            )
+
+    def batch_advance(
+        self,
+        run_id: str,
+        *,
+        pull_number: int,
+        reviewed_by: str,
+        batch_plan_digest: str,
+        planned_head_sha: str,
+        planned_base_sha: str,
+        planned_verified_base_sha: str,
+    ) -> dict[str, Any]:
+        """Advance one queued PR through replay, verification and existing gates."""
+        if os.environ.get("REPOSTEWARD_ENABLE_BATCH_APPLY") != "1":
+            raise PolicyError(
+                "batch execution is disabled; set REPOSTEWARD_ENABLE_BATCH_APPLY=1"
+            )
+        if reviewed_by.casefold() != self.config.github.login.casefold():
+            raise PolicyError("batch reviewed identity no longer matches configuration")
+        root = self.store.run(run_id)
+        if root is None:
+            raise KeyError(f"batch root run not found: {run_id}")
+        repository = str(root["repository"])
+        issue_number = int(root["issue_number"])
+        latest = self.store.latest_run(repository, issue_number)
+        if latest is None:
+            raise PolicyError("batch tracked run is unavailable")
+        latest_details = latest.get("details", {})
+        if not isinstance(latest_details, dict):
+            raise PolicyError("batch tracked run details are unavailable")
+        if str(latest["id"]) != run_id:
+            replay = latest_details.get("batch_replay")
+            if not isinstance(replay, dict) or (
+                str(replay.get("root_run_id") or "") != run_id
+                or str(replay.get("batch_plan_digest") or "") != batch_plan_digest
+            ):
+                raise PolicyError("batch run was superseded outside the reviewed train")
+
+        pull = self.github.pull_request(repository, pull_number)
+        if pull.merged:
+            return {
+                "run_id": str(latest["id"]),
+                "pr_number": pull_number,
+                "status": "merged",
+                "merged": True,
+                "idempotent": True,
+                "public_write": False,
+            }
+        if pull.state.casefold() != "open":
+            raise PolicyError("batch pull request is not open")
+        if str(latest["id"]) == run_id:
+            if pull.head_sha != planned_head_sha:
+                raise PolicyError("batch pull request head changed after planning")
+            if (
+                str(latest_details.get("base_commit") or "")
+                != planned_verified_base_sha
+            ):
+                raise PolicyError("batch verified base changed after planning")
+        if str(latest_details.get("branch") or "") != pull.head_branch:
+            raise PolicyError("batch tracked branch changed")
+
+        if str(latest["status"]) == "ready":
+            submitted = self.submit(repository, issue_number, reviewed_by=reviewed_by)
+            raise BatchDeferred(
+                "batch submitted a newly verified head; wait for current CI",
+                public_write=bool(submitted.get("public_write")),
+            )
+        if str(latest["status"]) != "submitted":
+            raise PolicyError("batch latest run is not ready or submitted")
+        if pull.head_sha != str(latest_details.get("commit_sha") or ""):
+            raise PolicyError("batch pull request head differs from the verified run")
+        if pull.base_sha != str(latest_details.get("base_commit") or ""):
+            submitted = self._batch_replay(
+                latest,
+                pull_number=pull_number,
+                reviewed_by=reviewed_by,
+                batch_plan_digest=batch_plan_digest,
+                root_run_id=run_id,
+                planned_base_sha=planned_base_sha,
+            )
+            raise BatchDeferred(
+                "batch replayed and submitted the head; wait for current CI",
+                public_write=bool(submitted.get("public_write")),
+            )
+
+        (
+            _run,
+            _details,
+            policy,
+            _number,
+            snapshot,
+            decision,
+            _raw,
+            _activity,
+        ) = self._current_merge_evaluation(str(latest["id"]))
+        reason_codes = {value.code for value in decision.reasons}
+        if (
+            reason_codes & {"base_changed", "dependency_blocked"}
+            or "required_check_pending" in reason_codes
+            or (
+                "pull_not_mergeable" in reason_codes
+                and snapshot.mergeable.casefold() in {"", "unknown"}
+            )
+        ):
+            raise BatchDeferred("batch is waiting for fresh GitHub merge facts")
+        if reason_codes == {"review_not_approved"} and policy.owner_attestation:
+            self.attest_owner_review(str(latest["id"]), reviewed_by=reviewed_by)
+        elif reason_codes:
+            raise PolicyError(
+                "batch merge gates require manual attention: "
+                + ", ".join(sorted(reason_codes))
+            )
+        evaluated = self.merge_decision(str(latest["id"]))
+        if not evaluated["eligible"]:
+            raise PolicyError("batch merge decision changed before execution")
+        return self.execute_merge(
+            str(latest["id"]),
+            decision_id=str(evaluated["audit"]["id"]),
+            reviewed_by=reviewed_by,
+        )
 
     def _publication_target(
         self, client: GitHubClient, policy: RepositoryPolicy
@@ -2365,16 +2816,29 @@ class Pipeline:
         reviewed_by: str = "",
         decision_id: str = "",
         reopen_pull_request: int = 0,
+        batch_plan_digest: str = "",
+        batch_head_sha: str = "",
+        batch_base_sha: str = "",
+        batch_verified_base_sha: str = "",
     ) -> dict[str, Any]:
         """Persist one bounded control-plane task without executing it."""
         policy = self.policy(repository)
         parameters: dict[str, Any] = {}
-        if action in {"submit", "merge-attest", "merge"}:
+        if action in {"submit", "merge-attest", "merge", "batch-advance"}:
             parameters["reviewed_by"] = reviewed_by
         if action == "merge":
             parameters["decision_id"] = decision_id
         if action == "submit" and reopen_pull_request:
             parameters["reopen_pull_request"] = reopen_pull_request
+        if action == "batch-advance":
+            parameters.update(
+                {
+                    "batch_plan_digest": batch_plan_digest,
+                    "batch_head_sha": batch_head_sha,
+                    "batch_base_sha": batch_base_sha,
+                    "batch_verified_base_sha": batch_verified_base_sha,
+                }
+            )
         task = self.store.enqueue_queue_task(
             policy.name,
             action=action,
@@ -2466,6 +2930,10 @@ class Pipeline:
 
     @staticmethod
     def _queue_failure(exc: Exception) -> tuple[str, bool]:
+        if isinstance(exc, BatchDeferred):
+            return "batch_waiting", True
+        if isinstance(exc, BatchConflictError):
+            return "batch_conflict", False
         if isinstance(exc, GitHubError):
             transient = exc.status_code in {408, 425, 429} or (
                 exc.status_code is not None and exc.status_code >= 500
@@ -2510,6 +2978,16 @@ class Pipeline:
                 run_id,
                 decision_id=str(parameters["decision_id"]),
                 reviewed_by=str(parameters["reviewed_by"]),
+            )
+        if action == "batch-advance":
+            return self.batch_advance(
+                run_id,
+                pull_number=int(task["pull_number"]),
+                reviewed_by=str(parameters["reviewed_by"]),
+                batch_plan_digest=str(parameters["batch_plan_digest"]),
+                planned_head_sha=str(parameters["batch_head_sha"]),
+                planned_base_sha=str(parameters["batch_base_sha"]),
+                planned_verified_base_sha=str(parameters["batch_verified_base_sha"]),
             )
         raise PolicyError(f"unsupported queued action: {action!r}")
 
@@ -2610,6 +3088,8 @@ class Pipeline:
                 failed = self.store.fail_queue_task(
                     lease, error_code=error_code, retryable=retryable
                 )
+                public_write = bool(isinstance(exc, BatchDeferred) and exc.public_write)
+                any_public_write = any_public_write or public_write
                 outcomes.append(
                     {
                         "task_id": task["id"],
@@ -2618,6 +3098,7 @@ class Pipeline:
                         "error_code": error_code,
                         "retryable": retryable,
                         "manual_required": bool(failed["manual_required"]),
+                        "public_write": public_write,
                     }
                 )
                 continue

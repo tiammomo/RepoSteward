@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .batch import render_batch_plan_text
 from .config import ConfigError, load_config
 from .dependencies import render_dependency_plan_text
 from .discovery import DiscoveryService
@@ -284,6 +285,26 @@ def _parser() -> argparse.ArgumentParser:
     dependency_list.add_argument("repository")
     dependency_list.add_argument("--pull-number", type=int, default=0)
     dependency_list.add_argument("--limit", type=int, default=100)
+
+    batch = subparsers.add_parser(
+        "batch", help="plan and enqueue a reviewed pull request merge train"
+    )
+    batch_commands = batch.add_subparsers(dest="batch_command", required=True)
+    batch_plan = batch_commands.add_parser(
+        "plan", help="build a read-only dependency and overlap aware plan"
+    )
+    batch_plan.add_argument("repository")
+    batch_plan.add_argument("--expected-digest", default="")
+    batch_plan.add_argument("--max-parallel", type=int, default=4)
+    batch_plan.add_argument("--format", choices=("json", "text"), default="json")
+    batch_apply = batch_commands.add_parser(
+        "apply", help="persist tasks from one exact reviewed batch plan"
+    )
+    batch_apply.add_argument("repository")
+    batch_apply.add_argument("--expected-digest", required=True)
+    batch_apply.add_argument("--reviewed-by", required=True)
+    batch_apply.add_argument("--max-parallel", type=int, default=4)
+    batch_apply.add_argument("--priority", type=int, default=100)
 
     inbox = subparsers.add_parser(
         "inbox", help="aggregate maintainer attention without invoking a Harness"
@@ -674,6 +695,30 @@ def main(argv: list[str] | None = None) -> int:
             raise AssertionError(
                 f"unhandled portfolio command: {args.portfolio_command}"
             )
+        if args.command == "batch":
+            if args.batch_command == "plan":
+                result = pipeline.batch_plan(
+                    args.repository,
+                    expected_digest=args.expected_digest,
+                    max_parallel=args.max_parallel,
+                )
+                if args.format == "text":
+                    print(render_batch_plan_text(result))
+                else:
+                    _json(result)
+                return 0
+            if args.batch_command == "apply":
+                _json(
+                    pipeline.batch_apply(
+                        args.repository,
+                        expected_digest=args.expected_digest,
+                        reviewed_by=args.reviewed_by,
+                        max_parallel=args.max_parallel,
+                        priority=args.priority,
+                    )
+                )
+                return 0
+            raise AssertionError(f"unhandled batch command: {args.batch_command}")
         if args.command == "follow-up":
             _json(pipeline.follow_up(args.run_id))
             return 0
