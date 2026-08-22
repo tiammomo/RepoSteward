@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -16,7 +17,7 @@ from typing import Any
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -506,6 +507,80 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         ON publication_attempts(step_id, stage)
         """,
     ),
+    16: (
+        """
+        CREATE TABLE IF NOT EXISTS queue_tasks (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            dedupe_key TEXT NOT NULL UNIQUE,
+            repository TEXT NOT NULL,
+            action TEXT NOT NULL,
+            work_item_id TEXT,
+            run_id TEXT,
+            issue_number INTEGER NOT NULL DEFAULT 0,
+            pull_number INTEGER NOT NULL DEFAULT 0,
+            parameters TEXT NOT NULL,
+            parameters_digest TEXT NOT NULL,
+            idempotency_digest TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            state TEXT NOT NULL,
+            depends_on_task_id TEXT,
+            max_attempts INTEGER NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            manual_required INTEGER NOT NULL DEFAULT 0,
+            last_error_code TEXT NOT NULL DEFAULT '',
+            lease_owner TEXT NOT NULL DEFAULT '',
+            lease_generation INTEGER NOT NULL DEFAULT 0,
+            lease_expires_at TEXT NOT NULL DEFAULT '',
+            available_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(work_item_id) REFERENCES work_items(id),
+            FOREIGN KEY(run_id) REFERENCES runs(id),
+            FOREIGN KEY(depends_on_task_id) REFERENCES queue_tasks(id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS queue_tasks_claim
+        ON queue_tasks(
+            state, manual_required, available_at, priority DESC, sequence
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS queue_tasks_for_repository
+        ON queue_tasks(
+            repository, state, manual_required, available_at,
+            priority DESC, sequence
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS queue_tasks_expired_leases
+        ON queue_tasks(state, lease_expires_at, attempt_count)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS queue_tasks_for_dependency
+        ON queue_tasks(depends_on_task_id, state)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS queue_attempts (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            task_id TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            worker TEXT NOT NULL,
+            event TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            payload_digest TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES queue_tasks(id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS queue_attempts_for_task
+        ON queue_attempts(task_id, sequence)
+        """,
+    ),
 }
 
 
@@ -517,6 +592,14 @@ class StoreError(RuntimeError):
 class RunLease:
     scope: str
     owner: str
+    generation: int
+    expires_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class QueueLease:
+    task_id: str
+    worker: str
     generation: int
     expires_at: str
 
@@ -580,6 +663,50 @@ PUBLICATION_PAYLOAD_KEYS = frozenset(
         "pull_state",
         "pull_draft",
         "reconciliation",
+    }
+)
+
+QUEUE_ACTIONS = frozenset(
+    {
+        "prepare",
+        "follow-up",
+        "repair",
+        "submit",
+        "merge-decision",
+        "merge-attest",
+        "merge",
+    }
+)
+QUEUE_STATES = frozenset({"pending", "running", "completed", "failed", "cancelled"})
+QUEUE_PARAMETER_KEYS = frozenset({"reviewed_by", "decision_id", "reopen_pull_request"})
+QUEUE_RESULT_KEYS = frozenset(
+    {
+        "run_id",
+        "status",
+        "stage",
+        "pr_number",
+        "pr_url",
+        "decision_id",
+        "merge_commit_sha",
+        "merged",
+        "idempotent",
+        "public_write",
+        "next_action",
+        "error_code",
+        "retryable",
+        "manual_required",
+    }
+)
+QUEUE_EVENTS = frozenset(
+    {
+        "enqueued",
+        "claimed",
+        "taken_over",
+        "completed",
+        "failed",
+        "cancelled",
+        "requeued",
+        "attempts_exhausted",
     }
 )
 
@@ -2123,6 +2250,31 @@ class Store:
                 """,
             ),
             (
+                "task_queue_control",
+                """
+                SELECT repository, COUNT(*) AS records,
+                       COALESCE(SUM(length(CAST(parameters AS BLOB))), 0) AS bytes,
+                       MIN(created_at) AS oldest_at, MAX(updated_at) AS newest_at
+                FROM queue_tasks
+                WHERE (?='' OR repository=?) AND (?='' OR created_at>=?)
+                GROUP BY repository
+                """,
+            ),
+            (
+                "task_queue_attempt_audit",
+                """
+                SELECT tasks.repository, COUNT(*) AS records,
+                       COALESCE(SUM(length(CAST(attempts.payload AS BLOB))), 0) AS bytes,
+                       MIN(attempts.created_at) AS oldest_at,
+                       MAX(attempts.created_at) AS newest_at
+                FROM queue_attempts attempts
+                JOIN queue_tasks tasks ON tasks.id=attempts.task_id
+                WHERE (?='' OR tasks.repository=?)
+                  AND (?='' OR attempts.created_at>=?)
+                GROUP BY tasks.repository
+                """,
+            ),
+            (
                 "portfolio_dependency_audit",
                 """
                 SELECT repository, COUNT(*) AS records,
@@ -2960,6 +3112,881 @@ class Store:
                 (scope.strip().casefold(), limit),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    @staticmethod
+    def _queue_timestamp(now: datetime | None = None) -> tuple[datetime, str]:
+        current = now or datetime.now(UTC)
+        if current.tzinfo is None:
+            raise ValueError("queue time must include a timezone")
+        normalized = current.astimezone(UTC)
+        return normalized, normalized.isoformat(timespec="microseconds")
+
+    @staticmethod
+    def _queue_worker(worker: str) -> str:
+        normalized = worker.strip()
+        if (
+            not normalized
+            or len(normalized) > 128
+            or any(character in normalized for character in "\r\n")
+            or normalized.startswith(("/", "~"))
+            or re.match(r"^[A-Za-z]:[\\/]", normalized)
+        ):
+            raise ValueError("queue worker must contain 1 to 128 characters")
+        return normalized
+
+    @staticmethod
+    def _queue_payload(payload: dict[str, Any], *, allowed_keys: frozenset[str]) -> str:
+        if not isinstance(payload, dict):
+            raise TypeError("queue payload must be an object")
+        unknown = set(payload) - allowed_keys
+        if unknown:
+            raise ValueError(
+                "queue payload contains unsupported fields: "
+                + ", ".join(sorted(unknown))
+            )
+        for value in payload.values():
+            if not isinstance(value, (str, int, bool)):
+                raise TypeError("queue payload values must be bounded scalars")
+            if isinstance(value, str):
+                if len(value) > 512:
+                    raise ValueError("queue payload string exceeds 512 characters")
+                if value.startswith(("/", "~")) or re.match(r"^[A-Za-z]:[\\/]", value):
+                    raise ValueError("queue payload must not contain absolute paths")
+        encoded = _canonical_json(payload)
+        if len(encoded.encode()) > 4_096:
+            raise ValueError("queue payload exceeds 4096 bytes")
+        return encoded
+
+    @staticmethod
+    def _validate_queue_parameters(action: str, parameters: dict[str, Any]) -> None:
+        required: dict[str, frozenset[str]] = {
+            "prepare": frozenset(),
+            "follow-up": frozenset(),
+            "repair": frozenset(),
+            "merge-decision": frozenset(),
+            "submit": frozenset({"reviewed_by"}),
+            "merge-attest": frozenset({"reviewed_by"}),
+            "merge": frozenset({"reviewed_by", "decision_id"}),
+        }
+        required_keys = required[action]
+        missing = required_keys - set(parameters)
+        if missing:
+            raise ValueError(
+                "queue action is missing parameters: " + ", ".join(sorted(missing))
+            )
+        allowed = required_keys | (
+            frozenset({"reopen_pull_request"}) if action == "submit" else frozenset()
+        )
+        unexpected = set(parameters) - allowed
+        if unexpected:
+            raise ValueError(
+                "queue action has unexpected parameters: "
+                + ", ".join(sorted(unexpected))
+            )
+        reviewed_by = parameters.get("reviewed_by")
+        if reviewed_by is not None and (
+            not isinstance(reviewed_by, str)
+            or not reviewed_by.strip()
+            or len(reviewed_by) > 128
+        ):
+            raise ValueError("queue reviewed_by must contain 1 to 128 characters")
+        decision_id = parameters.get("decision_id")
+        if decision_id is not None and (
+            not isinstance(decision_id, str) or not _is_lower_hex(decision_id, 32)
+        ):
+            raise ValueError("queue decision_id must be 32 lowercase hex characters")
+        reopen = parameters.get("reopen_pull_request")
+        if reopen is not None and (
+            isinstance(reopen, bool) or not isinstance(reopen, int) or reopen < 0
+        ):
+            raise ValueError("queue reopen_pull_request must not be negative")
+
+    @staticmethod
+    def _queue_task(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        value = dict(row)
+        for key in ("work_item_id", "run_id", "depends_on_task_id"):
+            value[key] = str(value.get(key) or "")
+        action = str(value["action"])
+        if action not in QUEUE_ACTIONS or str(value["state"]) not in QUEUE_STATES:
+            raise StoreError("queue task contains an unsupported action or state")
+        try:
+            parameters = json.loads(str(value["parameters"]))
+            if not isinstance(parameters, dict):
+                raise TypeError("queue parameters are not an object")
+            Store._validate_queue_parameters(action, parameters)
+            encoded_parameters = Store._queue_payload(
+                parameters, allowed_keys=QUEUE_PARAMETER_KEYS
+            )
+        except (TypeError, ValueError) as exc:
+            raise StoreError("queue task parameters were modified") from exc
+        if hashlib.sha256(encoded_parameters.encode()).hexdigest() != str(
+            value["parameters_digest"]
+        ):
+            raise StoreError("queue task parameters were modified")
+        material = {
+            "repository": str(value["repository"]),
+            "action": action,
+            "work_item_id": value["work_item_id"],
+            "run_id": value["run_id"],
+            "issue_number": int(value["issue_number"]),
+            "pull_number": int(value["pull_number"]),
+            "parameters_digest": str(value["parameters_digest"]),
+            "depends_on_task_id": value["depends_on_task_id"],
+            "idempotency_digest": str(value["idempotency_digest"]),
+        }
+        if _json_digest(material) != str(value["dedupe_key"]):
+            raise StoreError("queue task identity was modified")
+        value["parameters"] = parameters
+        value["manual_required"] = bool(value["manual_required"])
+        return value
+
+    def _append_queue_attempt(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        task_id: str,
+        generation: int,
+        worker: str,
+        event: str,
+        outcome: str,
+        payload: dict[str, Any],
+        created_at: str,
+    ) -> dict[str, Any]:
+        if event not in QUEUE_EVENTS:
+            raise ValueError(f"unsupported queue event: {event!r}")
+        if outcome not in QUEUE_STATES:
+            raise ValueError(f"unsupported queue outcome: {outcome!r}")
+        encoded = self._queue_payload(payload, allowed_keys=QUEUE_RESULT_KEYS)
+        payload_digest = hashlib.sha256(encoded.encode()).hexdigest()
+        event_id = uuid.uuid4().hex
+        try:
+            connection.execute(
+                """
+                INSERT INTO queue_attempts(
+                    id, task_id, generation, worker, event, outcome, payload,
+                    payload_digest, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    task_id,
+                    generation,
+                    worker,
+                    event,
+                    outcome,
+                    encoded,
+                    payload_digest,
+                    created_at,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StoreError("queue attempt event already exists") from exc
+        return {
+            "id": event_id,
+            "task_id": task_id,
+            "generation": generation,
+            "worker": worker,
+            "event": event,
+            "outcome": outcome,
+            "payload": payload,
+            "created_at": created_at,
+        }
+
+    def enqueue_queue_task(
+        self,
+        repository: str,
+        *,
+        action: str,
+        enqueued_by: str,
+        work_item_id: str = "",
+        run_id: str = "",
+        issue_number: int = 0,
+        pull_number: int = 0,
+        parameters: dict[str, Any] | None = None,
+        priority: int = 0,
+        depends_on_task_id: str = "",
+        max_attempts: int = 3,
+        idempotency_key: str = "",
+    ) -> dict[str, Any]:
+        normalized_repository = repository.strip().casefold()
+        if not re.fullmatch(r"[^/\s]+/[^/\s]+", normalized_repository):
+            raise ValueError("queue repository must use owner/name")
+        if action not in QUEUE_ACTIONS:
+            raise ValueError(f"unsupported queue action: {action!r}")
+        worker = self._queue_worker(enqueued_by)
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (issue_number, pull_number)
+        ):
+            raise ValueError("queue issue and pull numbers must not be negative")
+        if isinstance(priority, bool) or not isinstance(priority, int):
+            raise TypeError("queue priority must be an integer")
+        if not -1_000 <= priority <= 1_000:
+            raise ValueError("queue priority must be between -1000 and 1000")
+        if isinstance(max_attempts, bool) or not isinstance(max_attempts, int):
+            raise TypeError("queue max_attempts must be an integer")
+        if not 1 <= max_attempts <= 20:
+            raise ValueError("queue max_attempts must be between 1 and 20")
+        if len(idempotency_key) > 128:
+            raise ValueError("queue idempotency key exceeds 128 characters")
+        for label, reference in (
+            ("work_item_id", work_item_id),
+            ("run_id", run_id),
+            ("depends_on_task_id", depends_on_task_id),
+        ):
+            if len(reference) > 128 or any(
+                character.isspace() for character in reference
+            ):
+                raise ValueError(f"queue {label} must be a bounded identifier")
+        values = dict(parameters or {})
+        self._validate_queue_parameters(action, values)
+        encoded_parameters = self._queue_payload(
+            values, allowed_keys=QUEUE_PARAMETER_KEYS
+        )
+        if action in {"prepare", "submit"}:
+            if issue_number < 1 or run_id or work_item_id or pull_number:
+                raise ValueError(
+                    f"queue action {action!r} requires only an issue reference"
+                )
+        elif not run_id:
+            raise ValueError(f"queue action {action!r} requires run_id")
+        now = utc_now()
+        task_id = uuid.uuid4().hex
+        with self._connection() as connection:
+            self._begin_immediate(connection)
+            if run_id:
+                run = connection.execute(
+                    "SELECT repository, issue_number, details FROM runs WHERE id=?",
+                    (run_id,),
+                ).fetchone()
+                if run is None:
+                    raise StoreError("queue task references a missing run")
+                if str(run["repository"]) != normalized_repository:
+                    raise StoreError("queue run belongs to another repository")
+                run_issue = int(run["issue_number"])
+                if issue_number and issue_number != run_issue:
+                    raise StoreError("queue issue does not match its run")
+                issue_number = run_issue
+                if pull_number:
+                    details = json.loads(str(run["details"]))
+                    match = re.search(
+                        r"/pull/(\d+)/?$", str(details.get("pr_url") or "")
+                    )
+                    if match is None or int(match.group(1)) != pull_number:
+                        raise StoreError("queue pull number does not match its run")
+            normalized_work_item_id = work_item_id or None
+            if normalized_work_item_id:
+                item = connection.execute(
+                    "SELECT repository FROM work_items WHERE id=?",
+                    (normalized_work_item_id,),
+                ).fetchone()
+                if item is None:
+                    raise StoreError("queue task references a missing work item")
+                if str(item["repository"]) != normalized_repository:
+                    raise StoreError("queue work item belongs to another repository")
+                if run_id:
+                    binding = connection.execute(
+                        """
+                        SELECT 1 FROM harness_runs
+                        WHERE run_id=? AND work_item_id=?
+                        """,
+                        (run_id, normalized_work_item_id),
+                    ).fetchone()
+                    if binding is None:
+                        raise StoreError(
+                            "queue run and work item do not share a context binding"
+                        )
+            normalized_dependency = depends_on_task_id or None
+            if normalized_dependency:
+                dependency = connection.execute(
+                    "SELECT repository FROM queue_tasks WHERE id=?",
+                    (normalized_dependency,),
+                ).fetchone()
+                if dependency is None:
+                    raise StoreError("queue dependency task does not exist")
+                if str(dependency["repository"]) != normalized_repository:
+                    raise StoreError("queue dependency belongs to another repository")
+            idempotency_digest = hashlib.sha256(idempotency_key.encode()).hexdigest()
+            material = {
+                "repository": normalized_repository,
+                "action": action,
+                "work_item_id": normalized_work_item_id or "",
+                "run_id": run_id,
+                "issue_number": issue_number,
+                "pull_number": pull_number,
+                "parameters_digest": hashlib.sha256(
+                    encoded_parameters.encode()
+                ).hexdigest(),
+                "depends_on_task_id": normalized_dependency or "",
+                "idempotency_digest": idempotency_digest,
+            }
+            dedupe_key = _json_digest(material)
+            cursor = connection.execute(
+                """
+                INSERT INTO queue_tasks(
+                    id, dedupe_key, repository, action, work_item_id, run_id,
+                    issue_number, pull_number, parameters, parameters_digest,
+                    idempotency_digest, priority, state, depends_on_task_id, max_attempts,
+                    available_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+                ON CONFLICT(dedupe_key) DO NOTHING
+                """,
+                (
+                    task_id,
+                    dedupe_key,
+                    normalized_repository,
+                    action,
+                    normalized_work_item_id,
+                    run_id or None,
+                    issue_number,
+                    pull_number,
+                    encoded_parameters,
+                    material["parameters_digest"],
+                    idempotency_digest,
+                    priority,
+                    normalized_dependency,
+                    max_attempts,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+            idempotent = cursor.rowcount == 0
+            row = connection.execute(
+                "SELECT * FROM queue_tasks WHERE dedupe_key=?", (dedupe_key,)
+            ).fetchone()
+            if row is None:
+                raise StoreError("queue task was not persisted")
+            if not idempotent:
+                self._append_queue_attempt(
+                    connection,
+                    task_id=task_id,
+                    generation=0,
+                    worker=worker,
+                    event="enqueued",
+                    outcome="pending",
+                    payload={},
+                    created_at=now,
+                )
+        return {**self._queue_task(row), "idempotent": idempotent}
+
+    def queue_tasks(
+        self,
+        *,
+        repository: str = "",
+        task_id: str = "",
+        states: tuple[str, ...] = (),
+        limit: int = 100,
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_repository = repository.casefold()
+        unknown_states = set(states) - QUEUE_STATES
+        if unknown_states:
+            raise ValueError(
+                "unsupported queue states: " + ", ".join(sorted(unknown_states))
+            )
+        limit = min(max(limit, 1), 500)
+        _current, current_text = self._queue_timestamp(now)
+        state_filter = ""
+        parameters: list[object] = [
+            normalized_repository,
+            normalized_repository,
+            task_id,
+            task_id,
+        ]
+        if states:
+            placeholders = ",".join("?" for _ in states)
+            state_filter = f"AND tasks.state IN ({placeholders})"
+            parameters.extend(states)
+        parameters.append(limit)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT tasks.*, dependency.state AS dependency_state
+                FROM queue_tasks tasks
+                LEFT JOIN queue_tasks dependency
+                  ON dependency.id=tasks.depends_on_task_id
+                WHERE (?='' OR tasks.repository=?)
+                  AND (?='' OR tasks.id=?) {state_filter}
+                ORDER BY tasks.priority DESC, tasks.sequence ASC LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = self._queue_task(row)
+            dependency_state = str(value.pop("dependency_state") or "")
+            value["dependency_state"] = dependency_state
+            value["blocked_by_dependency"] = bool(
+                value["depends_on_task_id"] and dependency_state != "completed"
+            )
+            value["lease_expired"] = bool(
+                value["state"] == "running"
+                and value["lease_expires_at"]
+                and str(value["lease_expires_at"]) <= current_text
+            )
+            value["attention"] = (
+                "manual"
+                if value["manual_required"]
+                else "dependency"
+                if value["blocked_by_dependency"]
+                else "lease_expired"
+                if value["lease_expired"]
+                else ""
+            )
+            result.append(value)
+        return result
+
+    def queue_task_summary(self, *, repository: str = "") -> dict[str, Any]:
+        normalized_repository = repository.casefold()
+        counts = {state: 0 for state in QUEUE_STATES}
+        manual_required = 0
+        dependency_blocked = 0
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT tasks.state, COUNT(*) AS records,
+                       SUM(tasks.manual_required) AS manual_required,
+                       SUM(CASE
+                           WHEN tasks.depends_on_task_id IS NOT NULL
+                            AND dependency.state<>'completed' THEN 1 ELSE 0
+                       END) AS dependency_blocked
+                FROM queue_tasks tasks
+                LEFT JOIN queue_tasks dependency
+                  ON dependency.id=tasks.depends_on_task_id
+                WHERE (?='' OR tasks.repository=?)
+                GROUP BY tasks.state
+                """,
+                (normalized_repository, normalized_repository),
+            ).fetchall()
+        for row in rows:
+            counts[str(row["state"])] = int(row["records"])
+            manual_required += int(row["manual_required"] or 0)
+            dependency_blocked += int(row["dependency_blocked"] or 0)
+        return {
+            "counts": counts,
+            "manual_required": manual_required,
+            "dependency_blocked": dependency_blocked,
+        }
+
+    def queue_attempts(self, task_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        limit = min(max(limit, 1), 500)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM (
+                    SELECT * FROM queue_attempts
+                    WHERE task_id=? ORDER BY sequence DESC LIMIT ?
+                ) recent ORDER BY sequence ASC
+                """,
+                (task_id, limit),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            try:
+                payload = json.loads(str(value["payload"]))
+                if not isinstance(payload, dict):
+                    raise TypeError("queue attempt payload is not an object")
+                encoded = self._queue_payload(payload, allowed_keys=QUEUE_RESULT_KEYS)
+            except (TypeError, ValueError) as exc:
+                raise StoreError("queue attempt payload was modified") from exc
+            if hashlib.sha256(encoded.encode()).hexdigest() != str(
+                value["payload_digest"]
+            ):
+                raise StoreError("queue attempt payload was modified")
+            value["payload"] = payload
+            result.append(value)
+        return result
+
+    def claim_queue_tasks(
+        self,
+        *,
+        worker: str,
+        limit: int = 1,
+        lease_seconds: int = 900,
+        repository: str = "",
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_worker = self._queue_worker(worker)
+        if not 1 <= limit <= 100:
+            raise ValueError("queue claim limit must be between 1 and 100")
+        if not 5 <= lease_seconds <= 86_400:
+            raise ValueError("queue lease_seconds must be between 5 and 86400")
+        current, current_text = self._queue_timestamp(now)
+        expires_at = (current + timedelta(seconds=lease_seconds)).isoformat(
+            timespec="microseconds"
+        )
+        normalized_repository = repository.casefold()
+        claimed: list[dict[str, Any]] = []
+        with self._connection() as connection:
+            self._begin_immediate(connection)
+            exhausted = connection.execute(
+                """
+                SELECT * FROM queue_tasks
+                WHERE state='running' AND lease_expires_at<=?
+                  AND attempt_count>=max_attempts
+                  AND (?='' OR repository=?)
+                ORDER BY sequence ASC
+                LIMIT ?
+                """,
+                (
+                    current_text,
+                    normalized_repository,
+                    normalized_repository,
+                    limit,
+                ),
+            ).fetchall()
+            for row in exhausted:
+                connection.execute(
+                    """
+                    UPDATE queue_tasks
+                    SET state='failed', manual_required=1,
+                        last_error_code='attempt_limit_exhausted',
+                        lease_owner='', lease_expires_at='', updated_at=?
+                    WHERE id=? AND state='running' AND lease_generation=?
+                    """,
+                    (current_text, row["id"], row["lease_generation"]),
+                )
+                self._append_queue_attempt(
+                    connection,
+                    task_id=str(row["id"]),
+                    generation=int(row["lease_generation"]),
+                    worker=normalized_worker,
+                    event="attempts_exhausted",
+                    outcome="failed",
+                    payload={
+                        "error_code": "attempt_limit_exhausted",
+                        "retryable": False,
+                        "manual_required": True,
+                    },
+                    created_at=current_text,
+                )
+            rows = connection.execute(
+                """
+                SELECT tasks.* FROM queue_tasks tasks
+                LEFT JOIN queue_tasks dependency
+                  ON dependency.id=tasks.depends_on_task_id
+                WHERE tasks.manual_required=0
+                  AND tasks.attempt_count<tasks.max_attempts
+                  AND (?='' OR tasks.repository=?)
+                  AND (
+                    (tasks.state IN ('pending', 'failed') AND tasks.available_at<=?)
+                    OR (tasks.state='running' AND tasks.lease_expires_at<=?)
+                  )
+                  AND (
+                    tasks.depends_on_task_id IS NULL
+                    OR dependency.state='completed'
+                  )
+                ORDER BY tasks.priority DESC, tasks.sequence ASC LIMIT ?
+                """,
+                (
+                    normalized_repository,
+                    normalized_repository,
+                    current_text,
+                    current_text,
+                    limit,
+                ),
+            ).fetchall()
+            for row in rows:
+                generation = int(row["lease_generation"]) + 1
+                event = "taken_over" if row["state"] == "running" else "claimed"
+                cursor = connection.execute(
+                    """
+                    UPDATE queue_tasks
+                    SET state='running', attempt_count=attempt_count+1,
+                        lease_owner=?, lease_generation=?, lease_expires_at=?,
+                        last_error_code='', updated_at=?
+                    WHERE id=? AND state=? AND lease_generation=?
+                    """,
+                    (
+                        normalized_worker,
+                        generation,
+                        expires_at,
+                        current_text,
+                        row["id"],
+                        row["state"],
+                        row["lease_generation"],
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise StoreError("queue task changed during atomic claim")
+                self._append_queue_attempt(
+                    connection,
+                    task_id=str(row["id"]),
+                    generation=generation,
+                    worker=normalized_worker,
+                    event=event,
+                    outcome="running",
+                    payload={},
+                    created_at=current_text,
+                )
+                updated = connection.execute(
+                    "SELECT * FROM queue_tasks WHERE id=?", (row["id"],)
+                ).fetchone()
+                if updated is None:
+                    raise StoreError("claimed queue task disappeared")
+                claimed.append(
+                    {
+                        **self._queue_task(updated),
+                        "lease": QueueLease(
+                            task_id=str(row["id"]),
+                            worker=normalized_worker,
+                            generation=generation,
+                            expires_at=expires_at,
+                        ),
+                    }
+                )
+        return claimed
+
+    def renew_queue_lease(
+        self,
+        lease: QueueLease,
+        *,
+        lease_seconds: int = 900,
+        now: datetime | None = None,
+    ) -> QueueLease:
+        if not 5 <= lease_seconds <= 86_400:
+            raise ValueError("queue lease_seconds must be between 5 and 86400")
+        current, current_text = self._queue_timestamp(now)
+        expires_at = (current + timedelta(seconds=lease_seconds)).isoformat(
+            timespec="microseconds"
+        )
+        with self._connection() as connection:
+            self._begin_immediate(connection)
+            cursor = connection.execute(
+                """
+                UPDATE queue_tasks SET lease_expires_at=?, updated_at=?
+                WHERE id=? AND state='running' AND lease_owner=?
+                  AND lease_generation=? AND lease_expires_at>?
+                """,
+                (
+                    expires_at,
+                    current_text,
+                    lease.task_id,
+                    lease.worker,
+                    lease.generation,
+                    current_text,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise StoreError("queue lease is stale")
+        return QueueLease(lease.task_id, lease.worker, lease.generation, expires_at)
+
+    def _finish_queue_task(
+        self,
+        lease: QueueLease,
+        *,
+        state: str,
+        event: str,
+        payload: dict[str, Any],
+        manual_required: bool | None,
+        error_code: str,
+        now: datetime | None,
+    ) -> dict[str, Any]:
+        if state not in {"completed", "failed"}:
+            raise ValueError("queue finish state must be completed or failed")
+        if error_code and not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error_code):
+            raise ValueError("queue error_code has an invalid format")
+        current, current_text = self._queue_timestamp(now)
+        with self._connection() as connection:
+            self._begin_immediate(connection)
+            row = connection.execute(
+                "SELECT * FROM queue_tasks WHERE id=?", (lease.task_id,)
+            ).fetchone()
+            if (
+                row is None
+                or str(row["state"]) != "running"
+                or str(row["lease_owner"]) != lease.worker
+                or int(row["lease_generation"]) != lease.generation
+                or str(row["lease_expires_at"]) <= current_text
+            ):
+                raise StoreError("queue lease is stale")
+            if manual_required is None:
+                manual_required = not bool(payload.get("retryable")) or int(
+                    row["attempt_count"]
+                ) >= int(row["max_attempts"])
+                payload = {**payload, "manual_required": manual_required}
+            self._queue_payload(payload, allowed_keys=QUEUE_RESULT_KEYS)
+            available_at = current_text
+            if state == "failed" and not manual_required:
+                delay_seconds = min(
+                    300, 5 * (2 ** max(int(row["attempt_count"]) - 1, 0))
+                )
+                available_at = (current + timedelta(seconds=delay_seconds)).isoformat(
+                    timespec="microseconds"
+                )
+            connection.execute(
+                """
+                UPDATE queue_tasks
+                SET state=?, manual_required=?, last_error_code=?,
+                    lease_owner='', lease_expires_at='', available_at=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    state,
+                    int(manual_required),
+                    error_code,
+                    available_at,
+                    current_text,
+                    lease.task_id,
+                ),
+            )
+            audit = self._append_queue_attempt(
+                connection,
+                task_id=lease.task_id,
+                generation=lease.generation,
+                worker=lease.worker,
+                event=event,
+                outcome=state,
+                payload=payload,
+                created_at=current_text,
+            )
+            updated = connection.execute(
+                "SELECT * FROM queue_tasks WHERE id=?", (lease.task_id,)
+            ).fetchone()
+        if updated is None:
+            raise StoreError("finished queue task disappeared")
+        return {**self._queue_task(updated), "audit": audit}
+
+    def complete_queue_task(
+        self,
+        lease: QueueLease,
+        *,
+        result: dict[str, Any],
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        return self._finish_queue_task(
+            lease,
+            state="completed",
+            event="completed",
+            payload=result,
+            manual_required=False,
+            error_code="",
+            now=now,
+        )
+
+    def fail_queue_task(
+        self,
+        lease: QueueLease,
+        *,
+        error_code: str,
+        retryable: bool,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        return self._finish_queue_task(
+            lease,
+            state="failed",
+            event="failed",
+            payload={
+                "error_code": error_code,
+                "retryable": retryable,
+            },
+            manual_required=None,
+            error_code=error_code,
+            now=now,
+        )
+
+    def cancel_queue_task(
+        self,
+        task_id: str,
+        *,
+        cancelled_by: str,
+        reason_code: str = "operator_cancelled",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        worker = self._queue_worker(cancelled_by)
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", reason_code):
+            raise ValueError("queue cancellation reason has an invalid format")
+        _current, current_text = self._queue_timestamp(now)
+        with self._connection() as connection:
+            self._begin_immediate(connection)
+            row = connection.execute(
+                "SELECT * FROM queue_tasks WHERE id=?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"queue task not found: {task_id}")
+            if str(row["state"]) == "cancelled":
+                return {**self._queue_task(row), "idempotent": True}
+            if str(row["state"]) == "completed":
+                raise StoreError("completed queue task cannot be cancelled")
+            if (
+                str(row["state"]) == "running"
+                and str(row["lease_expires_at"]) > current_text
+            ):
+                raise StoreError("active queue task cannot be cancelled")
+            connection.execute(
+                """
+                UPDATE queue_tasks
+                SET state='cancelled', manual_required=0,
+                    last_error_code=?, lease_owner='', lease_expires_at='',
+                    updated_at=? WHERE id=?
+                """,
+                (reason_code, current_text, task_id),
+            )
+            audit = self._append_queue_attempt(
+                connection,
+                task_id=task_id,
+                generation=int(row["lease_generation"]),
+                worker=worker,
+                event="cancelled",
+                outcome="cancelled",
+                payload={"error_code": reason_code},
+                created_at=current_text,
+            )
+            updated = connection.execute(
+                "SELECT * FROM queue_tasks WHERE id=?", (task_id,)
+            ).fetchone()
+        if updated is None:
+            raise StoreError("cancelled queue task disappeared")
+        return {**self._queue_task(updated), "audit": audit, "idempotent": False}
+
+    def requeue_queue_task(
+        self,
+        task_id: str,
+        *,
+        requeued_by: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        worker = self._queue_worker(requeued_by)
+        _current, current_text = self._queue_timestamp(now)
+        with self._connection() as connection:
+            self._begin_immediate(connection)
+            row = connection.execute(
+                "SELECT * FROM queue_tasks WHERE id=?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"queue task not found: {task_id}")
+            if str(row["state"]) == "pending" and not bool(row["manual_required"]):
+                return {**self._queue_task(row), "idempotent": True}
+            if str(row["state"]) not in {"failed", "cancelled"}:
+                raise StoreError("only failed or cancelled queue tasks can be requeued")
+            max_attempts = max(int(row["max_attempts"]), int(row["attempt_count"]) + 1)
+            connection.execute(
+                """
+                UPDATE queue_tasks
+                SET state='pending', manual_required=0, last_error_code='',
+                    max_attempts=?, available_at=?, lease_owner='',
+                    lease_expires_at='', updated_at=? WHERE id=?
+                """,
+                (max_attempts, current_text, current_text, task_id),
+            )
+            audit = self._append_queue_attempt(
+                connection,
+                task_id=task_id,
+                generation=int(row["lease_generation"]),
+                worker=worker,
+                event="requeued",
+                outcome="pending",
+                payload={},
+                created_at=current_text,
+            )
+            updated = connection.execute(
+                "SELECT * FROM queue_tasks WHERE id=?", (task_id,)
+            ).fetchone()
+        if updated is None:
+            raise StoreError("requeued task disappeared")
+        return {**self._queue_task(updated), "audit": audit, "idempotent": False}
 
     def start_run(self, repository: str, issue_number: int, stage: str) -> str:
         run_id = uuid.uuid4().hex

@@ -335,6 +335,68 @@ def _parser() -> argparse.ArgumentParser:
         help="update and reopen a closed PR instead of creating a new one",
     )
 
+    queue = subparsers.add_parser(
+        "queue", help="manage the persistent control-plane task queue"
+    )
+    queue_commands = queue.add_subparsers(dest="queue_command", required=True)
+    queue_enqueue = queue_commands.add_parser(
+        "enqueue", help="persist one idempotent task without executing it"
+    )
+    queue_enqueue.add_argument("repository")
+    queue_enqueue.add_argument(
+        "action",
+        choices=(
+            "prepare",
+            "follow-up",
+            "repair",
+            "submit",
+            "merge-decision",
+            "merge-attest",
+            "merge",
+        ),
+    )
+    queue_enqueue.add_argument("--issue", type=int, default=0)
+    queue_enqueue.add_argument("--pull-number", type=int, default=0)
+    queue_enqueue.add_argument("--run-id", default="")
+    queue_enqueue.add_argument("--work-item-id", default="")
+    queue_enqueue.add_argument("--priority", type=int, default=0)
+    queue_enqueue.add_argument("--depends-on", default="")
+    queue_enqueue.add_argument("--max-attempts", type=int, default=3)
+    queue_enqueue.add_argument("--idempotency-key", default="")
+    queue_enqueue.add_argument("--reviewed-by", default="")
+    queue_enqueue.add_argument("--decision-id", default="")
+    queue_enqueue.add_argument("--reopen", type=int, default=0)
+    queue_inspect = queue_commands.add_parser(
+        "inspect", help="read queue state and bounded attempt history"
+    )
+    queue_inspect.add_argument("--repo", default="")
+    queue_inspect.add_argument("--task-id", default="")
+    queue_inspect.add_argument(
+        "--state",
+        action="append",
+        choices=("pending", "running", "completed", "failed", "cancelled"),
+        default=[],
+    )
+    queue_inspect.add_argument("--limit", type=int, default=100)
+    queue_apply = queue_commands.add_parser(
+        "apply", help="explicitly execute ready tasks through Pipeline gates"
+    )
+    queue_apply.add_argument("--repo", default="")
+    queue_apply.add_argument("--worker", default="")
+    queue_apply.add_argument("--limit", type=int, default=1)
+    queue_apply.add_argument("--lease-seconds", type=int, default=900)
+    queue_cancel = queue_commands.add_parser(
+        "cancel", help="cancel one inactive or expired task"
+    )
+    queue_cancel.add_argument("task_id")
+    queue_cancel.add_argument("--by", required=True)
+    queue_cancel.add_argument("--reason", default="operator_cancelled")
+    queue_retry = queue_commands.add_parser(
+        "retry", help="explicitly requeue one failed or cancelled task"
+    )
+    queue_retry.add_argument("task_id")
+    queue_retry.add_argument("--by", required=True)
+
     run = subparsers.add_parser(
         "run", help="discover and prepare top auto-enabled issues"
     )
@@ -652,6 +714,59 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             return 0
+        if args.command == "queue":
+            if args.queue_command == "enqueue":
+                _json(
+                    pipeline.enqueue_task(
+                        args.repository,
+                        action=args.action,
+                        issue_number=args.issue,
+                        pull_number=args.pull_number,
+                        run_id=args.run_id,
+                        work_item_id=args.work_item_id,
+                        priority=args.priority,
+                        depends_on_task_id=args.depends_on,
+                        max_attempts=args.max_attempts,
+                        idempotency_key=args.idempotency_key,
+                        reviewed_by=args.reviewed_by,
+                        decision_id=args.decision_id,
+                        reopen_pull_request=args.reopen,
+                    )
+                )
+                return 0
+            if args.queue_command == "inspect":
+                _json(
+                    pipeline.queue_inspect(
+                        repository=args.repo,
+                        task_id=args.task_id,
+                        states=tuple(args.state),
+                        limit=args.limit,
+                    )
+                )
+                return 0
+            if args.queue_command == "apply":
+                _json(
+                    pipeline.apply_queue(
+                        repository=args.repo,
+                        worker=args.worker,
+                        limit=args.limit,
+                        lease_seconds=args.lease_seconds,
+                    )
+                )
+                return 0
+            if args.queue_command == "cancel":
+                _json(
+                    pipeline.cancel_task(
+                        args.task_id,
+                        cancelled_by=args.by,
+                        reason_code=args.reason,
+                    )
+                )
+                return 0
+            if args.queue_command == "retry":
+                _json(pipeline.requeue_task(args.task_id, requeued_by=args.by))
+                return 0
+            raise AssertionError(f"unhandled queue command: {args.queue_command}")
         if args.command == "run":
             service = DiscoveryService(config, pipeline.github, pipeline.store)
             service.discover()

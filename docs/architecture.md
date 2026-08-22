@@ -140,6 +140,15 @@ run、目标、branch、验证 head、预期远端 head、操作者和租约 gen
 才继续，未知或冲突状态失败关闭。远端已成功但本地 run/checkpoint 未补齐时，同一 submit 可以只修复
 本地投影而不重复公开写入。
 
+持久任务队列只保存控制面意图。`queue_tasks` 物化 pending、running、completed、failed 和 cancelled
+状态，并以稳定引用与参数摘要实现幂等 enqueue、priority 排序和单向 task dependency；参数采用动作级
+白名单、有界标量和绝对路径拒绝规则。`queue_attempts` 追加记录 enqueue、claim、takeover、结果、
+取消和人工重排，不保存 prompt、token、评论正文、工作区路径或完整动作结果。claim 在短
+`BEGIN IMMEDIATE` 事务中原子完成，外部动作期间不持有 SQLite 锁，只用短事务心跳续租；过期租约可
+提升 generation 接管，旧 generation 的结果写入失败关闭。Pipeline apply 每次即时 claim 一个任务，
+并调用既有 prepare/follow-up/repair/submit/merge 门禁；队列开关不能替代各公开写入动作自己的环境、
+身份和事实校验。瞬时失败有界退避，策略或参数失败进入显式人工处理状态。
+
 事件正文默认没有清理期限。只有仓库策略显式设置正整数 `event_payload_retention_days`，且同一 PR
 的每个 run 水位都已经越过该事件时，正文才可成为 GC 候选。候选在删除事务内重新计算；删除会先
 写 tombstone，再移除 Blob。无配置、保留期内或任一 run 尚未形成 Checkpoint 的正文都必须保留。
@@ -148,14 +157,16 @@ run、目标、branch、验证 head、预期远端 head、操作者和租约 gen
 Checkpoint、Git 状态干净且 HEAD 可从 submitted run 或远端引用恢复时才会进入计划。apply 会再次
 核对目录身份、元数据快照、HEAD 和 run 状态，变化即跳过。GC 默认 dry-run；apply 同时要求
 `--apply` 和 `REPOSTEWARD_ENABLE_GC=1`，并在删除前后追加审计。普通 GC 永不删除事件索引、
-Context Checkpoint、Publication Attempt、Portfolio Dependency、Merge Decision、Merge Execution
-或自身审计。
+Context Checkpoint、Task Queue、Publication Attempt、Portfolio Dependency、Merge Decision、
+Merge Execution 或自身审计。
 - `merge_decisions`：追加保存每次合并评估的 head/base、policy、GitHub 快照与决策摘要；重复评估
   不覆盖旧结果，便于解释状态变化。
 - `merge_executions`：按 attempt 追加保存执行身份、指定决策、精确 head、方法、写入前意图与最终
   GitHub 结果；`applying` 没有对应 `completed` 时表示进程可能在外部写入期间中断，重试必须先回读。
 - `publication_attempts`：按 step 追加保存 PR 发布动作的 intent/result，并记录完成该阶段的租约
   owner/generation；普通 GC 不删除，重试用未完成 step 对账远端事实。
+- `queue_tasks` / `queue_attempts`：保存有界调度意图、当前状态、依赖、租约 generation 和追加式
+  attempt 历史；普通 GC 不删除，存储统计单独报告 control 与 audit 占用。
 - `portfolio_dependency_events`：按依赖对追加保存维护者 confirm/revoke、当前 head、身份、来源和
   前一事件；事件 digest 唯一，读取时会同时校验物化列与规范化载荷。
 - `owner_review_attestations`：追加保存单维护者对精确 PR 事实的本地审查声明；物化 scope、规范化
