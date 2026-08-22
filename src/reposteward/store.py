@@ -16,7 +16,7 @@ from typing import Any
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -466,6 +466,46 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         ON run_lease_events(scope, sequence DESC)
         """,
     ),
+    15: (
+        """
+        CREATE TABLE IF NOT EXISTS publication_attempts (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            attempt_id TEXT NOT NULL,
+            step_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            repository TEXT NOT NULL,
+            issue_number INTEGER NOT NULL,
+            actor TEXT NOT NULL,
+            action TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            branch TEXT NOT NULL,
+            head_sha TEXT NOT NULL,
+            base_branch TEXT NOT NULL,
+            expected_remote_sha TEXT NOT NULL DEFAULT '',
+            target_pull_number INTEGER NOT NULL DEFAULT 0,
+            lease_owner TEXT NOT NULL,
+            lease_generation INTEGER NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES runs(id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS publication_attempts_for_run
+        ON publication_attempts(run_id, sequence)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS publication_attempts_for_repository
+        ON publication_attempts(repository, issue_number, sequence DESC)
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS publication_attempts_stage_once
+        ON publication_attempts(step_id, stage)
+        """,
+    ),
 }
 
 
@@ -524,6 +564,22 @@ OWNER_REVIEW_FACT_KEYS = frozenset(
         "dependency_digest",
         "activity_digest",
         "rules_digest",
+    }
+)
+
+PUBLICATION_ACTIONS = frozenset({"push", "create", "reopen", "update", "close"})
+PUBLICATION_COMPLETED_OUTCOMES = frozenset(
+    {"succeeded", "reconciled", "already_current", "not_applied", "blocked", "failed"}
+)
+PUBLICATION_PAYLOAD_KEYS = frozenset(
+    {
+        "public_write",
+        "remote_head_sha",
+        "pull_number",
+        "pull_url",
+        "pull_state",
+        "pull_draft",
+        "reconciliation",
     }
 )
 
@@ -2056,6 +2112,17 @@ class Store:
                 """,
             ),
             (
+                "publication_attempt_audit",
+                """
+                SELECT repository, COUNT(*) AS records,
+                       COALESCE(SUM(length(CAST(payload AS BLOB))), 0) AS bytes,
+                       MIN(created_at) AS oldest_at, MAX(created_at) AS newest_at
+                FROM publication_attempts
+                WHERE (?='' OR repository=?) AND (?='' OR created_at>=?)
+                GROUP BY repository
+                """,
+            ),
+            (
                 "portfolio_dependency_audit",
                 """
                 SELECT repository, COUNT(*) AS records,
@@ -3484,6 +3551,234 @@ class Store:
         value["eligible"] = bool(value["eligible"])
         value["payload"] = payload
         return value
+
+    def append_publication_attempt(
+        self,
+        *,
+        attempt_id: str,
+        step_id: str,
+        run_id: str,
+        repository: str,
+        issue_number: int,
+        actor: str,
+        action: str,
+        stage: str,
+        outcome: str,
+        destination: str,
+        branch: str,
+        head_sha: str,
+        base_branch: str,
+        expected_remote_sha: str = "",
+        target_pull_number: int = 0,
+        lease: RunLease,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Append one bounded publication intent or reconciliation result."""
+        if not attempt_id or not step_id or not run_id:
+            raise ValueError("publication attempt identities must not be empty")
+        repository = repository.casefold()
+        destination = destination.casefold()
+        actor = actor.strip()
+        if (
+            not repository
+            or not destination
+            or not actor
+            or not branch
+            or not base_branch
+        ):
+            raise ValueError("publication attempt fields must not be empty")
+        if issue_number < 1 or target_pull_number < 0:
+            raise ValueError("publication issue and pull numbers must be valid")
+        expected_lease_scope = f"issue:{repository}#{issue_number}"
+        if lease.scope != expected_lease_scope:
+            raise StoreError(
+                "publication lease does not match its repository and issue"
+            )
+        if action not in PUBLICATION_ACTIONS:
+            raise ValueError(f"unsupported publication action: {action!r}")
+        if stage not in {"applying", "completed"}:
+            raise ValueError(f"unsupported publication stage: {stage!r}")
+        allowed_outcomes = (
+            {"pending"} if stage == "applying" else PUBLICATION_COMPLETED_OUTCOMES
+        )
+        if outcome not in allowed_outcomes:
+            raise ValueError("publication stage and outcome do not match")
+        if not _is_lower_hex(head_sha, 40):
+            raise ValueError("publication head_sha must be a lowercase Git SHA")
+        if expected_remote_sha and not _is_lower_hex(expected_remote_sha, 40):
+            raise ValueError(
+                "publication expected_remote_sha must be empty or a lowercase Git SHA"
+            )
+        if len(branch) > 255 or len(base_branch) > 255:
+            raise ValueError("publication branch names are too long")
+        if not isinstance(payload, dict):
+            raise TypeError("publication payload must be an object")
+        unknown_payload = set(payload) - PUBLICATION_PAYLOAD_KEYS
+        if unknown_payload:
+            raise ValueError(
+                "publication payload contains unsupported fields: "
+                + ", ".join(sorted(unknown_payload))
+            )
+        if any(not isinstance(value, (str, int, bool)) for value in payload.values()):
+            raise TypeError("publication payload values must be bounded scalars")
+        encoded_payload = _canonical_json(payload)
+        if len(encoded_payload.encode()) > 4_096:
+            raise ValueError("publication payload exceeds 4096 bytes")
+        record_id = uuid.uuid4().hex
+        now = utc_now()
+        with self._connection() as connection:
+            self._begin_immediate(connection)
+            self._assert_run_lease_row(connection, lease)
+            run = connection.execute(
+                "SELECT repository, issue_number FROM runs WHERE id=?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise StoreError("publication attempt references a missing run")
+            if (
+                str(run["repository"]) != repository
+                or int(run["issue_number"]) != issue_number
+            ):
+                raise StoreError("publication attempt does not match its run")
+            previous = connection.execute(
+                """
+                SELECT attempt_id, run_id, repository, issue_number, actor, action,
+                       destination, branch, head_sha, base_branch,
+                       expected_remote_sha, target_pull_number
+                FROM publication_attempts WHERE step_id=? LIMIT 1
+                """,
+                (step_id,),
+            ).fetchone()
+            identity = {
+                "attempt_id": attempt_id,
+                "run_id": run_id,
+                "repository": repository,
+                "issue_number": issue_number,
+                "actor": actor,
+                "action": action,
+                "destination": destination,
+                "branch": branch,
+                "head_sha": head_sha,
+                "base_branch": base_branch,
+                "expected_remote_sha": expected_remote_sha,
+                "target_pull_number": target_pull_number,
+            }
+            if previous is not None and any(
+                previous[key] != value for key, value in identity.items()
+            ):
+                raise StoreError("publication step identity changed")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO publication_attempts(
+                        id, attempt_id, step_id, run_id, repository, issue_number,
+                        actor, action, stage, outcome, destination, branch, head_sha,
+                        base_branch, expected_remote_sha, target_pull_number,
+                        lease_owner, lease_generation, payload, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record_id,
+                        attempt_id,
+                        step_id,
+                        run_id,
+                        repository,
+                        issue_number,
+                        actor,
+                        action,
+                        stage,
+                        outcome,
+                        destination,
+                        branch,
+                        head_sha,
+                        base_branch,
+                        expected_remote_sha,
+                        target_pull_number,
+                        lease.owner,
+                        lease.generation,
+                        encoded_payload,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise StoreError(
+                    "publication step already contains this stage"
+                ) from exc
+        return {
+            "id": record_id,
+            "attempt_id": attempt_id,
+            "step_id": step_id,
+            "action": action,
+            "stage": stage,
+            "outcome": outcome,
+            "lease_owner": lease.owner,
+            "lease_generation": lease.generation,
+            "created_at": now,
+        }
+
+    @staticmethod
+    def _publication_attempt(row: sqlite3.Row) -> dict[str, Any]:
+        value = dict(row)
+        value["payload"] = json.loads(str(value["payload"]))
+        return value
+
+    def publication_attempts(
+        self, run_id: str, *, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        limit = min(max(limit, 1), 500)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM publication_attempts
+                WHERE run_id=? ORDER BY sequence ASC LIMIT ?
+                """,
+                (run_id, limit),
+            ).fetchall()
+        return [self._publication_attempt(row) for row in rows]
+
+    def incomplete_publication_attempts(
+        self, run_id: str, *, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        limit = min(max(limit, 1), 500)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT applying.*
+                FROM publication_attempts applying
+                WHERE applying.run_id=? AND applying.stage='applying'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM publication_attempts completed
+                      WHERE completed.step_id=applying.step_id
+                        AND completed.stage='completed'
+                  )
+                ORDER BY applying.sequence ASC LIMIT ?
+                """,
+                (run_id, limit),
+            ).fetchall()
+        return [self._publication_attempt(row) for row in rows]
+
+    def publication_action_completed(
+        self,
+        run_id: str,
+        *,
+        action: str,
+        target_pull_number: int = 0,
+    ) -> bool:
+        if action not in PUBLICATION_ACTIONS:
+            raise ValueError(f"unsupported publication action: {action!r}")
+        if target_pull_number < 0:
+            raise ValueError("publication pull number must not be negative")
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM publication_attempts
+                WHERE run_id=? AND action=? AND stage='completed'
+                  AND outcome IN ('succeeded', 'reconciled', 'already_current')
+                  AND (?=0 OR target_pull_number=?)
+                LIMIT 1
+                """,
+                (run_id, action, target_pull_number, target_pull_number),
+            ).fetchone()
+        return row is not None
 
     def append_merge_execution(
         self,

@@ -8,7 +8,7 @@ import sqlite3
 import subprocess
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, timedelta
@@ -76,7 +76,7 @@ from .usage import (
     session_resume_outcome,
 )
 from .verifier import DockerVerifier
-from .workspace import WorkspaceManager
+from .workspace import WorkspaceError, WorkspaceManager
 from .workspace_storage import (
     WORKSPACE_KIND,
     delete_workspace,
@@ -2226,6 +2226,7 @@ class Pipeline:
                 "github_event_index",
                 "merge_decision_audit",
                 "merge_execution_audit",
+                "publication_attempt_audit",
                 "portfolio_dependency_audit",
                 "storage_gc_audit",
             ],
@@ -3792,6 +3793,577 @@ class Pipeline:
             "public_write": public_write,
         }
 
+    @staticmethod
+    def _publication_pull_payload(
+        pull_request: PullRequest,
+        *,
+        public_write: bool,
+        reconciliation: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "public_write": public_write,
+            "pull_number": pull_request.number,
+            "pull_url": pull_request.url,
+            "pull_state": pull_request.state,
+            "pull_draft": pull_request.draft,
+            "remote_head_sha": pull_request.head_sha,
+            "reconciliation": reconciliation,
+        }
+
+    def _publication_record(
+        self,
+        identity: dict[str, Any],
+        *,
+        stage: str,
+        outcome: str,
+        lease: RunLease,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self.store.append_publication_attempt(
+            **identity,
+            stage=stage,
+            outcome=outcome,
+            lease=lease,
+            payload=payload,
+        )
+
+    def _publication_step(
+        self,
+        *,
+        attempt_id: str,
+        run_id: str,
+        repository: str,
+        issue_number: int,
+        actor: str,
+        action: str,
+        destination: str,
+        branch: str,
+        head_sha: str,
+        base_branch: str,
+        expected_remote_sha: str = "",
+        target_pull_number: int = 0,
+        lease: RunLease,
+    ) -> dict[str, Any]:
+        identity = {
+            "attempt_id": attempt_id,
+            "step_id": uuid.uuid4().hex,
+            "run_id": run_id,
+            "repository": repository,
+            "issue_number": issue_number,
+            "actor": actor,
+            "action": action,
+            "destination": destination,
+            "branch": branch,
+            "head_sha": head_sha,
+            "base_branch": base_branch,
+            "expected_remote_sha": expected_remote_sha,
+            "target_pull_number": target_pull_number,
+        }
+        self._publication_record(
+            identity,
+            stage="applying",
+            outcome="pending",
+            lease=lease,
+            payload={},
+        )
+        return identity
+
+    @staticmethod
+    def _publication_pull_matches(
+        pull_request: PullRequest,
+        *,
+        destination: str,
+        branch: str,
+        base_branch: str,
+        head_sha: str = "",
+    ) -> bool:
+        expected_owner = destination.split("/", 1)[0].casefold()
+        return (
+            pull_request.head_owner.casefold() == expected_owner
+            and pull_request.head_branch == branch
+            and pull_request.base_branch == base_branch
+            and (not head_sha or pull_request.head_sha == head_sha)
+        )
+
+    def _reconcile_publication_step(
+        self,
+        client: GitHubClient,
+        row: dict[str, Any],
+        *,
+        lease: RunLease,
+    ) -> tuple[str, PullRequest | None]:
+        identity = {
+            key: row[key]
+            for key in (
+                "attempt_id",
+                "step_id",
+                "run_id",
+                "repository",
+                "issue_number",
+                "actor",
+                "action",
+                "destination",
+                "branch",
+                "head_sha",
+                "base_branch",
+                "expected_remote_sha",
+                "target_pull_number",
+            )
+        }
+        action = str(row["action"])
+        pull_request: PullRequest | None = None
+        payload: dict[str, Any]
+        try:
+            if action in {"push", "update"}:
+                remote_head = client.branch_head_sha(
+                    str(row["destination"]), str(row["branch"])
+                )
+                payload = {
+                    "public_write": False,
+                    "remote_head_sha": remote_head,
+                    "reconciliation": "remote_branch_read",
+                }
+                if remote_head == str(row["head_sha"]):
+                    outcome = "reconciled"
+                elif remote_head == str(row["expected_remote_sha"]):
+                    outcome = "not_applied"
+                else:
+                    outcome = "blocked"
+            elif action == "create":
+                pull_request = client.existing_pull_request(
+                    str(row["repository"]),
+                    owner=str(row["destination"]).split("/", 1)[0],
+                    branch=str(row["branch"]),
+                )
+                if pull_request is None:
+                    outcome = "not_applied"
+                    payload = {
+                        "public_write": False,
+                        "reconciliation": "pull_request_not_found",
+                    }
+                elif self._publication_pull_matches(
+                    pull_request,
+                    destination=str(row["destination"]),
+                    branch=str(row["branch"]),
+                    base_branch=str(row["base_branch"]),
+                    head_sha=str(row["head_sha"]),
+                ):
+                    outcome = "reconciled"
+                    payload = self._publication_pull_payload(
+                        pull_request,
+                        public_write=False,
+                        reconciliation="matching_pull_request_found",
+                    )
+                else:
+                    outcome = "blocked"
+                    payload = self._publication_pull_payload(
+                        pull_request,
+                        public_write=False,
+                        reconciliation="pull_request_identity_changed",
+                    )
+            else:
+                pull_number = int(row["target_pull_number"])
+                if pull_number < 1:
+                    raise PolicyError(
+                        "publication reconciliation requires a pull request number"
+                    )
+                pull_request = client.pull_request(str(row["repository"]), pull_number)
+                matches = self._publication_pull_matches(
+                    pull_request,
+                    destination=str(row["destination"]),
+                    branch=str(row["branch"]),
+                    base_branch=str(row["base_branch"]),
+                )
+                desired_state = "closed" if action == "close" else "open"
+                if not matches:
+                    outcome = "blocked"
+                    reconciliation = "pull_request_identity_changed"
+                elif pull_request.state.casefold() == desired_state:
+                    outcome = "reconciled"
+                    reconciliation = f"pull_request_{desired_state}"
+                else:
+                    outcome = "not_applied"
+                    reconciliation = f"pull_request_not_{desired_state}"
+                payload = self._publication_pull_payload(
+                    pull_request,
+                    public_write=False,
+                    reconciliation=reconciliation,
+                )
+        except GitHubError as exc:
+            raise PolicyError(
+                "incomplete publication result could not be reconciled"
+            ) from exc
+        self._publication_record(
+            identity,
+            stage="completed",
+            outcome=outcome,
+            lease=lease,
+            payload=payload,
+        )
+        if outcome == "blocked":
+            raise PolicyError(
+                "incomplete publication action conflicts with current remote state"
+            )
+        return outcome, pull_request
+
+    def _reconcile_incomplete_publication(
+        self,
+        client: GitHubClient,
+        *,
+        run_id: str,
+        details: dict[str, Any],
+        lease: RunLease,
+    ) -> None:
+        while rows := self.store.incomplete_publication_attempts(run_id, limit=500):
+            for row in rows:
+                if (
+                    str(row["head_sha"]) != str(details["commit_sha"])
+                    or str(row["branch"]) != str(details["branch"])
+                    or str(row["base_branch"]) != str(details["base_branch"])
+                ):
+                    identity = {
+                        key: row[key]
+                        for key in (
+                            "attempt_id",
+                            "step_id",
+                            "run_id",
+                            "repository",
+                            "issue_number",
+                            "actor",
+                            "action",
+                            "destination",
+                            "branch",
+                            "head_sha",
+                            "base_branch",
+                            "expected_remote_sha",
+                            "target_pull_number",
+                        )
+                    }
+                    self._publication_record(
+                        identity,
+                        stage="completed",
+                        outcome="blocked",
+                        lease=lease,
+                        payload={
+                            "public_write": False,
+                            "reconciliation": "verified_scope_changed",
+                        },
+                    )
+                    raise PolicyError(
+                        "incomplete publication action belongs to a different "
+                        "verified scope"
+                    )
+                self.store.validate_run_lease(lease)
+                self._reconcile_publication_step(client, row, lease=lease)
+
+    def _publication_action_completed(
+        self,
+        run_id: str,
+        *,
+        action: str,
+        pull_number: int = 0,
+    ) -> bool:
+        return self.store.publication_action_completed(
+            run_id,
+            action=action,
+            target_pull_number=pull_number,
+        )
+
+    def _publish_branch(
+        self,
+        client: GitHubClient,
+        *,
+        attempt_id: str,
+        run_id: str,
+        repository: str,
+        issue_number: int,
+        actor: str,
+        action: str,
+        destination: str,
+        branch: str,
+        head_sha: str,
+        base_branch: str,
+        expected_remote_sha: str,
+        target_pull_number: int,
+        worktree: Path,
+        lease: RunLease,
+    ) -> bool:
+        remote_head = client.branch_head_sha(destination, branch)
+        if remote_head == head_sha:
+            identity = self._publication_step(
+                attempt_id=attempt_id,
+                run_id=run_id,
+                repository=repository,
+                issue_number=issue_number,
+                actor=actor,
+                action=action,
+                destination=destination,
+                branch=branch,
+                head_sha=head_sha,
+                base_branch=base_branch,
+                expected_remote_sha=expected_remote_sha,
+                target_pull_number=target_pull_number,
+                lease=lease,
+            )
+            self._publication_record(
+                identity,
+                stage="completed",
+                outcome="already_current",
+                lease=lease,
+                payload={
+                    "public_write": False,
+                    "remote_head_sha": remote_head,
+                    "reconciliation": "branch_already_at_verified_head",
+                },
+            )
+            return False
+        if remote_head != expected_remote_sha:
+            raise PolicyError(
+                "remote publication branch changed before the audited push"
+            )
+        identity = self._publication_step(
+            attempt_id=attempt_id,
+            run_id=run_id,
+            repository=repository,
+            issue_number=issue_number,
+            actor=actor,
+            action=action,
+            destination=destination,
+            branch=branch,
+            head_sha=head_sha,
+            base_branch=base_branch,
+            expected_remote_sha=expected_remote_sha,
+            target_pull_number=target_pull_number,
+            lease=lease,
+        )
+        try:
+            self.store.validate_run_lease(lease)
+            self.workspaces.push(
+                worktree,
+                destination,
+                branch,
+                expected_remote_sha=expected_remote_sha,
+            )
+        except (WorkspaceError, subprocess.SubprocessError, OSError):
+            outcome, _pull = self._reconcile_publication_step(
+                client,
+                {**identity, "stage": "applying", "outcome": "pending"},
+                lease=lease,
+            )
+            if outcome == "reconciled":
+                return True
+            raise
+        self._publication_record(
+            identity,
+            stage="completed",
+            outcome="succeeded",
+            lease=lease,
+            payload={
+                "public_write": True,
+                "remote_head_sha": head_sha,
+                "reconciliation": "push_returned_success",
+            },
+        )
+        return True
+
+    def _publish_pull_action(
+        self,
+        client: GitHubClient,
+        *,
+        attempt_id: str,
+        run_id: str,
+        repository: str,
+        issue_number: int,
+        actor: str,
+        action: str,
+        destination: str,
+        branch: str,
+        head_sha: str,
+        base_branch: str,
+        target_pull_number: int,
+        lease: RunLease,
+        apply: Callable[[], PullRequest],
+    ) -> tuple[PullRequest, bool]:
+        identity = self._publication_step(
+            attempt_id=attempt_id,
+            run_id=run_id,
+            repository=repository,
+            issue_number=issue_number,
+            actor=actor,
+            action=action,
+            destination=destination,
+            branch=branch,
+            head_sha=head_sha,
+            base_branch=base_branch,
+            target_pull_number=target_pull_number,
+            lease=lease,
+        )
+        try:
+            self.store.validate_run_lease(lease)
+            pull_request = apply()
+        except GitHubError:
+            outcome, reconciled = self._reconcile_publication_step(
+                client,
+                {**identity, "stage": "applying", "outcome": "pending"},
+                lease=lease,
+            )
+            if outcome == "reconciled" and reconciled is not None:
+                return reconciled, True
+            raise
+        self._publication_record(
+            identity,
+            stage="completed",
+            outcome="succeeded",
+            lease=lease,
+            payload=self._publication_pull_payload(
+                pull_request,
+                public_write=True,
+                reconciliation=f"{action}_returned_success",
+            ),
+        )
+        return pull_request, True
+
+    def _record_current_pull(
+        self,
+        pull_request: PullRequest,
+        *,
+        attempt_id: str,
+        run_id: str,
+        repository: str,
+        issue_number: int,
+        actor: str,
+        action: str,
+        destination: str,
+        branch: str,
+        head_sha: str,
+        base_branch: str,
+        lease: RunLease,
+    ) -> None:
+        identity = self._publication_step(
+            attempt_id=attempt_id,
+            run_id=run_id,
+            repository=repository,
+            issue_number=issue_number,
+            actor=actor,
+            action=action,
+            destination=destination,
+            branch=branch,
+            head_sha=head_sha,
+            base_branch=base_branch,
+            target_pull_number=pull_request.number,
+            lease=lease,
+        )
+        self._publication_record(
+            identity,
+            stage="completed",
+            outcome="already_current",
+            lease=lease,
+            payload=self._publication_pull_payload(
+                pull_request,
+                public_write=False,
+                reconciliation="pull_request_already_at_verified_head",
+            ),
+        )
+
+    def _finalize_submission(
+        self,
+        *,
+        run: dict[str, Any],
+        details: dict[str, Any],
+        policy: RepositoryPolicy,
+        issue_number: int,
+        pull_request: PullRequest,
+        destination: str,
+        public_write: bool,
+        idempotent: bool,
+        attempt_id: str,
+    ) -> dict[str, Any]:
+        context_warning = ""
+        try:
+            submitted_details = {
+                **details,
+                "pr_url": pull_request.url,
+                "publication_destination": destination,
+                "publication_attempt_id": attempt_id,
+            }
+            self.store.update_run(
+                run["id"],
+                status="submitted",
+                stage="pull_request",
+                details=submitted_details,
+            )
+            self.store.set_candidate_status(policy.name, issue_number, "submitted")
+            self.store.record_submission(policy.name, issue_number, pull_request.url)
+            context_bundle = self.store.context_bundle(str(run["id"]))
+            if context_bundle is not None:
+                previous = context_bundle.get("checkpoint")
+                if not isinstance(previous, dict):
+                    previous = {}
+                already_submitted = previous.get("status") == "submitted" and any(
+                    isinstance(value, dict)
+                    and value.get("kind") == "pull_request"
+                    and value.get("locator") == pull_request.url
+                    for value in previous.get("evidence", ())
+                )
+                if not already_submitted:
+                    completed = tuple(previous.get("completed", ())) + (
+                        "Published the reviewed commit as a pull request.",
+                    )
+                    evidence = tuple(previous.get("evidence", ())) + (
+                        {
+                            "kind": "pull_request",
+                            "locator": pull_request.url,
+                            "status": "open",
+                            "digest": str(details["commit_sha"]),
+                            "summary": (
+                                "submitted through the explicit human review gate"
+                            ),
+                        },
+                    )
+                    self.store.save_checkpoint(
+                        work_item_id=str(context_bundle["work_item"]["id"]),
+                        run_id=str(run["id"]),
+                        context_pack_id=str(context_bundle["context_metadata"]["id"]),
+                        status="submitted",
+                        payload={
+                            "schema_version": CHECKPOINT_SCHEMA_VERSION,
+                            "work_item_id": context_bundle["work_item"]["id"],
+                            "run_id": run["id"],
+                            "context_pack_id": context_bundle["context_metadata"]["id"],
+                            "status": "submitted",
+                            "head_commit": details["commit_sha"],
+                            "completed": completed,
+                            "remaining": (
+                                "Monitor CI and reviewer feedback through incremental follow-up.",
+                            ),
+                            "next_action": "monitor_pull_request",
+                            "blockers": (),
+                            "decisions": tuple(previous.get("decisions", ())),
+                            "evidence": evidence,
+                        },
+                    )
+                self.store.update_work_item_status(
+                    str(context_bundle["work_item"]["id"]), "submitted"
+                )
+        except (KeyError, TypeError, ValueError, sqlite3.Error, StoreError) as exc:
+            context_warning = (
+                f"pull request published; local state update failed: {exc}"
+            )
+        result = {
+            "pr_url": pull_request.url,
+            "pr_number": pull_request.number,
+            "draft": pull_request.draft,
+            "branch": details["branch"],
+            "submission_strategy": policy.submission_strategy,
+            "destination": destination,
+            "attempt_id": attempt_id,
+            "idempotent": idempotent,
+            "public_write": public_write,
+        }
+        if context_warning:
+            result["warning"] = context_warning
+        return result
+
     def submit(
         self,
         repository: str,
@@ -3831,7 +4403,8 @@ class Pipeline:
                 f"--reviewed-by must attest the configured account {self.config.github.login!r}"
             )
         token = resolve_token(self.config.github, required=True)
-        authenticated = GitHubClient(self.config.github, token).authenticated_login()
+        client = GitHubClient(self.config.github, token)
+        authenticated = client.authenticated_login()
         if authenticated.casefold() != self.config.github.login.casefold():
             raise GitHubError(
                 f"token belongs to {authenticated!r}, expected {self.config.github.login!r}"
@@ -3841,11 +4414,44 @@ class Pipeline:
             raise PolicyError(f"repository contribution gate is not satisfied: {gate}")
 
         run = self.store.latest_run(policy.name, issue_number)
-        if run is None or run["status"] != "ready":
+        if run is None or run["status"] not in {"ready", "submitted"}:
             raise PolicyError(
                 "no verified change is ready for human review and submission"
             )
         details = run["details"]
+        if run["status"] == "submitted":
+            match = re.search(r"/pull/(\d+)/?$", str(details.get("pr_url", "")))
+            if not match:
+                raise PolicyError("submitted run is missing its pull request identity")
+            pull_request = client.pull_request(policy.name, int(match.group(1)))
+            destination = str(details.get("publication_destination") or "")
+            if not destination:
+                destination = (
+                    policy.name
+                    if policy.submission_strategy == "same-repository"
+                    else f"{pull_request.head_owner}/{policy.name.split('/', 1)[1]}"
+                )
+            if not self._publication_pull_matches(
+                pull_request,
+                destination=destination,
+                branch=str(details.get("branch") or ""),
+                base_branch=str(details.get("base_branch") or ""),
+                head_sha=str(details.get("commit_sha") or ""),
+            ):
+                raise PolicyError(
+                    "submitted pull request no longer matches the verified run"
+                )
+            return self._finalize_submission(
+                run=run,
+                details=details,
+                policy=policy,
+                issue_number=issue_number,
+                pull_request=pull_request,
+                destination=destination,
+                public_write=False,
+                idempotent=True,
+                attempt_id=str(details.get("publication_attempt_id") or "recovery"),
+            )
         worktree = Path(details["worktree"])
         if not (worktree / ".git").exists():
             raise PolicyError(f"prepared worktree is missing: {worktree}")
@@ -3870,7 +4476,6 @@ class Pipeline:
         if details["branch"] == details["base_branch"]:
             raise PolicyError("publication branch must differ from the base branch")
 
-        client = GitHubClient(self.config.github, token)
         self._validate_contribution_contract(worktree, policy)
         body = self._pull_request_body(
             issue_number, details, reviewed_by, policy=policy
@@ -3880,6 +4485,13 @@ class Pipeline:
             if policy.submission_strategy == "fork"
             else policy.name.split("/", 1)[0]
         )
+        attempt_id = uuid.uuid4().hex
+        self._reconcile_incomplete_publication(
+            client,
+            run_id=str(run["id"]),
+            details=details,
+            lease=mutation_lease,
+        )
         closed_pull: PullRequest | None = None
         existing_pull: PullRequest | None = None
         if reopen_pull_request:
@@ -3888,9 +4500,10 @@ class Pipeline:
                     "a prepared repair cannot reopen another pull request"
                 )
             closed_pull = client.pull_request(policy.name, reopen_pull_request)
-            if closed_pull.state != "closed":
+            if closed_pull.state not in {"closed", "open"}:
                 raise PolicyError(
-                    f"pull request {policy.name}#{reopen_pull_request} is not closed"
+                    f"pull request {policy.name}#{reopen_pull_request} has unsupported "
+                    f"state {closed_pull.state!r}"
                 )
             expected = (
                 planned_head_owner.casefold(),
@@ -3908,7 +4521,16 @@ class Pipeline:
                     f"{planned_head_owner}:{details['branch']} -> "
                     f"{details['base_branch']}"
                 )
-            self._ensure_new_pull_capacity(client, policy)
+            if closed_pull.state == "closed":
+                self._ensure_new_pull_capacity(client, policy)
+            elif not self._publication_action_completed(
+                str(run["id"]),
+                action="reopen",
+                pull_number=reopen_pull_request,
+            ):
+                raise PolicyError(
+                    f"pull request {policy.name}#{reopen_pull_request} is already open"
+                )
         else:
             existing_pull = client.existing_pull_request(
                 policy.name,
@@ -3922,28 +4544,84 @@ class Pipeline:
         if head_owner.casefold() != planned_head_owner.casefold():
             raise PolicyError("publication target identity changed during submission")
 
+        public_write = False
         if reopen_pull_request:
             assert closed_pull is not None
-            self.store.validate_run_lease(mutation_lease)
-            pull_request = client.reopen_pull_request(
-                policy.name,
-                reopen_pull_request,
-                owner=head_owner,
-                branch=details["branch"],
-                base=details["base_branch"],
-                title=details["agent_result"]["pr_title"],
-                body=body,
-            )
-            try:
-                self.store.validate_run_lease(mutation_lease)
-                self.workspaces.push(
-                    worktree,
-                    destination,
-                    details["branch"],
-                    expected_remote_sha=closed_pull.head_sha,
+            reopened_here = False
+            pull_request = closed_pull
+            if closed_pull.state == "closed":
+                pull_request, reopened_here = self._publish_pull_action(
+                    client,
+                    attempt_id=attempt_id,
+                    run_id=str(run["id"]),
+                    repository=policy.name,
+                    issue_number=issue_number,
+                    actor=reviewed_by,
+                    action="reopen",
+                    destination=destination,
+                    branch=details["branch"],
+                    head_sha=details["commit_sha"],
+                    base_branch=details["base_branch"],
+                    target_pull_number=reopen_pull_request,
+                    lease=mutation_lease,
+                    apply=lambda: client.reopen_pull_request(
+                        policy.name,
+                        reopen_pull_request,
+                        owner=head_owner,
+                        branch=details["branch"],
+                        base=details["base_branch"],
+                        title=details["agent_result"]["pr_title"],
+                        body=body,
+                    ),
                 )
-            except Exception:
-                client.close_pull_request(policy.name, reopen_pull_request)
+                public_write = public_write or reopened_here
+            try:
+                public_write = (
+                    self._publish_branch(
+                        client,
+                        attempt_id=attempt_id,
+                        run_id=str(run["id"]),
+                        repository=policy.name,
+                        issue_number=issue_number,
+                        actor=reviewed_by,
+                        action="update",
+                        destination=destination,
+                        branch=details["branch"],
+                        head_sha=details["commit_sha"],
+                        base_branch=details["base_branch"],
+                        expected_remote_sha=closed_pull.head_sha,
+                        target_pull_number=reopen_pull_request,
+                        worktree=worktree,
+                        lease=mutation_lease,
+                    )
+                    or public_write
+                )
+            except (
+                WorkspaceError,
+                subprocess.SubprocessError,
+                OSError,
+                PolicyError,
+            ):
+                if reopened_here:
+                    _closed, close_write = self._publish_pull_action(
+                        client,
+                        attempt_id=attempt_id,
+                        run_id=str(run["id"]),
+                        repository=policy.name,
+                        issue_number=issue_number,
+                        actor=reviewed_by,
+                        action="close",
+                        destination=destination,
+                        branch=details["branch"],
+                        head_sha=details["commit_sha"],
+                        base_branch=details["base_branch"],
+                        target_pull_number=reopen_pull_request,
+                        lease=mutation_lease,
+                        apply=lambda: client.close_pull_request(
+                            policy.name, reopen_pull_request
+                        ),
+                    )
+                    public_write = public_write or close_write
                 raise
             pull_request = client.pull_request(policy.name, reopen_pull_request)
         else:
@@ -3961,100 +4639,148 @@ class Pipeline:
                     details=details,
                 )
             if existing_pull:
-                if existing_pull.base_branch != details["base_branch"]:
+                if not self._publication_pull_matches(
+                    existing_pull,
+                    destination=destination,
+                    branch=details["branch"],
+                    base_branch=details["base_branch"],
+                ):
                     raise PolicyError(
-                        f"pull request {policy.name}#{existing_pull.number} targets "
-                        f"{existing_pull.base_branch!r}, expected "
-                        f"{details['base_branch']!r}"
+                        f"pull request {policy.name}#{existing_pull.number} no longer "
+                        "matches the prepared publication branch"
                     )
-                self.store.validate_run_lease(mutation_lease)
-                self.workspaces.push(
-                    worktree,
-                    destination,
-                    details["branch"],
-                    expected_remote_sha=existing_pull.head_sha,
-                )
-                pull_request = client.pull_request(policy.name, existing_pull.number)
+                if existing_pull.head_sha == details["commit_sha"]:
+                    self._record_current_pull(
+                        existing_pull,
+                        attempt_id=attempt_id,
+                        run_id=str(run["id"]),
+                        repository=policy.name,
+                        issue_number=issue_number,
+                        actor=reviewed_by,
+                        action="update",
+                        destination=destination,
+                        branch=details["branch"],
+                        head_sha=details["commit_sha"],
+                        base_branch=details["base_branch"],
+                        lease=mutation_lease,
+                    )
+                    pull_request = existing_pull
+                else:
+                    public_write = self._publish_branch(
+                        client,
+                        attempt_id=attempt_id,
+                        run_id=str(run["id"]),
+                        repository=policy.name,
+                        issue_number=issue_number,
+                        actor=reviewed_by,
+                        action="update",
+                        destination=destination,
+                        branch=details["branch"],
+                        head_sha=details["commit_sha"],
+                        base_branch=details["base_branch"],
+                        expected_remote_sha=existing_pull.head_sha,
+                        target_pull_number=existing_pull.number,
+                        worktree=worktree,
+                        lease=mutation_lease,
+                    )
+                    pull_request = client.pull_request(
+                        policy.name, existing_pull.number
+                    )
             else:
-                self.store.validate_run_lease(mutation_lease)
-                self.workspaces.push(worktree, destination, details["branch"])
-                self.store.validate_run_lease(mutation_lease)
-                pull_request = client.create_pull_request(
+                public_write = self._publish_branch(
+                    client,
+                    attempt_id=attempt_id,
+                    run_id=str(run["id"]),
+                    repository=policy.name,
+                    issue_number=issue_number,
+                    actor=reviewed_by,
+                    action="push",
+                    destination=destination,
+                    branch=details["branch"],
+                    head_sha=details["commit_sha"],
+                    base_branch=details["base_branch"],
+                    expected_remote_sha="",
+                    target_pull_number=0,
+                    worktree=worktree,
+                    lease=mutation_lease,
+                )
+                pull_request = client.existing_pull_request(
                     policy.name,
                     owner=head_owner,
                     branch=details["branch"],
-                    base=details["base_branch"],
-                    title=details["agent_result"]["pr_title"],
-                    body=body,
-                    draft=self.config.safety.draft_pull_requests,
                 )
-        self.store.update_run(
-            run["id"],
-            status="submitted",
-            stage="pull_request",
-            details={**details, "pr_url": pull_request.url},
-        )
-        self.store.set_candidate_status(policy.name, issue_number, "submitted")
-        self.store.record_submission(policy.name, issue_number, pull_request.url)
-        context_warning = ""
-        try:
-            context_bundle = self.store.context_bundle(str(run["id"]))
-            if context_bundle is not None:
-                previous = context_bundle.get("checkpoint")
-                if not isinstance(previous, dict):
-                    previous = {}
-                completed = tuple(previous.get("completed", ())) + (
-                    "Published the reviewed commit as a pull request.",
-                )
-                evidence = tuple(previous.get("evidence", ())) + (
-                    {
-                        "kind": "pull_request",
-                        "locator": pull_request.url,
-                        "status": "open",
-                        "digest": str(details["commit_sha"]),
-                        "summary": "submitted through the explicit human review gate",
-                    },
-                )
-                self.store.save_checkpoint(
-                    work_item_id=str(context_bundle["work_item"]["id"]),
-                    run_id=str(run["id"]),
-                    context_pack_id=str(context_bundle["context_metadata"]["id"]),
-                    status="submitted",
-                    payload={
-                        "schema_version": CHECKPOINT_SCHEMA_VERSION,
-                        "work_item_id": context_bundle["work_item"]["id"],
-                        "run_id": run["id"],
-                        "context_pack_id": context_bundle["context_metadata"]["id"],
-                        "status": "submitted",
-                        "head_commit": details["commit_sha"],
-                        "completed": completed,
-                        "remaining": (
-                            "Monitor CI and reviewer feedback through incremental follow-up.",
+                if pull_request is not None:
+                    if not self._publication_pull_matches(
+                        pull_request,
+                        destination=destination,
+                        branch=details["branch"],
+                        base_branch=details["base_branch"],
+                        head_sha=details["commit_sha"],
+                    ):
+                        raise PolicyError(
+                            "a concurrently created pull request has conflicting facts"
+                        )
+                    self._record_current_pull(
+                        pull_request,
+                        attempt_id=attempt_id,
+                        run_id=str(run["id"]),
+                        repository=policy.name,
+                        issue_number=issue_number,
+                        actor=reviewed_by,
+                        action="create",
+                        destination=destination,
+                        branch=details["branch"],
+                        head_sha=details["commit_sha"],
+                        base_branch=details["base_branch"],
+                        lease=mutation_lease,
+                    )
+                else:
+                    pull_request, create_write = self._publish_pull_action(
+                        client,
+                        attempt_id=attempt_id,
+                        run_id=str(run["id"]),
+                        repository=policy.name,
+                        issue_number=issue_number,
+                        actor=reviewed_by,
+                        action="create",
+                        destination=destination,
+                        branch=details["branch"],
+                        head_sha=details["commit_sha"],
+                        base_branch=details["base_branch"],
+                        target_pull_number=0,
+                        lease=mutation_lease,
+                        apply=lambda: client.create_pull_request(
+                            policy.name,
+                            owner=head_owner,
+                            branch=details["branch"],
+                            base=details["base_branch"],
+                            title=details["agent_result"]["pr_title"],
+                            body=body,
+                            draft=self.config.safety.draft_pull_requests,
                         ),
-                        "next_action": "monitor_pull_request",
-                        "blockers": (),
-                        "decisions": tuple(previous.get("decisions", ())),
-                        "evidence": evidence,
-                    },
-                )
-                self.store.update_work_item_status(
-                    str(context_bundle["work_item"]["id"]), "submitted"
-                )
-        except (KeyError, TypeError, ValueError, sqlite3.Error) as exc:
-            # The public write already succeeded. Surface local continuity repair as
-            # a warning instead of reporting a false submission failure.
-            context_warning = f"pull request published; context update failed: {exc}"
-        result = {
-            "pr_url": pull_request.url,
-            "pr_number": pull_request.number,
-            "draft": pull_request.draft,
-            "branch": details["branch"],
-            "submission_strategy": policy.submission_strategy,
-            "destination": destination,
-        }
-        if context_warning:
-            result["warning"] = context_warning
-        return result
+                    )
+                    public_write = public_write or create_write
+        if not self._publication_pull_matches(
+            pull_request,
+            destination=destination,
+            branch=details["branch"],
+            base_branch=details["base_branch"],
+            head_sha=details["commit_sha"],
+        ):
+            raise PolicyError(
+                "published pull request does not match the verified commit"
+            )
+        return self._finalize_submission(
+            run=run,
+            details=details,
+            policy=policy,
+            issue_number=issue_number,
+            pull_request=pull_request,
+            destination=destination,
+            public_write=public_write,
+            idempotent=not public_write,
+            attempt_id=attempt_id,
+        )
 
     @staticmethod
     def _harness_label(details: dict[str, Any]) -> str:
