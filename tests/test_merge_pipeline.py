@@ -10,6 +10,7 @@ from reposteward.context import repository_policy_digest
 from reposteward.github import GitHubError, PullRequest
 from reposteward.pipeline import Pipeline
 from reposteward.policy import PolicyError
+from reposteward.store import StoreError
 
 
 class StubStore:
@@ -20,6 +21,7 @@ class StubStore:
         self.executions: list[dict] = []
         self.dependency_events: list[dict] = []
         self.owner_attestation: dict | None = None
+        self.usage_read_fails = False
 
     def run(self, run_id: str) -> dict:
         return {
@@ -105,6 +107,8 @@ class StubStore:
         return self.owner_attestation
 
     def harness_usage_rows(self, _repository: str, **_filters) -> list[dict]:
+        if self.usage_read_fails:
+            raise StoreError("usage ledger unavailable")
         return []
 
     def latest_merge_outcomes(self, _repository: str) -> dict[int, str]:
@@ -508,6 +512,23 @@ class MergePipelineTests(unittest.TestCase):
 
         self.assertEqual(pipeline.store.executions[-1]["outcome"], "blocked")
         self.assertEqual(pipeline.github.merge_calls, [])
+
+    def test_usage_summary_failure_does_not_change_a_successful_merge(self) -> None:
+        pipeline = self.pipeline(auto_merge=True)
+        pipeline.store.usage_read_fails = True
+        decision = pipeline.merge_decision("run-1")
+
+        with patch.dict(os.environ, {"REPOSTEWARD_ENABLE_MERGE": "1"}):
+            result = pipeline.execute_merge(
+                "run-1", decision_id=decision["audit"]["id"], reviewed_by="alice"
+            )
+
+        self.assertTrue(result["merged"])
+        self.assertEqual(len(pipeline.github.merge_calls), 1)
+        self.assertEqual(
+            result["usage_summary"],
+            {"status": "unavailable", "reason": "usage_summary_unavailable"},
+        )
 
     def test_activity_change_makes_the_decision_stale_without_public_write(
         self,

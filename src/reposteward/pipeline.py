@@ -3285,6 +3285,7 @@ class Pipeline:
                     group_by="none",
                 )
             except (
+                ArithmeticError,
                 AttributeError,
                 KeyError,
                 sqlite3.Error,
