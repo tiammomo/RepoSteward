@@ -153,6 +153,18 @@ API 验证当前身份确实拥有 push 权限，并继续禁止直接使用默�
 旧配置显式指定 `state_dir` 时保持原有工作区布局。项目层不能覆盖用户层的运行目录、GitHub 身份、Agent executable 或 Runner
 image；项目安全设置只能收紧用户限额和默认禁止路径，不能静默放宽它们。
 
+少数仓库会把普通源码放在名为 `secrets` 或 `credentials` 的目录中。验证器默认仍拒绝复制这些
+路径；可信的用户配置可以按仓库放行一个至少包含两级目录的规范化相对路径前缀：
+
+```toml
+[safety.tracked_sensitive_paths]
+"makecindy/cindy" = ["apps/desktop/src/main/secrets/"]
+```
+
+该表只从用户配置读取，仓库项目配置中的同名表会被忽略。授权只适用于前缀下的已跟踪普通文件；
+未跟踪文件、符号链接、`.env` 文件、仓库根级 `secrets`/`credentials` 前缀和包含通配符或父目录
+跳转的路径仍会失败关闭。每个授权前缀都会写入验证沙箱清单，便于 Review 时核对。
+
 ### 并发与变更规模
 
 默认情况下，每个仓库最多同时保留 4 个由当前 GitHub 账号创建的 open PR；Draft 和 Ready 都计入，

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -8,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from reposteward.config import RepositoryPolicy, RunnerConfig
+from reposteward.config import RepositoryPolicy, RunnerConfig, SafetyConfig
 from reposteward.models import AgentResult, CommandResult
 from reposteward.verifier import DockerVerifier, VerificationError
 
@@ -25,11 +26,11 @@ def _repository(root: Path) -> None:
 
 
 class VerificationSandboxTests(unittest.TestCase):
-    def _verifier(self) -> DockerVerifier:
+    def _verifier(self, safety: SafetyConfig | None = None) -> DockerVerifier:
         verifier = DockerVerifier(
             SimpleNamespace(
                 runner=RunnerConfig(),
-                safety=SimpleNamespace(require_verification=True),
+                safety=safety or SafetyConfig(),
             )
         )
         verifier.image_available = lambda: True  # type: ignore[method-assign]
@@ -97,6 +98,7 @@ class VerificationSandboxTests(unittest.TestCase):
         self.assertEqual(host_marker, "host")
         self.assertTrue(manifest["cleaned"])
         self.assertFalse(manifest["host_workspace_writable"])
+        self.assertEqual(manifest["trusted_tracked_sensitive_paths"], [])
 
     def test_failed_bootstrap_still_removes_the_sandbox(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -170,6 +172,167 @@ class VerificationSandboxTests(unittest.TestCase):
                 VerificationError, "tracked sensitive path cannot enter verification"
             ):
                 DockerVerifier._copy_workspace(worktree, root / "snapshot")
+
+    def test_allowlisted_tracked_sensitive_source_is_copied(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            _repository(worktree)
+            source = worktree / "apps" / "desktop" / "src" / "secrets" / "api.ts"
+            source.parent.mkdir(parents=True)
+            source.write_text("export const safe = true;\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "apps/desktop/src/secrets/api.ts"],
+                cwd=worktree,
+                check=True,
+            )
+
+            DockerVerifier._copy_workspace(
+                worktree,
+                root / "snapshot",
+                trusted_sensitive_paths=("apps/desktop/src/secrets",),
+            )
+
+            self.assertEqual(
+                (root / "snapshot" / "apps/desktop/src/secrets/api.ts").read_text(
+                    encoding="utf-8"
+                ),
+                source.read_text(encoding="utf-8"),
+            )
+
+    def test_sensitive_path_allowlist_uses_component_boundaries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            _repository(worktree)
+            source = worktree / "src" / "secrets" / "allowed-extra" / "api.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("SAFE = True\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "src/secrets/allowed-extra/api.py"],
+                cwd=worktree,
+                check=True,
+            )
+
+            with self.assertRaisesRegex(
+                VerificationError, "tracked sensitive path cannot enter verification"
+            ):
+                DockerVerifier._copy_workspace(
+                    worktree,
+                    root / "snapshot",
+                    trusted_sensitive_paths=("src/secrets/allowed",),
+                )
+
+    def test_allowlisted_sensitive_path_excludes_untracked_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            _repository(worktree)
+            source = worktree / "src" / "secrets" / "local.txt"
+            source.parent.mkdir(parents=True)
+            source.write_text("local only\n", encoding="utf-8")
+
+            DockerVerifier._copy_workspace(
+                worktree,
+                root / "snapshot",
+                trusted_sensitive_paths=("src/secrets",),
+            )
+
+            self.assertFalse((root / "snapshot" / "src/secrets/local.txt").exists())
+
+    def test_allowlisted_sensitive_path_symlink_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            _repository(worktree)
+            (worktree / "source.ts").write_text("safe\n", encoding="utf-8")
+            link = worktree / "src" / "secrets" / "source.ts"
+            link.parent.mkdir(parents=True)
+            link.symlink_to("../../../source.ts")
+            subprocess.run(
+                ["git", "add", "src/secrets/source.ts"], cwd=worktree, check=True
+            )
+
+            with self.assertRaisesRegex(VerificationError, "must be a regular file"):
+                DockerVerifier._copy_workspace(
+                    worktree,
+                    root / "snapshot",
+                    trusted_sensitive_paths=("src/secrets",),
+                )
+
+    def test_allowlisted_sensitive_path_symlinked_parent_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            _repository(worktree)
+            source = worktree / "src" / "secrets" / "source.ts"
+            source.parent.mkdir(parents=True)
+            source.write_text("safe\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "src/secrets/source.ts"], cwd=worktree, check=True
+            )
+            shutil.rmtree(source.parent)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "source.ts").write_text("outside\n", encoding="utf-8")
+            source.parent.symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(VerificationError, "must be a regular file"):
+                DockerVerifier._copy_workspace(
+                    worktree,
+                    root / "snapshot",
+                    trusted_sensitive_paths=("src/secrets",),
+                )
+
+    def test_sensitive_path_allowlist_is_scoped_to_policy_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            _repository(worktree)
+            source = worktree / "src" / "secrets" / "source.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("SAFE = True\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "src/secrets/source.py"], cwd=worktree, check=True
+            )
+            verifier = self._verifier(
+                SafetyConfig(
+                    tracked_sensitive_paths=(("owner/allowed", ("src/secrets",)),)
+                )
+            )
+            verifier._run_container = lambda *_args, **_kwargs: CommandResult(
+                "uv run test", 0, "", 0.01
+            )  # type: ignore[method-assign]
+            result = AgentResult(
+                "summary", "fix(repo): test", "notes", ("uv run test",)
+            )
+
+            with self.assertRaisesRegex(
+                VerificationError, "tracked sensitive path cannot enter verification"
+            ):
+                verifier.verify(
+                    worktree,
+                    RepositoryPolicy(
+                        name="owner/other", verification_prefixes=("uv run ",)
+                    ),
+                    result,
+                )
+
+            verification = verifier.verify(
+                worktree,
+                RepositoryPolicy(
+                    name="owner/allowed", verification_prefixes=("uv run ",)
+                ),
+                result,
+            )
+
+        self.assertTrue(verification.passed)
 
     def test_tracked_empty_environment_templates_are_copied(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -331,7 +494,11 @@ class VerificationSandboxTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 VerificationError, "tracked sensitive path cannot enter verification"
             ):
-                DockerVerifier._copy_workspace(worktree, root / "snapshot")
+                DockerVerifier._copy_workspace(
+                    worktree,
+                    root / "snapshot",
+                    trusted_sensitive_paths=("src/secrets",),
+                )
 
     def test_environment_template_must_be_bounded_utf8(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

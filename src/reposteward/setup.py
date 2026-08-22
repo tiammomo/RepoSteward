@@ -86,6 +86,11 @@ max_diff_lines = 2000
 require_verification = true
 draft_pull_requests = true
 
+# Only configure this table in the trusted per-user file. Entries must name a
+# repository and a nested sensitive directory; project config cannot add them.
+# [safety.tracked_sensitive_paths]
+# "owner/repository" = ["src/secrets/"]
+
 [agent]
 harness = "codex-cli"
 executable = "codex"

@@ -209,6 +209,111 @@ event_payload_retention_days = 45
             config.repositories["owner/repo"].event_payload_retention_days, 45
         )
 
+    def test_tracked_sensitive_paths_are_user_owned_and_repository_scoped(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            user = root / "user.toml"
+            project = root / "project.toml"
+            user.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[safety.tracked_sensitive_paths]
+"Owner/Repo" = ["src/secrets/", "packages/credentials/generated"]
+"other/repo" = ["lib/secrets"]
+""",
+                encoding="utf-8",
+            )
+            project.write_text(
+                """config_version = 1
+[safety.tracked_sensitive_paths]
+"owner/repo" = ["src/secrets/wider"]
+"mallory/repo" = ["src/secrets"]
+""",
+                encoding="utf-8",
+            )
+
+            config = load_config(project, user_path=user)
+
+        self.assertEqual(
+            config.safety.tracked_sensitive_paths,
+            (
+                (
+                    "other/repo",
+                    ("lib/secrets",),
+                ),
+                (
+                    "owner/repo",
+                    ("src/secrets", "packages/credentials/generated"),
+                ),
+            ),
+        )
+        self.assertEqual(
+            config.safety.tracked_sensitive_paths_for("OWNER/REPO"),
+            ("src/secrets", "packages/credentials/generated"),
+        )
+        self.assertEqual(config.safety.tracked_sensitive_paths_for("mallory/repo"), ())
+
+    def test_project_only_config_cannot_allow_tracked_sensitive_paths(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            user = root / "user.toml"
+            project = root / "project.toml"
+            user.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+""",
+                encoding="utf-8",
+            )
+            project.write_text(
+                """config_version = 1
+[safety.tracked_sensitive_paths]
+"owner/repo" = ["src/secrets"]
+""",
+                encoding="utf-8",
+            )
+
+            config = load_config(project, user_path=user)
+
+        self.assertEqual(config.safety.tracked_sensitive_paths, ())
+
+    def test_tracked_sensitive_paths_reject_unsafe_values(self) -> None:
+        invalid_tables = (
+            ('"owner" = ["src/secrets"]', "owner/name form"),
+            ('"owner/repo" = "src/secrets"', "non-empty arrays"),
+            ('"owner/repo" = []', "non-empty arrays"),
+            ('"owner/repo" = [""]', "normalized relative paths"),
+            ('"owner/repo" = ["/src/secrets"]', "normalized relative paths"),
+            ('"owner/repo" = ["src/./secrets"]', "normalized relative paths"),
+            ('"owner/repo" = ["src/../secrets"]', "normalized relative paths"),
+            ('"owner/repo" = ["src\\\\secrets"]', "normalized relative paths"),
+            ('"owner/repo" = ["secrets"]', "repository-root sensitive prefix"),
+            ('"owner/repo" = ["src/cache"]', "credentials or secrets component"),
+            ('"owner/repo" = ["src/secrets/*"]', "normalized relative paths"),
+            ('"owner/repo" = ["src/secrets/.env"]', "environment files"),
+        )
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project.toml"
+            project.write_text("config_version = 1\n", encoding="utf-8")
+            for index, (table, message) in enumerate(invalid_tables):
+                with self.subTest(table=table):
+                    user = root / f"user-{index}.toml"
+                    user.write_text(
+                        "config_version = 1\n"
+                        "[github]\n"
+                        'login = "alice"\n'
+                        "[safety.tracked_sensitive_paths]\n"
+                        f"{table}\n",
+                        encoding="utf-8",
+                    )
+
+                    with self.assertRaisesRegex(ConfigError, message):
+                        load_config(project, user_path=user)
+
     def test_event_payload_retention_must_be_explicit_and_positive(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
