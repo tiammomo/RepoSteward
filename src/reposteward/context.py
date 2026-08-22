@@ -12,11 +12,16 @@ from typing import Any
 from .config import RepositoryPolicy
 from .models import AgentResult, Candidate, VerificationResult
 
-CONTEXT_SCHEMA_VERSION = 1
-BUNDLE_SCHEMA_VERSION = 1
+CONTEXT_SCHEMA_VERSION = 2
+CHECKPOINT_SCHEMA_VERSION = 1
+BUNDLE_SCHEMA_VERSION = 2
 MAX_TASK_DESCRIPTION_CHARS = 20_000
 MAX_CONTEXT_SOURCES = 64
-MAX_PROJECT_SKILLS = 8
+MAX_PROJECT_SKILLS = 24
+MAX_SKILL_METADATA_BYTES = 8_192
+MAX_SKILL_FILE_BYTES = 1_048_576
+MAX_SKILL_NAME_CHARS = 100
+MAX_SKILL_DESCRIPTION_CHARS = 240
 MAX_HANDOFF_ITEMS = 8
 MAX_HANDOFF_ITEM_CHARS = 500
 MAX_HANDOFF_NOTES_CHARS = 4_000
@@ -113,6 +118,27 @@ class ContextProvenance:
 
 
 @dataclass(frozen=True, slots=True)
+class SkillCatalogEntry:
+    name: str
+    description: str
+    locator: str
+    digest: str
+    source: str
+    trust: str
+    status: str
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SkillCatalog:
+    schema_version: int
+    entries: tuple[SkillCatalogEntry, ...]
+    truncated_count: int
+    invalid_count: int
+    digest: str
+
+
+@dataclass(frozen=True, slots=True)
 class ContextPack:
     id: str
     schema_version: int
@@ -122,6 +148,7 @@ class ContextPack:
     constraints: tuple[str, ...]
     sources: tuple[ContextSource, ...]
     handoff: dict[str, Any] | None
+    skill_catalog: SkillCatalog
     source_digest: str
     provenance: ContextProvenance
 
@@ -163,35 +190,178 @@ def _repository_instruction_sources(
                 trust="repository_untrusted",
             )
         )
-        # Reserve two slots for the issue and policy, one optional handoff, and
-        # the bounded project-skill index.
-        if len(sources) >= MAX_CONTEXT_SOURCES - 3 - MAX_PROJECT_SKILLS:
+        # Reserve two slots for the issue and policy, one optional handoff, one
+        # skill-catalog binding, and one incremental PR-event batch.
+        if len(sources) >= MAX_CONTEXT_SOURCES - 5:
             break
     return tuple(sources)
 
 
-def _repository_skill_sources(worktree: Path) -> tuple[ContextSource, ...]:
+def _bounded_skill_text(value: str, limit: int) -> str:
+    without_controls = "".join(
+        "" if ord(character) < 32 or ord(character) == 127 else character
+        for character in value
+    )
+    cleaned = " ".join(without_controls.split())
+    return cleaned[:limit]
+
+
+def _frontmatter_scalar(value: str) -> str | None:
+    scalar = value.strip()
+    if not scalar or scalar[0] in "[{@&*!|>":
+        return None
+    if scalar.startswith('"'):
+        try:
+            decoded = json.loads(scalar)
+        except json.JSONDecodeError:
+            return None
+        return decoded if isinstance(decoded, str) else None
+    if scalar.startswith("'"):
+        if len(scalar) < 2 or not scalar.endswith("'"):
+            return None
+        return scalar[1:-1].replace("''", "'")
+    return scalar
+
+
+def _skill_metadata(content: str) -> tuple[str, str, str]:
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return "", "", "missing_frontmatter"
+    closing = next(
+        (
+            index
+            for index, line in enumerate(lines[1:101], start=1)
+            if line.strip() == "---"
+        ),
+        0,
+    )
+    if not closing:
+        return "", "", "unterminated_frontmatter"
+    metadata: dict[str, str] = {}
+    for line in lines[1:closing]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line[:1].isspace() or ":" not in line:
+            return "", "", "unsupported_frontmatter"
+        key, raw = line.split(":", 1)
+        key = key.strip().casefold()
+        if key not in {"name", "description"}:
+            continue
+        if key in metadata:
+            return "", "", "duplicate_metadata"
+        scalar = _frontmatter_scalar(raw)
+        if scalar is None:
+            return "", "", "unsupported_metadata_value"
+        metadata[key] = scalar
+    name = _bounded_skill_text(metadata.get("name", ""), MAX_SKILL_NAME_CHARS)
+    description = _bounded_skill_text(
+        metadata.get("description", ""), MAX_SKILL_DESCRIPTION_CHARS
+    )
+    if not name or not description:
+        return "", "", "missing_name_or_description"
+    return name, description, ""
+
+
+def _repository_skill_catalog(worktree: Path) -> SkillCatalog:
     root = worktree.resolve()
     skill_root = root / ".agents" / "skills"
     if not skill_root.is_dir():
-        return ()
+        empty = {
+            "schema_version": 1,
+            "entries": (),
+            "truncated_count": 0,
+            "invalid_count": 0,
+        }
+        return SkillCatalog(**empty, digest=_digest(empty))
 
-    sources: list[ContextSource] = []
-    for path in sorted(skill_root.glob("*/SKILL.md")):
+    candidates = sorted(
+        skill_root.glob("*/SKILL.md"),
+        key=lambda path: path.relative_to(root).as_posix().casefold(),
+    )
+    entries: list[SkillCatalogEntry] = []
+    for path in candidates[:MAX_PROJECT_SKILLS]:
+        locator = path.relative_to(root).as_posix()
         resolved = path.resolve()
         if not resolved.is_relative_to(root) or not resolved.is_file():
+            entries.append(
+                SkillCatalogEntry(
+                    name="",
+                    description="",
+                    locator=locator,
+                    digest=_digest({"locator": locator, "status": "outside_workspace"}),
+                    source="repository",
+                    trust="repository_untrusted",
+                    status="invalid",
+                    reason="outside_workspace",
+                )
+            )
             continue
-        sources.append(
-            ContextSource(
-                kind="repository_guidance",
-                locator=resolved.relative_to(root).as_posix(),
-                digest=_file_digest(resolved),
+        try:
+            size = resolved.stat().st_size
+            with resolved.open("rb") as handle:
+                file_bytes = handle.read(
+                    (MAX_SKILL_FILE_BYTES + 1)
+                    if size <= MAX_SKILL_FILE_BYTES
+                    else (MAX_SKILL_METADATA_BYTES + 1)
+                )
+        except OSError:
+            size = -1
+            file_bytes = b""
+        metadata_bytes = file_bytes[: MAX_SKILL_METADATA_BYTES + 1]
+        bounded_fingerprint = _digest(
+            {
+                "locator": locator,
+                "size": size,
+                "prefix_sha256": hashlib.sha256(metadata_bytes).hexdigest(),
+            }
+        )
+        if size < 0:
+            name, description, reason = "", "", "unreadable"
+        elif size > MAX_SKILL_FILE_BYTES or len(file_bytes) > MAX_SKILL_FILE_BYTES:
+            name, description, reason = "", "", "skill_file_too_large"
+        else:
+            try:
+                file_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                name, description, reason = "", "", "invalid_utf8"
+            else:
+                content = metadata_bytes.decode("utf-8", errors="ignore")
+                name, description, reason = _skill_metadata(content)
+                if (
+                    reason == "unterminated_frontmatter"
+                    and len(metadata_bytes) > MAX_SKILL_METADATA_BYTES
+                ):
+                    reason = "metadata_too_large"
+        entries.append(
+            SkillCatalogEntry(
+                name=name,
+                description=description,
+                locator=locator,
+                digest=(
+                    hashlib.sha256(file_bytes).hexdigest()
+                    if not reason
+                    else bounded_fingerprint
+                ),
+                source="repository",
                 trust="repository_untrusted",
+                status="valid" if not reason else "invalid",
+                reason=reason,
             )
         )
-        if len(sources) >= MAX_PROJECT_SKILLS:
-            break
-    return tuple(sources)
+    invalid_count = sum(entry.status == "invalid" for entry in entries)
+    material = {
+        "schema_version": 1,
+        "entries": tuple(asdict(entry) for entry in entries),
+        "truncated_count": max(0, len(candidates) - len(entries)),
+        "invalid_count": invalid_count,
+    }
+    return SkillCatalog(
+        schema_version=1,
+        entries=tuple(entries),
+        truncated_count=material["truncated_count"],
+        invalid_count=invalid_count,
+        digest=_digest(material),
+    )
 
 
 def compact_checkpoint(checkpoint: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -289,6 +459,7 @@ def build_context_pack(
         }
     )
     handoff = compact_checkpoint(previous_checkpoint)
+    skill_catalog = _repository_skill_catalog(worktree)
     source_values = [
         ContextSource(
             kind="github_issue",
@@ -304,8 +475,16 @@ def build_context_pack(
             trust="operator_trusted",
         ),
         *_repository_instruction_sources(worktree, policy),
-        *_repository_skill_sources(worktree),
     ]
+    if skill_catalog.entries or skill_catalog.truncated_count:
+        source_values.append(
+            ContextSource(
+                kind="repository_skill_catalog",
+                locator=".agents/skills",
+                digest=skill_catalog.digest,
+                trust="repository_untrusted",
+            )
+        )
     if handoff is not None:
         source_values.append(
             ContextSource(
@@ -353,6 +532,7 @@ def build_context_pack(
         constraints=constraints,
         sources=sources,
         handoff=handoff,
+        skill_catalog=skill_catalog,
         source_digest=source_digest,
         provenance=ContextProvenance(
             run_id=run_id,
@@ -478,7 +658,7 @@ def ready_checkpoint(
         "Submit only through RepoSteward's explicit reviewed submission gate.",
     )
     return {
-        "schema_version": CONTEXT_SCHEMA_VERSION,
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "work_item_id": context.work_item_id,
         "run_id": context.provenance.run_id,
         "context_pack_id": context.id,
@@ -504,7 +684,7 @@ def running_checkpoint(
     next_action: str,
 ) -> dict[str, Any]:
     return {
-        "schema_version": CONTEXT_SCHEMA_VERSION,
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "work_item_id": context.work_item_id,
         "run_id": context.provenance.run_id,
         "context_pack_id": context.id,
@@ -560,7 +740,7 @@ def review_checkpoint(
     )
     decisions = tuple(previous.get("decisions", ()))
     payload: dict[str, Any] = {
-        "schema_version": CONTEXT_SCHEMA_VERSION,
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "work_item_id": str(work_item.get("id", "")),
         "run_id": str(harness_run.get("run_id", "")),
         "context_pack_id": str(metadata.get("id", "")),
@@ -627,7 +807,7 @@ def failed_checkpoint(
     if not isinstance(tests_observed, (list, tuple)):
         tests_observed = ()
     return {
-        "schema_version": CONTEXT_SCHEMA_VERSION,
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "work_item_id": context.work_item_id,
         "run_id": context.provenance.run_id,
         "context_pack_id": context.id,
@@ -646,8 +826,15 @@ def failed_checkpoint(
 
 
 def portable_bundle(raw: dict[str, Any]) -> dict[str, Any]:
+    context_pack = raw["context_pack"]
+    context_version = (
+        int(context_pack.get("schema_version", 0))
+        if isinstance(context_pack, dict)
+        else 0
+    )
+    bundle_version = 1 if context_version == 1 else BUNDLE_SCHEMA_VERSION
     bundle = {
-        "bundle_schema_version": BUNDLE_SCHEMA_VERSION,
+        "bundle_schema_version": bundle_version,
         "work_item": raw["work_item"],
         "harness_run": raw["harness_run"],
         "context_metadata": raw["context_metadata"],

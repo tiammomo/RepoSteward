@@ -418,10 +418,17 @@ RepoSteward 使用 `.agents/skills/<name>/SKILL.md` 保存可跨 Coding Harness 
 提供的 `reposteward-maintainer` skill 覆盖 Issue 审核、聚焦 PR、CI/Reviewer 跟进和上下文交接；
 状态机、凭据隔离、内容摘要、验证与 GitHub 公开写入仍由代码强制执行，不下放给提示词。
 
-Context Pack 只记录最多 8 个项目 skill 的路径和 SHA-256 指纹，不复制完整正文。Harness 在确有
-需要时从工作区读取对应 skill，因此切换 Codex、Claude Code 或 DeepSeek 等实现时可以共享流程，
-又不会让每次调用承担全部 skill 的上下文成本。仓库 skill 与其他仓库文本一样按不可信输入处理，
-不能放宽凭据、网络或公开写入边界。
+Context Pack v2 先建立最多 24 项的轻量技能目录，只保存经过清洗和长度限制的 `name`、
+`description`、仓库相对路径、状态和内容指纹，不复制完整正文。目录会显式报告无效项和被截断的
+数量；Harness 先按任务语义选择少量相关技能，再从工作区读取其完整 `SKILL.md`。因此切换 Codex、
+Claude Code 或 DeepSeek 等实现时可以共享流程，又不会让每次调用承担全部技能正文的上下文成本。
+超过目录上限时 Harness 会继续检查 `.agents/skills`，不会把“未进入目录”等同于“不存在”。
+
+技能元数据和正文都属于仓库不可信输入。RepoSteward 不读取越出工作区的链接，frontmatter 最多
+扫描 8 KiB，单个技能文件上限为 1 MiB；Prompt 中的目录值会保持在 JSON 边界内，技能不能放宽
+凭据、网络或公开写入门禁。
+历史 Context Pack v1 与 Bundle v1 仍可严格校验和导入，新生成的文档使用 Context Pack/Bundle v2，
+Checkpoint 保持独立的 v1 协议。
 
 ## 提交与跟进
 
