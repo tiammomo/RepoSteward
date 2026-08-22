@@ -5,6 +5,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .capacity import effective_capacity_limit
 from .config import AppConfig, RepositoryPolicy
 from .models import VerificationResult
 
@@ -112,8 +113,12 @@ def enforce_change_policy(
     summary = summarize_diff(worktree, base_ref)
     if not summary.files:
         raise PolicyError("agent produced no repository changes")
-    file_limit = repository.max_files_changed or config.safety.max_files_changed
-    line_limit = repository.max_diff_lines or config.safety.max_diff_lines
+    file_limit = effective_capacity_limit(
+        config.safety.max_files_changed, repository.max_files_changed
+    )
+    line_limit = effective_capacity_limit(
+        config.safety.max_diff_lines, repository.max_diff_lines
+    )
     if len(summary.files) > file_limit:
         raise PolicyError(
             f"change touches {len(summary.files)} files; policy limit is {file_limit}"

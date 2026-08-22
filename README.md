@@ -150,6 +150,32 @@ API 验证当前身份确实拥有 push 权限，并继续禁止直接使用默�
 旧配置显式指定 `state_dir` 时保持原有工作区布局。项目层不能覆盖用户层的运行目录、GitHub 身份、Agent executable 或 Runner
 image；项目安全设置只能收紧用户限额和默认禁止路径，不能静默放宽它们。
 
+### 并发与变更规模
+
+默认情况下，每个仓库最多同时保留 4 个由当前 GitHub 账号创建的 open PR；Draft 和 Ready 都计入，
+其他贡献者、closed 与 merged PR 不计入。容量只阻止创建或重新打开会增加 WIP 的 PR，不阻止向已有
+PR 推送 repair、响应 Review 或重新验证。提交前会重新完整分页读取 GitHub；事实读取失败时不执行
+push 或创建 PR，也不会调用 Harness。
+
+用户可以提高本机容量，项目或单个仓库只能进一步收紧。默认单个变更最多涉及 40 个文件和 2,000 行
+diff；高风险路径、隔离验证、Review 和身份门禁不会因容量提高而放宽：
+
+```toml
+[safety]
+max_active_pull_requests = 8
+max_files_changed = 80
+max_diff_lines = 5000
+
+[repositories."owner/repository"]
+max_active_pull_requests = 6
+max_files_changed = 60
+max_diff_lines = 3000
+```
+
+上述配置的实际仓库上限为 6 个 PR、60 个文件和 3,000 行；仓库值即使高于用户值，也不能突破用户
+上限。所有容量值都必须是正整数。容量门禁用于控制并行负担，不替代“一个 PR 只解决一个清晰问题”
+的范围审查。
+
 ## 准备 Issue 草稿
 
 RepoSteward 可以在本地生成结构化 Markdown，并只读搜索相似 Issue：

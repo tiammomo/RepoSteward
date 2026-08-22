@@ -34,8 +34,9 @@ blocked_labels = [
 ]
 
 [safety]
-max_files_changed = 18
-max_diff_lines = 700
+max_active_pull_requests = 4
+max_files_changed = 40
+max_diff_lines = 2000
 require_verification = true
 draft_pull_requests = true
 forbidden_paths = [".github/workflows/", ".git/", ".env", "credentials", "secrets"]
