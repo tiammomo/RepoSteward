@@ -194,6 +194,27 @@ class VerificationSandboxTests(unittest.TestCase):
                         (worktree / name).read_text(encoding="utf-8"),
                     )
 
+    def test_tracked_environment_template_accepts_explicit_placeholders(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            _repository(worktree)
+            template = worktree / ".env.example"
+            template.write_text(
+                "AUTH_TOKEN=replace-with-a-local-token\n"
+                "RATE_LIMIT_API_KEY_PER_MINUTE=600\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "add", ".env.example"], cwd=worktree, check=True)
+
+            DockerVerifier._copy_workspace(worktree, root / "snapshot")
+
+            self.assertEqual(
+                (root / "snapshot" / ".env.example").read_text(encoding="utf-8"),
+                template.read_text(encoding="utf-8"),
+            )
+
     def test_untracked_environment_template_is_excluded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -219,6 +240,65 @@ class VerificationSandboxTests(unittest.TestCase):
 
             with self.assertRaisesRegex(VerificationError, "non-empty sensitive field"):
                 DockerVerifier._copy_workspace(worktree, root / "snapshot")
+
+    def test_environment_template_rejects_invalid_sensitive_placeholders(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index, value in enumerate(
+                (
+                    "replace-with-",
+                    "replace-with-UPPER",
+                    "replace-with-token.value",
+                    '"replace-with-a-token"',
+                    "replace-with-" + "a" * 129,
+                )
+            ):
+                with self.subTest(value=value):
+                    worktree = root / f"invalid-placeholder-{index}"
+                    worktree.mkdir()
+                    _repository(worktree)
+                    (worktree / ".env.example").write_text(
+                        f"API_KEY={value}\n", encoding="utf-8"
+                    )
+                    subprocess.run(
+                        ["git", "add", ".env.example"], cwd=worktree, check=True
+                    )
+
+                    with self.assertRaisesRegex(
+                        VerificationError, "non-empty sensitive field"
+                    ):
+                        DockerVerifier._copy_workspace(
+                            worktree, root / f"invalid-placeholder-snapshot-{index}"
+                        )
+
+    def test_terminal_sensitive_field_variants_still_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index, name in enumerate(
+                (
+                    "AUTH_TOKEN",
+                    "CLIENT_SECRET",
+                    "AWS_SECRET_ACCESS_KEY",
+                    "PASSWORD_HASH",
+                )
+            ):
+                with self.subTest(name=name):
+                    worktree = root / f"sensitive-name-{index}"
+                    worktree.mkdir()
+                    _repository(worktree)
+                    (worktree / ".env.example").write_text(
+                        f"{name}=real-value\n", encoding="utf-8"
+                    )
+                    subprocess.run(
+                        ["git", "add", ".env.example"], cwd=worktree, check=True
+                    )
+
+                    with self.assertRaisesRegex(
+                        VerificationError, "non-empty sensitive field"
+                    ):
+                        DockerVerifier._copy_workspace(
+                            worktree, root / f"sensitive-name-snapshot-{index}"
+                        )
 
     def test_tracked_environment_template_symlink_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
