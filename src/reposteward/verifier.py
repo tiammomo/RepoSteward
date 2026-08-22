@@ -46,15 +46,17 @@ SUPPORTED_ENV_TEMPLATE_NAMES = frozenset(
     {".env.example", ".env.sample", ".env.template"}
 )
 MAX_ENV_TEMPLATE_BYTES = 64 * 1024
+MAX_ENV_PLACEHOLDER_CHARS = 128
 ENV_ASSIGNMENT = re.compile(
     r"(?:export\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>.*)"
 )
 SENSITIVE_ENV_NAME = re.compile(
-    r"(?:^|_)(?:ACCESS_KEY|API_KEY|AUTH|CREDENTIALS?|PASS(?:WORD|WD)?|"
-    r"PRIVATE_KEY|SECRET|TOKEN)(?:_|$)",
+    r"(?:^|_)(?:ACCESS_KEY(?:_ID)?|API_KEY|AUTH|CREDENTIALS?|PASS(?:WORD|WD)?|"
+    r"PRIVATE_KEY|SECRET(?:_KEY)?|TOKEN)(?:_(?:HASH|VALUE))?$",
     re.IGNORECASE,
 )
 EMPTY_ENV_VALUE = re.compile(r"(?:|''|\"\")(?:\s+#.*)?")
+SAFE_ENV_PLACEHOLDER = re.compile(r"replace-with-[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
 class VerificationError(RuntimeError):
@@ -224,9 +226,17 @@ class DockerVerifier:
                     "tracked environment template contains an unsupported line "
                     f"at {relative}:{line_number}"
                 )
-            if SENSITIVE_ENV_NAME.search(
-                assignment.group("name")
-            ) and not EMPTY_ENV_VALUE.fullmatch(assignment.group("value")):
+            sensitive_value = assignment.group("value")
+            safe_placeholder = len(
+                sensitive_value
+            ) <= MAX_ENV_PLACEHOLDER_CHARS and SAFE_ENV_PLACEHOLDER.fullmatch(
+                sensitive_value
+            )
+            if (
+                SENSITIVE_ENV_NAME.search(assignment.group("name"))
+                and not EMPTY_ENV_VALUE.fullmatch(sensitive_value)
+                and not safe_placeholder
+            ):
                 raise VerificationError(
                     "tracked environment template contains a non-empty sensitive "
                     f"field at {relative}:{line_number}"
