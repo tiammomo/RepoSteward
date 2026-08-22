@@ -62,6 +62,26 @@ class CliSetupTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["github_login"], "alice")
 
+    def test_init_can_explicitly_allow_issue_self_review(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "user.toml"
+
+            with redirect_stdout(io.StringIO()):
+                exit_code = main(
+                    [
+                        "init",
+                        "--path",
+                        str(path),
+                        "--login",
+                        "alice",
+                        "--allow-issue-self-review",
+                    ]
+                )
+            config = load_config(path)
+
+        self.assertEqual(exit_code, 0)
+        self.assertFalse(config.issue_review.require_distinct_reviewer)
+
     def test_issue_draft_is_local_only(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -45,6 +45,11 @@ def _parser() -> argparse.ArgumentParser:
         choices=("user", "organization"),
         default="user",
     )
+    initialize.add_argument(
+        "--allow-issue-self-review",
+        action="store_true",
+        help="allow a single maintainer to review and promote their own Issue proposal",
+    )
     initialize.add_argument("--force", action="store_true")
 
     repo = subparsers.add_parser("repo", help="manage project repositories")
@@ -366,6 +371,7 @@ def main(argv: list[str] | None = None) -> int:
                     issue_project_owner=args.issue_project_owner,
                     issue_project_number=args.issue_project_number,
                     issue_project_owner_type=args.issue_project_owner_type,
+                    require_distinct_reviewer=not args.allow_issue_self_review,
                     force=args.force,
                 )
             )

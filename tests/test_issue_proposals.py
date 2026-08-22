@@ -104,7 +104,13 @@ def proposal(
 
 
 class IssueProposalTests(unittest.TestCase):
-    def _pipeline(self, root: Path, *, login: str = "reviewer") -> Pipeline:
+    def _pipeline(
+        self,
+        root: Path,
+        *,
+        login: str = "reviewer",
+        require_distinct_reviewer: bool = True,
+    ) -> Pipeline:
         path = root / "config.toml"
         path.write_text(
             f"""config_version = 1
@@ -119,7 +125,7 @@ git_email = {f"{login}@example.com"!r}
 project_owner = "example"
 project_number = 1
 project_owner_type = "user"
-require_distinct_reviewer = true
+require_distinct_reviewer = {str(require_distinct_reviewer).lower()}
 [repositories."owner/repo"]
 """,
             encoding="utf-8",
@@ -269,6 +275,41 @@ require_distinct_reviewer = true
                     review_digest=report["review_digest"],
                     duplicates_reviewed=True,
                 )
+
+    def test_single_maintainer_can_self_approve_when_explicitly_configured(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            pipeline = self._pipeline(
+                Path(directory),
+                login="author",
+                require_distinct_reviewer=False,
+            )
+            client = FakeProposalClient(proposal(creator="author"), login="author")
+            pipeline.github = client
+            report = pipeline.issue_proposal_review(
+                "PVTI_example", repository="owner/repo"
+            )
+            with (
+                patch.dict("os.environ", {"REPOSTEWARD_ENABLE_ISSUE_PROMOTION": "1"}),
+                patch.object(
+                    pipeline,
+                    "_authenticated_publication_client",
+                    return_value=client,
+                ),
+            ):
+                published = pipeline.promote_issue_proposal(
+                    "PVTI_example",
+                    repository="owner/repo",
+                    reviewed_by="author",
+                    review_digest=report["review_digest"],
+                    duplicates_reviewed=True,
+                )
+
+        self.assertFalse(report["distinct_reviewer_required"])
+        self.assertTrue(published["public_write"])
+        self.assertEqual(published["issue_number"], 42)
+        self.assertEqual(client.converted, 1)
 
 
 if __name__ == "__main__":

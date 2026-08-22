@@ -49,6 +49,12 @@ Issue 写权限；私有仓库还需要相应的 `repo` 访问。实际权限应
 - `reposteward-issue-review`：保护只读 Project token；
 - `reposteward-issue-publishing`：配置 required reviewers，并只允许受保护的默认分支部署。
 
+RepoSteward 默认使用 `require_distinct_reviewer = true`。只有单维护者在可信用户配置中显式设为
+`false` 时，提案创建者才可以同时作为 `--reviewed-by`；项目级配置无法覆盖 `[issue_review]`。
+当前附带 workflow 每次都生成默认配置，因此固定用于团队第二人模式。单维护者自审应使用本地受控
+CLI，而不是移除 workflow 的 Environment 保护。关闭 distinct reviewer 不会关闭最新 digest、
+重复项确认、安全扫描、发布身份校验、显式环境开关或 promotion 的独立调用。
+
 同时为默认分支配置 Ruleset，要求 PR、CI 和 Code Owner review。不要允许任意功能分支直接运行
 带上述 secrets 的 workflow。
 

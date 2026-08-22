@@ -4,7 +4,10 @@ RepoSteward 采用 Issue 驱动、聚焦 PR、自动检查和人工 Review 的�
 请先创建或认领 Issue，再开始实现。
 
 多人共同准备 Issue 时，先使用团队配置的 GitHub Project Draft Issue 作为线上提案。提案在转换为
-正式 Issue 前必须重新检查最新正文、潜在重复项和安全风险，并由提案创建者之外的 reviewer 确认。
+正式 Issue 前必须重新检查最新正文、潜在重复项和安全风险。默认要求提案创建者之外的 reviewer
+确认；单维护者仓库只有在可信用户配置显式设置 `require_distinct_reviewer = false` 时才允许创建者
+自行审核并转换。项目级配置不能降低这一要求。两种模式都不能绕过 review digest、重复项确认、
+安全扫描、GitHub 身份校验、环境开关或独立的 promotion 调用。
 
 ## 开始前
 

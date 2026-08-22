@@ -28,7 +28,10 @@ opens pull requests only after repository-specific gates and local human review.
   gates, not ranking hints.
 - Never automate security reports or mass comments. Repository Issue creation must
   pass through the configured online Project draft, a fresh duplicate/security
-  review digest, a distinct reviewer, and the separate promotion gate.
+  review digest, the reviewer policy from trusted user configuration, and the
+  separate promotion gate. Distinct review remains the default; self-review is
+  allowed only when `issue_review.require_distinct_reviewer = false` is explicitly
+  set in the user-owned configuration for a single-maintainer repository.
 - Keep public-repository tests inside the hardened verifier container.
 
 For Issue triage, implementation handoff, PR preparation, and CI/reviewer follow-up,
