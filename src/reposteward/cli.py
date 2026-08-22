@@ -168,6 +168,7 @@ def _parser() -> argparse.ArgumentParser:
     logs.add_argument("run_id")
     logs.add_argument(
         "--command",
+        dest="log_command",
         type=int,
         default=None,
         help="one-based verification command number",
@@ -515,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:
             _json(
                 pipeline.run_logs(
                     args.run_id,
-                    command_number=args.command,
+                    command_number=args.log_command,
                     tail_chars=args.tail_chars,
                 )
             )
