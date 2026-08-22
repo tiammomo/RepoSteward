@@ -61,6 +61,11 @@ local draft ── explicit stage ──► Project Draft Issue
 - Runner 只安装依赖并执行已允许的验证命令，不接触宿主凭据。
 - 人类审阅者决定是否发布，并对最终提交负责。
 
+Runner 不把宿主工作区直接以读写方式交给容器。每次验证先创建一份临时快照，
+Bootstrap 和后续无网络命令共享该快照及专用 HOME/工具缓存，因此依赖只安装一次，
+但宿主 `.venv`、`node_modules` 和其他本地环境不会被替换。Git 元数据单独只读挂载；
+快照在成功或失败后都会清理，运行目录只保留有界日志和清理清单供审计。
+
 ## 仓库级 PR 组合视图
 
 单个 run 的 Checkpoint 不能回答多个开放 PR 是否修改同一批文件。Portfolio Inspector 因此从
