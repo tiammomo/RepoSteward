@@ -41,7 +41,6 @@ include = [
   "/tests",
   "/examples",
   "/README.md",
-  "/README.zh-CN.md",
   "/LICENSE",
   "/reposteward.example.toml",
   "/pyproject.toml",
