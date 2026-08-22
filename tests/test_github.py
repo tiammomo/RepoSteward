@@ -187,6 +187,41 @@ class GitHubOwnerReviewPolicyTests(unittest.TestCase):
         self.assertEqual(repository.owner_login, "owner")
 
 
+class GitHubBranchHeadTests(unittest.TestCase):
+    def test_branch_head_returns_an_exact_sha_and_encodes_slashes(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        with patch.object(
+            client,
+            "_request",
+            return_value=({"commit": {"sha": "a" * 40}}, None),
+        ) as request:
+            sha = client.branch_head_sha("owner/repo", "alice/feat/example")
+
+        self.assertEqual(sha, "a" * 40)
+        request.assert_called_once_with(
+            "GET", "/repos/owner/repo/branches/alice%2Ffeat%2Fexample"
+        )
+
+    def test_missing_branch_is_empty_and_malformed_sha_fails_closed(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        with patch.object(
+            client,
+            "_request",
+            side_effect=GitHubError("missing", status_code=404),
+        ):
+            self.assertEqual(client.branch_head_sha("owner/repo", "missing"), "")
+
+        with (
+            patch.object(
+                client,
+                "_request",
+                return_value=({"commit": {"sha": "not-a-sha"}}, None),
+            ),
+            self.assertRaisesRegex(GitHubError, "valid head SHA"),
+        ):
+            client.branch_head_sha("owner/repo", "main")
+
+
 class GitHubCompetingWorkTests(unittest.TestCase):
     def test_claim_comment_and_linked_pull_request_are_blockers(self) -> None:
         client = GitHubClient(GitHubConfig(), token="test-token")

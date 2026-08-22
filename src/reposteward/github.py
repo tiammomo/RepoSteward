@@ -967,6 +967,22 @@ class GitHubClient:
             ],
         }
 
+    def branch_head_sha(self, full_name: str, branch: str) -> str:
+        """Return one exact remote branch head, or empty when it does not exist."""
+        if not branch:
+            raise ValueError("branch must not be empty")
+        encoded = urllib.parse.quote(branch, safe="")
+        try:
+            payload, _ = self._request("GET", f"/repos/{full_name}/branches/{encoded}")
+        except GitHubError as exc:
+            if exc.status_code == 404:
+                return ""
+            raise
+        sha = str(((payload.get("commit") or {}).get("sha")) or "")
+        if len(sha) != 40 or any(value not in "0123456789abcdef" for value in sha):
+            raise GitHubError("GitHub branch response omitted a valid head SHA")
+        return sha
+
     def check_runs(self, upstream: str, ref: str) -> tuple[dict[str, Any], ...]:
         values = self._paginated_rest_values(
             f"/repos/{upstream}/commits/{urllib.parse.quote(ref, safe='')}/check-runs",

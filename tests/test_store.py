@@ -341,6 +341,33 @@ class StoreTests(unittest.TestCase):
             self.assertIsNotNone(table)
             self.assertIsNotNone(unique_stage)
 
+    def test_version_fourteen_database_receives_publication_attempt_audit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute("DROP TABLE publication_attempts")
+                connection.execute("PRAGMA user_version=14")
+
+            migrated = Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                table = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE name='publication_attempts'"
+                ).fetchone()
+                unique_stage = connection.execute(
+                    """
+                    SELECT name FROM sqlite_master
+                    WHERE type='index'
+                      AND name='publication_attempts_stage_once'
+                    """
+                ).fetchone()
+
+            self.assertEqual(migrated.schema_version(), SCHEMA_VERSION)
+            self.assertIsNotNone(table)
+            self.assertIsNotNone(unique_stage)
+
     def test_version_ten_database_receives_portfolio_dependency_audit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"
@@ -1100,6 +1127,98 @@ class StoreTests(unittest.TestCase):
         )
         by_category = {value["category"]: value for value in statistics}
         self.assertEqual(by_category["merge_execution_audit"]["records"], 2)
+
+    def test_publication_attempts_are_bounded_append_only_and_recoverable(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            run_id = store.start_run("owner/repo", 7, "publication")
+            lease_one = store.acquire_run_lease("issue:owner/repo#7", owner="worker-1")
+            identity = {
+                "attempt_id": "attempt-1",
+                "step_id": "step-1",
+                "run_id": run_id,
+                "repository": "Owner/Repo",
+                "issue_number": 7,
+                "actor": "alice",
+                "action": "push",
+                "destination": "Owner/Repo",
+                "branch": "alice/feat/example",
+                "head_sha": "a" * 40,
+                "base_branch": "main",
+                "expected_remote_sha": "b" * 40,
+                "target_pull_number": 12,
+            }
+            applying = store.append_publication_attempt(
+                **identity,
+                stage="applying",
+                outcome="pending",
+                lease=lease_one,
+                payload={},
+            )
+            pending = store.incomplete_publication_attempts(run_id)
+            store.release_run_lease(lease_one)
+            lease_two = store.acquire_run_lease("issue:owner/repo#7", owner="worker-2")
+            completed = store.append_publication_attempt(
+                **identity,
+                stage="completed",
+                outcome="reconciled",
+                lease=lease_two,
+                payload={
+                    "public_write": False,
+                    "remote_head_sha": "a" * 40,
+                    "reconciliation": "remote_branch_read",
+                },
+            )
+            records = store.publication_attempts(run_id)
+            remaining = store.incomplete_publication_attempts(run_id)
+            action_completed = store.publication_action_completed(
+                run_id, action="push", target_pull_number=12
+            )
+            other_pull_completed = store.publication_action_completed(
+                run_id, action="push", target_pull_number=13
+            )
+            statistics = {
+                value["category"]: value
+                for value in store.storage_statistics(repository="owner/repo")
+            }
+
+            with self.assertRaisesRegex(ValueError, "unsupported fields"):
+                store.append_publication_attempt(
+                    **{**identity, "step_id": "step-secret"},
+                    stage="applying",
+                    outcome="pending",
+                    lease=lease_two,
+                    payload={"token": "must-not-be-stored"},
+                )
+            with self.assertRaisesRegex(StoreError, "already contains"):
+                store.append_publication_attempt(
+                    **identity,
+                    stage="completed",
+                    outcome="succeeded",
+                    lease=lease_two,
+                    payload={"public_write": True},
+                )
+            with self.assertRaisesRegex(StoreError, "lease is stale"):
+                store.append_publication_attempt(
+                    **{**identity, "step_id": "step-stale"},
+                    stage="applying",
+                    outcome="pending",
+                    lease=lease_one,
+                    payload={},
+                )
+
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(remaining, [])
+        self.assertEqual(applying["lease_generation"], 1)
+        self.assertEqual(completed["lease_generation"], 2)
+        self.assertEqual(
+            [value["stage"] for value in records], ["applying", "completed"]
+        )
+        self.assertTrue(action_completed)
+        self.assertFalse(other_pull_completed)
+        self.assertEqual(statistics["publication_attempt_audit"]["records"], 2)
 
     def test_merge_decision_audit_rejects_tampered_material(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

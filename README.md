@@ -449,6 +449,11 @@ REPOSTEWARD_ENABLE_SUBMIT=1 \
 默认创建 Draft PR。`--reviewed-by` 必须等于用户配置中的 GitHub login，API token 的实际登录
 身份也必须一致。旧的 `STARFIX_ENABLE_SUBMIT=1` 暂时保留兼容读取。
 
+`submit` 会在 push、创建、重开或更新已有 PR 之前追加一个绑定 run、branch、head、目标仓库和
+操作者的持久意图，并在动作返回后追加规范化结果。若进程在远端成功后中断，下一次调用会先读取
+远端分支或 PR 对账：精确匹配时只补写本地状态，确认未执行时才继续，身份或 head 冲突时失败关闭。
+审计只保存稳定标识、摘要和有界结果，不保存 token、PR 完整正文或目标仓库内容。
+
 提交后可以增量查看变化：
 
 ```bash
@@ -566,7 +571,7 @@ uv run reposteward storage gc --repo owner/repository
 submitted run 或远端引用证明可恢复；活跃、未知、脏、未推送、路径异常和符号链接工作区都会保留。
 原始 GitHub 事件正文没有默认期限；只有仓库显式配置 `event_payload_retention_days` 后，超过期限且
 每个 run 水位都已覆盖的正文才进入候选。计划会列出每个候选、预计可回收字节及保留原因汇总，并
-始终保护事件索引、Checkpoint、Merge Decision、Merge Execution 和 GC 审计。
+始终保护事件索引、Checkpoint、Publication Attempt、Merge Decision、Merge Execution 和 GC 审计。
 
 实际应用需要命令参数和独立环境开关同时存在：
 
