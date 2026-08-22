@@ -234,6 +234,11 @@ uv run reposteward context import handoff.json
 - 不得 push、创建 PR、访问 GitHub 凭据或绕过验证策略；
 - 不支持的 Harness 必须显式失败，不能静默回退到另一个供应商。
 
+适配器还必须声明版本化 `HarnessCapabilities`。控制面只依据能力决定是否使用原生
+session 恢复等可选路径，不根据供应商名称猜测行为。缺少声明、版本未知或状态为
+`unknown` 的能力一律按不支持处理，并使用 Context Pack 等可移植路径安全降级。
+`doctor` 会输出同一份清单，便于接入新 Harness 时审计实际能力。
+
 当前内置适配器为默认的 `codex-cli` 和显式可选的 `codex-sdk`，现有本地提交可通过
 `external-workspace` 路径纳管。SDK 会优先恢复已有 thread；原生 thread 不存在或属于其他
 账号时，从 Context Pack 创建新 thread。Claude Code 和 DeepSeek 适配器仍可作为独立、小范围

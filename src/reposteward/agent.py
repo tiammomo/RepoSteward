@@ -8,7 +8,12 @@ from typing import Any
 
 from .config import AgentConfig
 from .context import ContextPack
-from .harness import HarnessRequest
+from .harness import (
+    SUPPORTED,
+    CapabilitySupport,
+    HarnessCapabilities,
+    HarnessRequest,
+)
 from .models import AgentExecution, AgentMetrics, AgentResult
 from .workspace import sanitized_environment
 
@@ -84,6 +89,13 @@ RESULT_SCHEMA = {
 
 class CodexCliHarness:
     name = "codex-cli"
+    capabilities = HarnessCapabilities(
+        schema_version=1,
+        workspace_write=SUPPORTED,
+        structured_result=SUPPORTED,
+        native_session_resume=CapabilitySupport("unsupported", "ephemeral_process"),
+        usage_metrics=CapabilitySupport("best_effort", "event_stream_optional"),
+    )
 
     def __init__(self, config: AgentConfig) -> None:
         self.config = config

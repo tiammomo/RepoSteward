@@ -7,12 +7,18 @@ from typing import Any
 
 from .config import AppConfig
 from .github import GitHubClient, GitHubError, resolve_authentication
+from .harness import create_harness, harness_capabilities
 from .verifier import DockerVerifier
 
 
 def run_doctor(config: AppConfig) -> tuple[dict[str, Any], bool]:
     report: dict[str, Any] = {
-        "harness": {"name": config.agent.harness},
+        "harness": {
+            "name": config.agent.harness,
+            "capabilities": harness_capabilities(
+                create_harness(config.agent)
+            ).to_dict(),
+        },
         "tools": {},
         "github": {},
         "runner": {},

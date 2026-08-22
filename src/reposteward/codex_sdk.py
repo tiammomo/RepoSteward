@@ -17,7 +17,7 @@ from .agent import (
     build_harness_prompt,
 )
 from .config import AgentConfig
-from .harness import HarnessRequest
+from .harness import SUPPORTED, CapabilitySupport, HarnessCapabilities, HarnessRequest
 from .models import AgentExecution, AgentMetrics, AgentResult
 from .workspace import sanitized_environment
 
@@ -33,6 +33,13 @@ class CodexSdkHarness:
     """Optional adapter for the official Python Codex SDK."""
 
     name = "codex-sdk"
+    capabilities = HarnessCapabilities(
+        schema_version=1,
+        workspace_write=SUPPORTED,
+        structured_result=SUPPORTED,
+        native_session_resume=SUPPORTED,
+        usage_metrics=CapabilitySupport("best_effort", "sdk_usage_optional"),
+    )
 
     def __init__(
         self, config: AgentConfig, *, sdk_module: ModuleType | Any = None
