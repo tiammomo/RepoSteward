@@ -31,6 +31,11 @@ max_diff_lines = 2000
 require_verification = true
 draft_pull_requests = true
 
+# Only the trusted per-user configuration may allow tracked source files under
+# a sensitive directory name. Repository-local configuration cannot add entries.
+[safety.tracked_sensitive_paths]
+"makecindy/cindy" = ["apps/desktop/src/main/secrets/"]
+
 [agent]
 harness = "codex-cli"
 executable = "codex"

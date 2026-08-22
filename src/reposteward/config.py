@@ -12,6 +12,8 @@ from urllib.parse import urlparse
 
 CONFIG_VERSION = 1
 PROJECT_CONFIG_NAMES = (".reposteward.toml", "reposteward.toml", "starfix.toml")
+REPOSITORY_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+SENSITIVE_PATH_NAMES = frozenset({"credentials", "secrets"})
 
 
 class ConfigError(ValueError):
@@ -89,6 +91,14 @@ class SafetyConfig:
         "credentials",
         "secrets",
     )
+    tracked_sensitive_paths: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+    def tracked_sensitive_paths_for(self, repository: str) -> tuple[str, ...]:
+        normalized = repository.casefold()
+        for configured_repository, paths in self.tracked_sensitive_paths:
+            if configured_repository == normalized:
+                return paths
+        return ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,6 +327,11 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
     """Merge layers while keeping identity and execution trust user-owned."""
     result = _merge(user, project)
     if not user:
+        safety = result.get("safety")
+        if isinstance(safety, dict):
+            safety = dict(safety)
+            safety.pop("tracked_sensitive_paths", None)
+            result["safety"] = safety
         return result
 
     # Runtime state and disposable clones belong to the user/machine trust layer.
@@ -412,8 +427,82 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
             if isinstance(values, list):
                 forbidden.extend(str(value) for value in values)
         merged_safety["forbidden_paths"] = list(dict.fromkeys(forbidden))
+        trusted_paths = user_safety.get("tracked_sensitive_paths", {})
+        merged_safety["tracked_sensitive_paths"] = trusted_paths
         result["safety"] = merged_safety
     return result
+
+
+def _tracked_sensitive_paths(
+    value: object,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, dict):
+        raise ConfigError("safety.tracked_sensitive_paths must be a table")
+    configured: dict[str, tuple[str, ...]] = {}
+    for raw_repository, raw_paths in value.items():
+        if not isinstance(raw_repository, str):
+            raise ConfigError(
+                "safety.tracked_sensitive_paths repository names must be strings"
+            )
+        repository = raw_repository.strip()
+        normalized_repository = repository.casefold()
+        if REPOSITORY_NAME.fullmatch(repository) is None:
+            raise ConfigError(
+                "safety.tracked_sensitive_paths repository must use owner/name form: "
+                f"{raw_repository!r}"
+            )
+        if normalized_repository in configured:
+            raise ConfigError(
+                "safety.tracked_sensitive_paths contains a duplicate repository: "
+                f"{repository}"
+            )
+        if not isinstance(raw_paths, list) or not raw_paths:
+            raise ConfigError(
+                "safety.tracked_sensitive_paths entries must be non-empty arrays"
+            )
+        paths: list[str] = []
+        for raw_path in raw_paths:
+            if not isinstance(raw_path, str):
+                raise ConfigError(
+                    "safety.tracked_sensitive_paths values must be strings"
+                )
+            candidate = raw_path.strip().rstrip("/")
+            parts = candidate.split("/")
+            if (
+                not candidate
+                or candidate.startswith("/")
+                or "\\" in candidate
+                or ":" in candidate
+                or any(not part or part in {".", ".."} for part in parts)
+                or any(any(marker in part for marker in "*?[]") for part in parts)
+            ):
+                raise ConfigError(
+                    "safety.tracked_sensitive_paths requires normalized relative "
+                    f"paths: {raw_path!r}"
+                )
+            if len(parts) < 2:
+                raise ConfigError(
+                    "safety.tracked_sensitive_paths refuses a repository-root "
+                    f"sensitive prefix: {raw_path!r}"
+                )
+            folded_parts = tuple(part.casefold() for part in parts)
+            if not any(part in SENSITIVE_PATH_NAMES for part in folded_parts):
+                raise ConfigError(
+                    "safety.tracked_sensitive_paths prefixes must contain a "
+                    f"credentials or secrets component: {raw_path!r}"
+                )
+            if any(part == ".env" or part.startswith(".env.") for part in folded_parts):
+                raise ConfigError(
+                    "safety.tracked_sensitive_paths cannot allow environment files: "
+                    f"{raw_path!r}"
+                )
+            canonical = "/".join(parts)
+            if canonical not in paths:
+                paths.append(canonical)
+        configured[normalized_repository] = tuple(paths)
+    return tuple(sorted(configured.items()))
 
 
 def load_config(
@@ -579,6 +668,9 @@ def load_config(
         draft_pull_requests=_boolean(safety_raw.get("draft_pull_requests"), True),
         forbidden_paths=tuple(
             dict.fromkeys(safety_defaults.forbidden_paths + configured_forbidden)
+        ),
+        tracked_sensitive_paths=_tracked_sensitive_paths(
+            safety_raw.get("tracked_sensitive_paths")
         ),
     )
 

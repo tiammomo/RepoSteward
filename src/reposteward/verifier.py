@@ -122,7 +122,9 @@ class DockerVerifier:
 
         verification_dir = run_dir / "verification" if run_dir is not None else None
         results: list[CommandResult] = []
-        with self._verification_sandbox(worktree, verification_dir) as sandbox:
+        with self._verification_sandbox(
+            worktree, verification_dir, policy=policy
+        ) as sandbox:
             sandbox_worktree, environment_dir, git_dir = sandbox
             if policy.bootstrap_commands:
                 bootstrap = " && ".join(policy.bootstrap_commands)
@@ -185,13 +187,46 @@ class DockerVerifier:
         return tuple(Path(os.fsdecode(raw)) for raw in listing.split(b"\0") if raw)
 
     @staticmethod
-    def _sensitive_path(relative: Path) -> bool:
+    def _environment_path(relative: Path) -> bool:
         return any(
-            part.casefold() in SENSITIVE_SANDBOX_NAMES
-            or part.casefold() == ".env"
-            or part.casefold().startswith(".env.")
+            part.casefold() == ".env" or part.casefold().startswith(".env.")
             for part in relative.parts
         )
+
+    @classmethod
+    def _sensitive_path(cls, relative: Path) -> bool:
+        return any(
+            part.casefold() in SENSITIVE_SANDBOX_NAMES for part in relative.parts
+        ) or cls._environment_path(relative)
+
+    @staticmethod
+    def _is_allowlisted_tracked_sensitive_path(
+        relative: Path, trusted_sensitive_paths: tuple[str, ...]
+    ) -> bool:
+        relative_parts = tuple(part.casefold() for part in relative.parts)
+        return any(
+            relative_parts[: len(prefix_parts)] == prefix_parts
+            for configured in trusted_sensitive_paths
+            if (
+                prefix_parts := tuple(
+                    part.casefold() for part in configured.split("/") if part
+                )
+            )
+        )
+
+    @staticmethod
+    def _validate_allowlisted_sensitive_source(source: Path, relative: Path) -> None:
+        current = source
+        for _part in relative.parts:
+            if current.is_symlink():
+                raise VerificationError(
+                    f"allowlisted tracked sensitive path must be a regular file: {relative}"
+                )
+            current = current.parent
+        if not source.is_file():
+            raise VerificationError(
+                f"allowlisted tracked sensitive path must be a regular file: {relative}"
+            )
 
     @classmethod
     def _is_supported_env_template(cls, relative: Path) -> bool:
@@ -243,7 +278,13 @@ class DockerVerifier:
                 )
 
     @classmethod
-    def _copy_workspace(cls, worktree: Path, target: Path) -> int:
+    def _copy_workspace(
+        cls,
+        worktree: Path,
+        target: Path,
+        *,
+        trusted_sensitive_paths: tuple[str, ...] = (),
+    ) -> int:
         """Copy tracked and non-ignored untracked files without scanning caches."""
         tracked = cls._git_file_list(worktree, "--cached")
         untracked = cls._git_file_list(worktree, "--others", "--exclude-standard")
@@ -259,6 +300,16 @@ class DockerVerifier:
             if cls._sensitive_path(relative):
                 if is_tracked and cls._is_supported_env_template(relative):
                     cls._validate_env_template(worktree / relative, relative)
+                elif (
+                    is_tracked
+                    and not cls._environment_path(relative)
+                    and cls._is_allowlisted_tracked_sensitive_path(
+                        relative, trusted_sensitive_paths
+                    )
+                ):
+                    cls._validate_allowlisted_sensitive_source(
+                        worktree / relative, relative
+                    )
                 elif is_tracked:
                     raise VerificationError(
                         f"tracked sensitive path cannot enter verification: {relative}"
@@ -326,7 +377,11 @@ class DockerVerifier:
 
     @contextmanager
     def _verification_sandbox(
-        self, worktree: Path, verification_dir: Path | None
+        self,
+        worktree: Path,
+        verification_dir: Path | None,
+        *,
+        policy: RepositoryPolicy,
     ) -> Iterator[tuple[Path, Path, Path]]:
         temporary = None
         if verification_dir is None:
@@ -342,7 +397,14 @@ class DockerVerifier:
         common_git_dir: Path | None = None
         try:
             common_git_dir, container_git_dir = self._git_paths(worktree)
-            copied_files = self._copy_workspace(worktree, sandbox_worktree)
+            trusted_sensitive_paths = self.config.safety.tracked_sensitive_paths_for(
+                policy.name
+            )
+            copied_files = self._copy_workspace(
+                worktree,
+                sandbox_worktree,
+                trusted_sensitive_paths=trusted_sensitive_paths,
+            )
             environment_dir.mkdir(parents=True)
             (sandbox_worktree / ".git").write_text(
                 f"gitdir: {container_git_dir}\n", encoding="utf-8"
@@ -355,6 +417,9 @@ class DockerVerifier:
                             "sandbox": "ephemeral_copy",
                             "excluded_untracked_names": sorted(
                                 UNTRACKED_SANDBOX_EXCLUDED_NAMES
+                            ),
+                            "trusted_tracked_sensitive_paths": list(
+                                trusted_sensitive_paths
                             ),
                             "host_workspace_writable": False,
                             "shared_dependency_environment": True,
