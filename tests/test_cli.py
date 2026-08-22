@@ -262,6 +262,28 @@ class CliSetupTests(unittest.TestCase):
         pipeline.ci_failure_analysis.assert_called_once_with("owner/repo", 12)
         self.assertIn('"public_write": false', output.getvalue())
 
+    def test_logs_list_and_tail_are_routed_without_overwriting_command(self) -> None:
+        pipeline = MagicMock()
+        pipeline.run_logs.return_value = {"logs": [], "public_write": False}
+
+        with (
+            patch("reposteward.cli.load_config", return_value=object()),
+            patch("reposteward.cli.Pipeline", return_value=pipeline),
+            redirect_stdout(io.StringIO()),
+        ):
+            list_code = main(["logs", "run-1"])
+            tail_code = main(["logs", "run-1", "--command", "2", "--tail-chars", "321"])
+
+        self.assertEqual(list_code, 0)
+        self.assertEqual(tail_code, 0)
+        self.assertEqual(
+            pipeline.run_logs.call_args_list,
+            [
+                unittest.mock.call("run-1", command_number=None, tail_chars=12000),
+                unittest.mock.call("run-1", command_number=2, tail_chars=321),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
