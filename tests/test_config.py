@@ -114,6 +114,7 @@ cpus = 2
 image = "trusted-runner:latest"
 [storage]
 cache_retention_days = 45
+workspace_retention_days = 60
 max_gc_items = 500
 [context]
 follow_up_max_tokens = 9000
@@ -143,6 +144,7 @@ project_owner_type = "organization"
 require_distinct_reviewer = false
 [storage]
 cache_retention_days = 1
+workspace_retention_days = 1
 max_gc_items = 10000
 [context]
 follow_up_max_tokens = 100000
@@ -175,6 +177,7 @@ event_payload_retention_days = 45
         self.assertEqual(config.agent.harness, "codex-cli")
         self.assertEqual(config.agent.executable, "codex")
         self.assertEqual(config.storage.cache_retention_days, 45)
+        self.assertEqual(config.storage.workspace_retention_days, 60)
         self.assertEqual(config.storage.max_gc_items, 500)
         self.assertEqual(config.context.follow_up_max_tokens, 9_000)
         self.assertEqual(config.issue_review.project_owner, "")
@@ -220,6 +223,22 @@ event_payload_retention_days = 0
             )
 
             with self.assertRaisesRegex(ConfigError, "must be positive"):
+                load_config(path)
+
+    def test_workspace_retention_must_be_positive(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[storage]
+workspace_retention_days = 0
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "workspace_retention_days"):
                 load_config(path)
 
     def test_capacity_defaults_can_be_raised_by_user_and_tightened_by_project(

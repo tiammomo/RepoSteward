@@ -2061,7 +2061,8 @@ class Store:
         with self._connection() as connection:
             rows = connection.execute(
                 """
-                SELECT r.id, r.repository,
+                SELECT r.id, r.repository, r.status, r.worktree, r.details,
+                       r.updated_at,
                        EXISTS(
                            SELECT 1 FROM checkpoints c
                            WHERE c.run_id=r.id
@@ -2070,13 +2071,23 @@ class Store:
                 FROM runs r
                 """
             ).fetchall()
-        return {
-            str(row["id"]): {
+        result = {}
+        for row in rows:
+            try:
+                details = json.loads(str(row["details"]))
+            except json.JSONDecodeError as exc:
+                raise StoreError("run details were modified") from exc
+            if not isinstance(details, dict):
+                raise StoreError("run details were modified")
+            result[str(row["id"])] = {
                 "repository": str(row["repository"]),
+                "status": str(row["status"]),
+                "worktree": str(row["worktree"]),
+                "updated_at": str(row["updated_at"]),
+                "head_commit": str(details.get("commit_sha") or ""),
                 "terminal_checkpoint": bool(row["terminal_checkpoint"]),
             }
-            for row in rows
-        }
+        return result
 
     def record_storage_gc(
         self,

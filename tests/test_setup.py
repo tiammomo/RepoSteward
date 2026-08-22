@@ -40,6 +40,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(parsed["issue_review"]["project_number"], 0)
         self.assertTrue(parsed["issue_review"]["require_distinct_reviewer"])
         self.assertEqual(parsed["storage"]["cache_retention_days"], 30)
+        self.assertEqual(parsed["storage"]["workspace_retention_days"], 30)
         self.assertEqual(parsed["storage"]["max_gc_items"], 1000)
         self.assertEqual(parsed["context"]["follow_up_max_tokens"], 24_000)
         self.assertEqual(parsed["safety"]["max_active_pull_requests"], 4)

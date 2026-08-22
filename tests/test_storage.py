@@ -32,6 +32,18 @@ class StubStore:
     def run_repositories(self) -> dict[str, str]:
         return {"run-1": "owner/repo"}
 
+    def run_gc_safety(self) -> dict[str, dict]:
+        return {
+            "run-1": {
+                "repository": "owner/repo",
+                "status": "submitted",
+                "worktree": "",
+                "updated_at": "2026-08-21T00:00:00+00:00",
+                "head_commit": "",
+                "terminal_checkpoint": True,
+            }
+        }
+
 
 class StorageStatisticsTests(unittest.TestCase):
     def test_statistics_include_safe_log_and_database_sizes(self) -> None:
@@ -47,6 +59,7 @@ class StorageStatisticsTests(unittest.TestCase):
             pipeline = object.__new__(Pipeline)
             pipeline.config = SimpleNamespace(
                 state_dir=root,
+                workspace_dir=root / "workspaces",
                 repositories={"owner/repo": policy},
             )
             pipeline.store = StubStore(root / "state.sqlite3")
@@ -116,6 +129,7 @@ class StorageGcTests(unittest.TestCase):
         pipeline = object.__new__(Pipeline)
         pipeline.config = SimpleNamespace(
             state_dir=root,
+            workspace_dir=root / "workspaces",
             storage=StorageConfig(cache_retention_days=30, max_gc_items=10),
             repositories={"owner/repo": policy},
             github=SimpleNamespace(login="operator"),

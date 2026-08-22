@@ -73,6 +73,13 @@ from .usage import (
 )
 from .verifier import DockerVerifier
 from .workspace import WorkspaceManager
+from .workspace_storage import (
+    WORKSPACE_KIND,
+    delete_workspace,
+    scan_workspaces,
+    workspace_gc_inventory,
+    workspace_statistics,
+)
 
 
 def _canonical_digest(value: object) -> str:
@@ -1811,7 +1818,10 @@ class Pipeline:
             else ""
         )
         categories = self.store.storage_statistics(repository=normalized, cutoff=cutoff)
-        repositories = self.store.run_repositories()
+        run_safety = self.store.run_gc_safety()
+        repositories = {
+            run_id: str(value["repository"]) for run_id, value in run_safety.items()
+        }
         logs: dict[str, dict[str, Any]] = {}
         runs_root = (self.config.state_dir / "runs").resolve()
         if runs_root.is_dir():
@@ -1852,6 +1862,17 @@ class Pipeline:
                     )
                     group["newest_at"] = max(group["newest_at"], timestamp)
         categories.extend(logs.values())
+        workspace_inventory = scan_workspaces(
+            self.config.workspace_dir,
+            repositories=tuple(
+                policy.name for policy in self.config.repositories.values()
+            ),
+            runs=run_safety,
+        )
+        workspace_categories, workspace_errors = workspace_statistics(
+            workspace_inventory, repository=normalized, cutoff=cutoff
+        )
+        categories.extend(workspace_categories)
         categories.sort(key=lambda value: (value["repository"], value["category"]))
         database_files = []
         for suffix in ("", "-wal", "-shm"):
@@ -1866,6 +1887,8 @@ class Pipeline:
             "reported_logical_bytes": sum(value["bytes"] for value in categories),
             "database_physical_bytes": sum(value["bytes"] for value in database_files),
             "database_files": database_files,
+            "workspace_scan_errors": workspace_errors[:100],
+            "workspace_scan_errors_omitted": max(0, len(workspace_errors) - 100),
             "notes": (
                 "Per-repository event payload bytes are referenced bytes; one deduplicated "
                 "blob referenced by multiple repositories appears in each repository row."
@@ -2030,6 +2053,9 @@ class Pipeline:
         cache_cutoff = (
             now - timedelta(days=self.config.storage.cache_retention_days)
         ).isoformat()
+        workspace_cutoff = (
+            now - timedelta(days=self.config.storage.workspace_retention_days)
+        ).isoformat()
         retention_cutoffs = {
             policy.name.casefold(): (
                 now - timedelta(days=policy.event_payload_retention_days)
@@ -2041,6 +2067,15 @@ class Pipeline:
             repository=normalized, cutoff=cache_cutoff
         )
         payloads = self.store.event_payload_gc_inventory(retention_cutoffs)
+        workspaces = workspace_gc_inventory(
+            self.config.workspace_dir,
+            repositories=tuple(
+                policy.name for policy in self.config.repositories.values()
+            ),
+            runs=self.store.run_gc_safety(),
+            repository=normalized,
+            cutoff=workspace_cutoff,
+        )
 
         def in_scope(value: dict[str, Any]) -> bool:
             repositories = value.get("repositories", ())
@@ -2050,7 +2085,11 @@ class Pipeline:
             value for value in payloads["candidates"] if in_scope(value)
         ]
         payload_retained = [value for value in payloads["retained"] if in_scope(value)]
-        candidates = [*logs["candidates"], *payload_candidates]
+        candidates = [
+            *logs["candidates"],
+            *payload_candidates,
+            *workspaces["candidates"],
+        ]
         candidates.sort(
             key=lambda value: (
                 value["created_at"],
@@ -2058,7 +2097,11 @@ class Pipeline:
                 str(value.get("path") or value.get("digest")),
             )
         )
-        retained = [*logs["retained"], *payload_retained]
+        retained = [
+            *logs["retained"],
+            *payload_retained,
+            *workspaces["retained"],
+        ]
         if len(candidates) > self.config.storage.max_gc_items:
             for value in candidates[self.config.storage.max_gc_items :]:
                 retained.append({**value, "reasons": ["gc_item_limit"]})
@@ -2068,6 +2111,7 @@ class Pipeline:
             "repository": normalized,
             "generated_at": generated_at,
             "cache_cutoff": cache_cutoff,
+            "workspace_cutoff": workspace_cutoff,
             "retention_cutoffs": retention_cutoffs,
             "candidates": candidates,
         }
@@ -2113,6 +2157,8 @@ class Pipeline:
         )
         deleted_logs = []
         skipped_logs = []
+        deleted_workspaces = []
+        skipped_workspaces = []
         fresh_safety = self.store.run_gc_safety()
         state_root = self.config.state_dir.resolve()
         runs_root = state_root / "runs"
@@ -2137,6 +2183,55 @@ class Pipeline:
                 deleted_logs.append(value)
             except OSError as exc:
                 skipped_logs.append({"path": value["path"], "reason": str(exc)})
+        planned_workspace_paths = frozenset(
+            str(value["path"])
+            for value in candidates
+            if value["kind"] == WORKSPACE_KIND
+        )
+        fresh_workspaces = (
+            workspace_gc_inventory(
+                self.config.workspace_dir,
+                repositories=tuple(
+                    policy.name for policy in self.config.repositories.values()
+                ),
+                runs=fresh_safety,
+                repository=normalized,
+                cutoff=workspace_cutoff,
+                paths=planned_workspace_paths,
+            )
+            if planned_workspace_paths
+            else {"candidates": [], "retained": []}
+        )
+        fresh_by_path = {
+            str(value["path"]): value for value in fresh_workspaces["candidates"]
+        }
+        stable_fields = (
+            "repository",
+            "run_ids",
+            "device",
+            "inode",
+            "snapshot_digest",
+            "head_commit",
+        )
+        for value in candidates:
+            if value["kind"] != WORKSPACE_KIND:
+                continue
+            current = fresh_by_path.get(str(value["path"]))
+            if current is None or any(
+                current.get(field) != value.get(field) for field in stable_fields
+            ):
+                skipped_workspaces.append(
+                    {
+                        "path": value["path"],
+                        "reason": "workspace no longer satisfies the reviewed plan",
+                    }
+                )
+                continue
+            try:
+                delete_workspace(self.config.workspace_dir, current)
+                deleted_workspaces.append(current)
+            except OSError as exc:
+                skipped_workspaces.append({"path": value["path"], "reason": str(exc)})
         payload_result = self.store.delete_event_payloads(
             tuple(
                 str(value["digest"])
@@ -2148,6 +2243,8 @@ class Pipeline:
         applied = {
             "deleted_logs": deleted_logs,
             "skipped_logs": skipped_logs,
+            "deleted_workspaces": deleted_workspaces,
+            "skipped_workspaces": skipped_workspaces,
             "deleted_event_payloads": payload_result["deleted"],
             "skipped_event_payloads": payload_result["skipped"],
         }

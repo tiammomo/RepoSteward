@@ -744,6 +744,59 @@ class StoreTests(unittest.TestCase):
             [value["stage"] for value in records], ["completed", "applying"]
         )
 
+    def test_run_gc_safety_includes_workspace_recovery_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            work_item = store.ensure_work_item(
+                "owner/repo",
+                kind="github_issue",
+                external_id="7",
+                title="Workspace lifecycle",
+            )
+            run_id = store.start_run("owner/repo", 7, "agent")
+            context = _context_payload(
+                pack_id="pack-workspace",
+                work_item_id=work_item["id"],
+                run_id=run_id,
+                source_digest="a" * 64,
+                base_commit="b" * 40,
+            )
+            store.save_context_pack(
+                pack_id="pack-workspace",
+                work_item_id=work_item["id"],
+                run_id=run_id,
+                schema_version=1,
+                source_digest=_context_source_digest("a" * 64),
+                base_commit="b" * 40,
+                payload=context,
+            )
+            store.update_run(
+                run_id,
+                status="submitted",
+                worktree="/tmp/reposteward-workspace",
+                details={"commit_sha": "c" * 40},
+            )
+            store.save_checkpoint(
+                work_item_id=work_item["id"],
+                run_id=run_id,
+                context_pack_id="pack-workspace",
+                status="submitted",
+                payload=_checkpoint_payload(
+                    work_item_id=work_item["id"],
+                    run_id=run_id,
+                    pack_id="pack-workspace",
+                    status="submitted",
+                ),
+            )
+
+            safety = store.run_gc_safety()[run_id]
+
+        self.assertEqual(safety["repository"], "owner/repo")
+        self.assertEqual(safety["status"], "submitted")
+        self.assertEqual(safety["worktree"], "/tmp/reposteward-workspace")
+        self.assertEqual(safety["head_commit"], "c" * 40)
+        self.assertTrue(safety["terminal_checkpoint"])
+
     def test_event_payload_gc_requires_retention_and_every_run_watermark(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")
