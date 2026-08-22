@@ -257,6 +257,11 @@ uv run reposteward image build
 uv run reposteward doctor
 ```
 
+Runner 镜像从固定摘要的官方基础镜像构建，并自检 Python 3.12.14、Node.js 24.16.0、
+Rust 1.96.0（含 rustfmt 与 Clippy）、ShellCheck 0.9.0、Java 8、Maven、Protobuf、Helm
+和 pnpm。最终镜像默认以 UID/GID 1000 的 `reposteward` 用户运行；目标仓库的 bootstrap
+只安装锁定依赖，不挂载或复用宿主机工具链。
+
 发现和查看候选：
 
 ```bash
