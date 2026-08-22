@@ -128,6 +128,38 @@ def _owner_review_facts(run_id: str) -> dict:
     }
 
 
+def _usage_run(store: Store, *, details: dict | None = None) -> tuple[str, str]:
+    work_item = store.ensure_work_item(
+        "owner/repo",
+        kind="github_issue",
+        external_id="7",
+        title="Example issue",
+    )
+    run_id = store.start_run("owner/repo", 7, "agent")
+    pack_id = f"pack-{run_id}"
+    payload = _context_payload(
+        pack_id=pack_id,
+        work_item_id=str(work_item["id"]),
+        run_id=run_id,
+        source_digest="d" * 64,
+        base_commit="b" * 40,
+    )
+    store.save_context_run(
+        pack_id=pack_id,
+        work_item_id=str(work_item["id"]),
+        run_id=run_id,
+        schema_version=1,
+        source_digest=str(payload["source_digest"]),
+        base_commit="b" * 40,
+        payload=payload,
+        harness="codex-sdk",
+        model="model-a",
+    )
+    if details is not None:
+        store.update_run(run_id, status="submitted", details=details)
+    return run_id, str(work_item["id"])
+
+
 class StoreTests(unittest.TestCase):
     def test_legacy_unversioned_database_is_migrated_without_data_loss(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -317,6 +349,155 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(migrated.schema_version(), SCHEMA_VERSION)
             self.assertIsNotNone(table)
             self.assertIsNotNone(index)
+
+    def test_version_twelve_database_receives_harness_usage_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute("DROP TABLE harness_usage_events")
+                connection.execute("PRAGMA user_version=12")
+
+            migrated = Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                table = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE name='harness_usage_events'"
+                ).fetchone()
+                indexes = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type='index' AND tbl_name='harness_usage_events'"
+                    )
+                }
+
+            self.assertEqual(migrated.schema_version(), SCHEMA_VERSION)
+            self.assertIsNotNone(table)
+            self.assertIn("harness_usage_events_report", indexes)
+            self.assertIn("harness_usage_events_for_work_item", indexes)
+
+    def test_harness_usage_is_idempotent_bounded_and_tamper_evident(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            run_id, work_item_id = _usage_run(
+                store,
+                details={
+                    "pr_url": "https://github.com/owner/repo/pull/12",
+                    "agent_metrics": {"input_tokens": 999},
+                },
+            )
+            metrics = {
+                "input_tokens": 100,
+                "cached_input_tokens": 90,
+                "output_tokens": 10,
+                "reasoning_output_tokens": 4,
+                "prompt_chars": 200,
+                "event_bytes": 300,
+                "stderr_bytes": 0,
+                "event_count": 4,
+                "tool_call_count": 2,
+                "duration_seconds": 1.5,
+            }
+            budget = {
+                "budget_tokens": 24_000,
+                "estimated_tokens": 20_000,
+                "trim_reasons": {"events": 2},
+            }
+
+            first = store.record_harness_usage(
+                run_id=run_id,
+                run_stage="repair",
+                harness="codex-sdk",
+                model="model-a",
+                session_resume="resumed",
+                portable_context_fallback=False,
+                metrics=metrics,
+                budget=budget,
+            )
+            repeated = store.record_harness_usage(
+                run_id=run_id,
+                run_stage="repair",
+                harness="codex-sdk",
+                model="model-a",
+                session_resume="resumed",
+                portable_context_fallback=False,
+                metrics=metrics,
+                budget=budget,
+            )
+            rows = store.harness_usage_rows("OWNER/REPO", pull_number=12)
+            statistics = store.storage_statistics(repository="owner/repo")
+
+            self.assertEqual(first["id"], repeated["id"])
+            self.assertTrue(repeated["idempotent"])
+            self.assertEqual(repeated["work_item_id"], work_item_id)
+            self.assertNotIn("payload", repeated)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["source"], "ledger")
+            self.assertEqual(rows[0]["metrics"], metrics)
+            self.assertNotIn("agent_metrics", rows[0])
+            self.assertEqual(
+                next(
+                    value["records"]
+                    for value in statistics
+                    if value["category"] == "harness_usage_ledger"
+                ),
+                1,
+            )
+
+            with self.assertRaisesRegex(StoreError, "already recorded differently"):
+                store.record_harness_usage(
+                    run_id=run_id,
+                    run_stage="repair",
+                    harness="codex-sdk",
+                    model="model-a",
+                    session_resume="resumed",
+                    portable_context_fallback=False,
+                    metrics={**metrics, "input_tokens": 101},
+                    budget=budget,
+                )
+
+            second_run, _ = _usage_run(store)
+            with self.assertRaisesRegex(ValueError, "duration_seconds"):
+                store.record_harness_usage(
+                    run_id=second_run,
+                    run_stage="prepare",
+                    harness="codex-sdk",
+                    model="model-a",
+                    session_resume="not_requested",
+                    portable_context_fallback=False,
+                    metrics={**metrics, "duration_seconds": float("nan")},
+                    budget=budget,
+                )
+
+            with closing(sqlite3.connect(store.path)) as connection, connection:
+                connection.execute(
+                    "UPDATE harness_usage_events SET payload='{}' WHERE run_id=?",
+                    (run_id,),
+                )
+            with self.assertRaisesRegex(StoreError, "ledger was modified"):
+                store.harness_usage_rows("owner/repo")
+
+    def test_legacy_harness_usage_keeps_missing_metrics_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            _usage_run(
+                store,
+                details={
+                    "pr_url": "https://github.com/owner/repo/pull/12",
+                    "agent_metrics": {
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                    },
+                },
+            )
+
+            rows = store.harness_usage_rows("owner/repo")
+
+        self.assertEqual(rows[0]["source"], "legacy")
+        self.assertEqual(rows[0]["metrics"]["input_tokens"], 100)
+        self.assertIsNone(rows[0]["metrics"]["cached_input_tokens"])
+        self.assertEqual(rows[0]["session_resume"], "unknown")
+        self.assertIsNone(rows[0]["portable_context_fallback"])
 
     def test_owner_review_attestations_are_idempotent_and_tamper_evident(
         self,

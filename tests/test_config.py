@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -317,6 +318,101 @@ require_distinct_reviewer = false
         self.assertEqual(config.issue_review.project_number, 7)
         self.assertEqual(config.issue_review.project_owner_type, "organization")
         self.assertTrue(config.issue_review.require_distinct_reviewer)
+
+    def test_usage_prices_are_dated_and_owned_by_the_user_layer(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            user = root / "user.toml"
+            project = root / "project.toml"
+            user.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[[observability.prices]]
+harness = "codex-sdk"
+model = "gpt-example"
+effective_from = "2026-01-01"
+currency = "usd"
+input_per_million = "1.25"
+cached_input_per_million = "0.125"
+output_per_million = "5"
+[[observability.prices]]
+harness = "codex-sdk"
+model = "gpt-example"
+effective_from = "2026-08-01"
+currency = "USD"
+input_per_million = 2
+cached_input_per_million = 0.2
+output_per_million = 8
+reasoning_output_per_million = 10
+""",
+                encoding="utf-8",
+            )
+            project.write_text(
+                """config_version = 1
+[[observability.prices]]
+harness = "untrusted"
+model = "*"
+effective_from = "2026-01-01"
+currency = "USD"
+input_per_million = 0
+cached_input_per_million = 0
+output_per_million = 0
+""",
+                encoding="utf-8",
+            )
+
+            config = load_config(project, user_path=user)
+
+        self.assertEqual(len(config.observability.prices), 2)
+        first, second = config.observability.prices
+        self.assertEqual(first.currency, "USD")
+        self.assertEqual(first.input_per_million, Decimal("1.25"))
+        self.assertEqual(second.effective_from, "2026-08-01")
+        self.assertEqual(second.reasoning_output_per_million, Decimal(10))
+
+    def test_usage_prices_reject_invalid_or_duplicate_rows(self) -> None:
+        cases = (
+            ('effective_from = "2026/01/01"', "YYYY-MM-DD"),
+            ("input_per_million = -1", "non-negative"),
+            ('currency = "US"', "three letters"),
+            ("model = true", "identity fields must be strings"),
+        )
+        base = """config_version = 1
+[github]
+login = "alice"
+[[observability.prices]]
+harness = "codex-sdk"
+model = "model-a"
+effective_from = "2026-01-01"
+currency = "USD"
+input_per_million = 1
+cached_input_per_million = 0.1
+output_per_million = 4
+"""
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            for replacement, message in cases:
+                field = replacement.split(" =", 1)[0]
+                lines = [
+                    replacement if line.startswith(f"{field} =") else line
+                    for line in base.splitlines()
+                ]
+                path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                with (
+                    self.subTest(replacement=replacement),
+                    self.assertRaisesRegex(ConfigError, message),
+                ):
+                    load_config(path)
+
+            duplicate = (
+                base
+                + "\n[[observability.prices]]"
+                + base.split("[[observability.prices]]", 1)[1]
+            )
+            path.write_text(duplicate, encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "duplicate effective row"):
+                load_config(path)
 
     def test_unknown_configuration_version_is_rejected(self) -> None:
         with TemporaryDirectory() as directory:

@@ -314,6 +314,43 @@ RepoSteward 会从 Codex CLI JSONL 或 Codex SDK turn result 中提取输入、�
 token，并记录工具调用次数；CLI 适配器还记录事件流大小。资源预算告警会出现在 Review Packet
 中，但不会绕过验证。
 
+## 生命周期用量与成本
+
+每次 `prepare` 和 `repair` 的 Harness 执行完成后，RepoSteward 都会追加一条有摘要保护的紧凑
+用量事件。事件只保存 token、工具调用、持续时间、会话恢复结果和上下文裁剪原因等有界计数，不保存
+原始提示、模型响应、告警文本或日志路径。既有数据库会无损升级；升级前没有采集到的指标显示为
+`unknown`，不会按零计算。
+
+按 Issue、PR、阶段、Harness、模型或日期查看机器可读汇总：
+
+```bash
+uv run reposteward usage report owner/repository
+uv run reposteward usage report owner/repository --issue 40 --group-by stage
+uv run reposteward usage report owner/repository --pull-number 41 --include-runs
+uv run reposteward usage report owner/repository \
+  --since 2026-08-01 --until 2026-08-31 --group-by model
+```
+
+原始用量不依赖价格配置。需要估算成本时，在用户配置中维护带生效日期的每百万 token 单价；这些
+数据不会接受仓库内 `.reposteward.toml` 覆盖：
+
+```toml
+[[observability.prices]]
+harness = "codex-sdk"
+model = "your-model"
+effective_from = "2026-08-01"
+currency = "USD"
+input_per_million = "1.00"
+cached_input_per_million = "0.10"
+output_per_million = "4.00"
+# reasoning_output_per_million = "4.00"
+```
+
+同一 Harness 会优先匹配精确模型，也可用 `model = "*"` 设置兜底价格。新生效日期不会重算旧运行；
+缺少适用价格或必要 token 指标时，该次成本保持 `unknown`。如果配置推理输出单价，它会替代输出
+token 中推理部分的普通输出单价。一次查询超过 10,000 条运行时会要求缩小过滤范围。成功的 merge
+结果也会携带对应 PR 的 `usage_summary`，方便把实际交付与生命周期成本关联起来。
+
 ## 上下文与跨 Harness 交接
 
 每次 `prepare` 或 `adopt` 都会创建一个持久 work item，并保存：

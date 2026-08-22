@@ -4,6 +4,8 @@ import os
 import re
 import tomllib
 from dataclasses import dataclass, field
+from datetime import date
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -121,6 +123,23 @@ class ContextConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class UsagePrice:
+    harness: str
+    model: str
+    effective_from: str
+    currency: str
+    input_per_million: Decimal
+    cached_input_per_million: Decimal
+    output_per_million: Decimal
+    reasoning_output_per_million: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ObservabilityConfig:
+    prices: tuple[UsagePrice, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class RepositoryPolicy:
     name: str
     enabled: bool = True
@@ -171,6 +190,7 @@ class AppConfig:
     runner: RunnerConfig
     storage: StorageConfig
     context: ContextConfig
+    observability: ObservabilityConfig
     repositories: dict[str, RepositoryPolicy] = field(default_factory=dict)
 
 
@@ -188,6 +208,18 @@ def _boolean(value: Any, default: bool) -> bool:
     if not isinstance(value, bool):
         raise ConfigError("expected a boolean")
     return value
+
+
+def _price_rate(value: Any, name: str) -> Decimal:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ConfigError(f"observability price {name} must be numeric")
+    try:
+        rate = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ConfigError(f"observability price {name} is invalid") from exc
+    if not rate.is_finite() or rate < 0:
+        raise ConfigError(f"observability price {name} must be finite and non-negative")
+    return rate
 
 
 def _section(data: dict[str, Any], name: str) -> dict[str, Any]:
@@ -324,6 +356,12 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
         result["context"] = dict(user_context)
     else:
         result.pop("context", None)
+
+    user_observability = user.get("observability")
+    if isinstance(user_observability, dict):
+        result["observability"] = dict(user_observability)
+    else:
+        result.pop("observability", None)
 
     user_agent = user.get("agent")
     project_agent = project.get("agent")
@@ -571,6 +609,78 @@ def load_config(
         follow_up_max_tokens=int(context_raw.get("follow_up_max_tokens", 24_000))
     )
 
+    observability_raw = _section(raw, "observability")
+    raw_prices = observability_raw.get("prices", [])
+    if not isinstance(raw_prices, list) or not all(
+        isinstance(value, dict) for value in raw_prices
+    ):
+        raise ConfigError("observability.prices must be an array of tables")
+    prices: list[UsagePrice] = []
+    price_keys: set[tuple[str, str, str]] = set()
+    for raw_price in raw_prices:
+        text_fields = {
+            key: raw_price.get(key)
+            for key in ("harness", "model", "effective_from", "currency")
+        }
+        if not all(isinstance(value, str) for value in text_fields.values()):
+            raise ConfigError("observability price identity fields must be strings")
+        harness = str(text_fields["harness"]).strip()
+        model = str(text_fields["model"]).strip()
+        effective_from = str(text_fields["effective_from"]).strip()
+        currency = str(text_fields["currency"]).strip().upper()
+        if not harness or not model:
+            raise ConfigError("observability price harness and model must not be empty")
+        try:
+            parsed_date = date.fromisoformat(effective_from)
+        except ValueError as exc:
+            raise ConfigError(
+                "observability price effective_from must use YYYY-MM-DD"
+            ) from exc
+        if parsed_date.isoformat() != effective_from:
+            raise ConfigError("observability price effective_from must use YYYY-MM-DD")
+        if not re.fullmatch(r"[A-Z]{3}", currency):
+            raise ConfigError("observability price currency must use three letters")
+        key = (harness.casefold(), model.casefold(), effective_from)
+        if key in price_keys:
+            raise ConfigError("observability prices contain a duplicate effective row")
+        price_keys.add(key)
+        reasoning_rate = raw_price.get("reasoning_output_per_million")
+        prices.append(
+            UsagePrice(
+                harness=harness,
+                model=model,
+                effective_from=effective_from,
+                currency=currency,
+                input_per_million=_price_rate(
+                    raw_price.get("input_per_million"), "input_per_million"
+                ),
+                cached_input_per_million=_price_rate(
+                    raw_price.get("cached_input_per_million"),
+                    "cached_input_per_million",
+                ),
+                output_per_million=_price_rate(
+                    raw_price.get("output_per_million"), "output_per_million"
+                ),
+                reasoning_output_per_million=(
+                    _price_rate(reasoning_rate, "reasoning_output_per_million")
+                    if reasoning_rate is not None
+                    else None
+                ),
+            )
+        )
+    observability = ObservabilityConfig(
+        prices=tuple(
+            sorted(
+                prices,
+                key=lambda value: (
+                    value.harness.casefold(),
+                    value.model.casefold(),
+                    value.effective_from,
+                ),
+            )
+        )
+    )
+
     repositories_raw = _section(raw, "repositories")
     repositories: dict[str, RepositoryPolicy] = {}
     for name, repo_value in repositories_raw.items():
@@ -770,5 +880,6 @@ def load_config(
         runner=runner,
         storage=storage,
         context=context,
+        observability=observability,
         repositories=repositories,
     )

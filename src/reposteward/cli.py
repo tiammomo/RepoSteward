@@ -191,6 +191,38 @@ def _parser() -> argparse.ArgumentParser:
     storage_gc.add_argument("--repo", default="", help="limit to owner/name")
     storage_gc.add_argument("--apply", action="store_true")
 
+    usage = subparsers.add_parser(
+        "usage", help="report prompt-free Harness usage and configured cost"
+    )
+    usage_commands = usage.add_subparsers(dest="usage_command", required=True)
+    usage_report = usage_commands.add_parser(
+        "report", help="aggregate one repository's Issue/PR lifecycle usage"
+    )
+    usage_report.add_argument("repository")
+    usage_report.add_argument("--issue", type=int, default=0)
+    usage_report.add_argument("--pull-number", type=int, default=0)
+    usage_report.add_argument(
+        "--stage", choices=("prepare", "repair", "adopt"), default=""
+    )
+    usage_report.add_argument("--harness", default="")
+    usage_report.add_argument("--model", default="")
+    usage_report.add_argument("--since", default="", help="inclusive YYYY-MM-DD")
+    usage_report.add_argument("--until", default="", help="inclusive YYYY-MM-DD")
+    usage_report.add_argument(
+        "--group-by",
+        choices=(
+            "none",
+            "work-item",
+            "issue",
+            "pull-request",
+            "stage",
+            "harness",
+            "model",
+        ),
+        default="pull-request",
+    )
+    usage_report.add_argument("--include-runs", action="store_true")
+
     ci = subparsers.add_parser("ci", help="inspect CI failures without rerunning jobs")
     ci_commands = ci.add_subparsers(dest="ci_command", required=True)
     ci_diagnose = ci_commands.add_parser(
@@ -500,6 +532,24 @@ def main(argv: list[str] | None = None) -> int:
                 _json(pipeline.storage_gc(repository=args.repo, apply=args.apply))
                 return 0
             raise AssertionError(f"unhandled storage command: {args.storage_command}")
+        if args.command == "usage":
+            if args.usage_command == "report":
+                _json(
+                    pipeline.usage_report(
+                        args.repository,
+                        issue_number=args.issue,
+                        pull_number=args.pull_number,
+                        run_stage=args.stage,
+                        harness=args.harness,
+                        model=args.model,
+                        since=args.since,
+                        until=args.until,
+                        group_by=args.group_by,
+                        include_runs=args.include_runs,
+                    )
+                )
+                return 0
+            raise AssertionError(f"unhandled usage command: {args.usage_command}")
         if args.command == "ci":
             if args.ci_command == "diagnose":
                 _json(pipeline.ci_failure_analysis(args.repository, args.pull_number))

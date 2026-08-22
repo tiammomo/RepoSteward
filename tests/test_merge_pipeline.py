@@ -104,6 +104,15 @@ class StubStore:
     ) -> dict | None:
         return self.owner_attestation
 
+    def harness_usage_rows(self, _repository: str, **_filters) -> list[dict]:
+        return []
+
+    def latest_merge_outcomes(self, _repository: str) -> dict[int, str]:
+        completed = [
+            value for value in self.executions if value["stage"] == "completed"
+        ]
+        return {12: completed[-1]["outcome"]} if completed else {}
+
 
 class StubGitHub:
     def __init__(self) -> None:
@@ -272,6 +281,7 @@ class MergePipelineTests(unittest.TestCase):
             repositories={"owner/repo": policy},
             safety=SimpleNamespace(max_files_changed=18, max_diff_lines=700),
             github=SimpleNamespace(login="alice"),
+            observability=SimpleNamespace(prices=()),
         )
         pipeline.store = StubStore(policy)
         pipeline.github = StubGitHub()
@@ -475,6 +485,8 @@ class MergePipelineTests(unittest.TestCase):
         self.assertTrue(result["merged"])
         self.assertFalse(result["idempotent"])
         self.assertTrue(result["public_write"])
+        self.assertEqual(result["usage_summary"]["status"], "available")
+        self.assertEqual(result["usage_summary"]["runs"], 0)
         self.assertEqual(len(pipeline.github.merge_calls), 1)
         self.assertEqual(
             [value["stage"] for value in pipeline.store.executions],

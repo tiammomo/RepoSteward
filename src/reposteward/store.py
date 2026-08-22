@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -13,7 +14,7 @@ from typing import Any
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -407,6 +408,36 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         ON owner_review_attestations(repository, pull_number, sequence DESC)
         """,
     ),
+    13: (
+        """
+        CREATE TABLE IF NOT EXISTS harness_usage_events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            run_id TEXT NOT NULL UNIQUE,
+            work_item_id TEXT NOT NULL,
+            repository TEXT NOT NULL,
+            issue_number INTEGER NOT NULL,
+            run_stage TEXT NOT NULL,
+            harness TEXT NOT NULL,
+            model TEXT NOT NULL,
+            session_resume TEXT NOT NULL,
+            portable_context_fallback INTEGER NOT NULL,
+            event_digest TEXT NOT NULL UNIQUE,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES runs(id),
+            FOREIGN KEY(work_item_id) REFERENCES work_items(id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS harness_usage_events_report
+        ON harness_usage_events(repository, created_at, sequence)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS harness_usage_events_for_work_item
+        ON harness_usage_events(work_item_id, sequence)
+        """,
+    ),
 }
 
 
@@ -457,6 +488,21 @@ OWNER_REVIEW_FACT_KEYS = frozenset(
         "dependency_digest",
         "activity_digest",
         "rules_digest",
+    }
+)
+
+USAGE_METRIC_KEYS = frozenset(
+    {
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+        "prompt_chars",
+        "event_bytes",
+        "stderr_bytes",
+        "event_count",
+        "tool_call_count",
+        "duration_seconds",
     }
 )
 
@@ -935,6 +981,416 @@ class Store:
             )
             if cursor.rowcount != 1:
                 raise KeyError(f"harness run not found: {run_id}")
+
+    def record_harness_usage(
+        self,
+        *,
+        run_id: str,
+        run_stage: str,
+        harness: str,
+        model: str,
+        session_resume: str,
+        portable_context_fallback: bool,
+        metrics: dict[str, Any],
+        budget: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one bounded, prompt-free usage event for a Harness run."""
+        if set(metrics) != USAGE_METRIC_KEYS:
+            raise StoreError("Harness usage metrics have an unexpected shape")
+        integer_metrics = USAGE_METRIC_KEYS - {"duration_seconds"}
+        for key in integer_metrics:
+            value = metrics[key]
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"Harness usage metric {key} must be non-negative")
+        duration = metrics["duration_seconds"]
+        if duration is not None and (
+            isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or not math.isfinite(duration)
+            or duration < 0
+        ):
+            raise ValueError("Harness usage duration_seconds must be non-negative")
+        if run_stage not in {"prepare", "repair"}:
+            raise ValueError("unsupported Harness usage run stage")
+        if not isinstance(portable_context_fallback, bool):
+            raise TypeError("portable_context_fallback must be a boolean")
+        if session_resume not in {
+            "not_requested",
+            "resumed",
+            "fallback_new_session",
+            "unavailable",
+        }:
+            raise ValueError("unsupported Harness session resume outcome")
+        if not harness or not isinstance(budget, dict):
+            raise ValueError("Harness usage harness and budget are required")
+        expected_budget_keys = {
+            "budget_tokens",
+            "estimated_tokens",
+            "trim_reasons",
+        }
+        if set(budget) != expected_budget_keys:
+            raise StoreError("Harness usage budget has an unexpected shape")
+        for key in ("budget_tokens", "estimated_tokens"):
+            value = budget[key]
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"Harness usage {key} must be non-negative")
+        trim_reasons = budget["trim_reasons"]
+        if not isinstance(trim_reasons, dict) or any(
+            not isinstance(key, str)
+            or isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            for key, value in trim_reasons.items()
+        ):
+            raise ValueError("Harness usage trim_reasons must be non-negative counts")
+
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            scope = connection.execute(
+                """
+                SELECT h.work_item_id, h.harness, h.model,
+                       r.repository, r.issue_number
+                FROM harness_runs h JOIN runs r ON r.id=h.run_id
+                WHERE h.run_id=?
+                """,
+                (run_id,),
+            ).fetchone()
+            if scope is None:
+                raise StoreError("Harness usage references an unknown run")
+            expected = {
+                "harness": harness,
+                "model": model,
+            }
+            if any(str(scope[key]) != value for key, value in expected.items()):
+                raise StoreError("Harness usage identity differs from its run")
+            material = {
+                "schema_version": 1,
+                "run_id": run_id,
+                "work_item_id": str(scope["work_item_id"]),
+                "repository": str(scope["repository"]),
+                "issue_number": int(scope["issue_number"]),
+                "run_stage": run_stage,
+                "harness": harness,
+                "model": model,
+                "session_resume": session_resume,
+                "portable_context_fallback": portable_context_fallback,
+                "metrics": metrics,
+                "budget": budget,
+            }
+            event_digest = _json_digest(material)
+            previous = connection.execute(
+                "SELECT * FROM harness_usage_events WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if previous is not None:
+                value = self._harness_usage_event(previous)
+                if str(value["event_digest"]) != event_digest:
+                    raise StoreError("Harness usage was already recorded differently")
+                return {**value, "idempotent": True}
+            event_id = uuid.uuid4().hex
+            now = utc_now()
+            connection.execute(
+                """
+                INSERT INTO harness_usage_events(
+                    id, run_id, work_item_id, repository, issue_number,
+                    run_stage, harness, model, session_resume,
+                    portable_context_fallback, event_digest, payload, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    run_id,
+                    material["work_item_id"],
+                    material["repository"],
+                    material["issue_number"],
+                    run_stage,
+                    harness,
+                    model,
+                    session_resume,
+                    int(portable_context_fallback),
+                    event_digest,
+                    _canonical_json(material),
+                    now,
+                ),
+            )
+        return {
+            "id": event_id,
+            **material,
+            "event_digest": event_digest,
+            "created_at": now,
+            "idempotent": False,
+        }
+
+    @staticmethod
+    def _harness_usage_event(row: sqlite3.Row) -> dict[str, Any]:
+        value = dict(row)
+        try:
+            payload = json.loads(str(value["payload"]))
+        except json.JSONDecodeError as exc:
+            raise StoreError("Harness usage ledger was modified") from exc
+        if not isinstance(payload, dict):
+            raise StoreError("Harness usage ledger was modified")
+        scope = {
+            "run_id": str(value["run_id"]),
+            "work_item_id": str(value["work_item_id"]),
+            "repository": str(value["repository"]),
+            "issue_number": int(value["issue_number"]),
+            "run_stage": str(value["run_stage"]),
+            "harness": str(value["harness"]),
+            "model": str(value["model"]),
+            "session_resume": str(value["session_resume"]),
+            "portable_context_fallback": bool(value["portable_context_fallback"]),
+        }
+        if (
+            any(payload.get(key) != expected for key, expected in scope.items())
+            or payload.get("schema_version") != 1
+            or not isinstance(payload.get("metrics"), dict)
+            or set(payload["metrics"]) != USAGE_METRIC_KEYS
+            or not isinstance(payload.get("budget"), dict)
+            or _json_digest(payload) != str(value["event_digest"])
+        ):
+            raise StoreError("Harness usage ledger was modified")
+        return {
+            "id": str(value["id"]),
+            **payload,
+            "event_digest": str(value["event_digest"]),
+            "created_at": str(value["created_at"]),
+        }
+
+    @staticmethod
+    def _legacy_usage_metrics(details: dict[str, Any]) -> dict[str, Any]:
+        raw = details.get("agent_metrics")
+        if not isinstance(raw, dict):
+            raw = {}
+        result: dict[str, Any] = {}
+        for key in USAGE_METRIC_KEYS:
+            value = raw.get(key)
+            if key == "duration_seconds":
+                valid = (
+                    not isinstance(value, bool)
+                    and isinstance(value, (int, float))
+                    and value >= 0
+                )
+            else:
+                valid = (
+                    not isinstance(value, bool)
+                    and isinstance(value, int)
+                    and value >= 0
+                )
+            result[key] = value if valid else None
+        return result
+
+    @staticmethod
+    def _legacy_usage_budget(details: dict[str, Any]) -> dict[str, Any]:
+        raw = details.get("context_budget")
+        if not isinstance(raw, dict):
+            raw = {}
+        trim_reasons: dict[str, int] = {}
+        for key, initial_key, retained_key in (
+            ("events", "initial_events", "retained_events"),
+            ("diff_snippets", "initial_diff_snippets", "retained_diff_snippets"),
+        ):
+            initial = raw.get(initial_key)
+            retained = raw.get(retained_key)
+            if (
+                isinstance(initial, int)
+                and not isinstance(initial, bool)
+                and isinstance(retained, int)
+                and not isinstance(retained, bool)
+                and initial > retained
+            ):
+                trim_reasons[key] = initial - retained
+        omitted = raw.get("issue_description_omitted_chars")
+        if isinstance(omitted, int) and not isinstance(omitted, bool) and omitted > 0:
+            trim_reasons["issue_description_chars"] = omitted
+
+        def non_negative_int(name: str) -> int | None:
+            raw_value = raw.get(name)
+            return (
+                raw_value
+                if isinstance(raw_value, int)
+                and not isinstance(raw_value, bool)
+                and raw_value >= 0
+                else None
+            )
+
+        return {
+            "budget_tokens": non_negative_int("budget_tokens"),
+            "estimated_tokens": non_negative_int("estimated_tokens"),
+            "trim_reasons": trim_reasons,
+        }
+
+    def harness_usage_rows(
+        self,
+        repository: str,
+        *,
+        issue_number: int = 0,
+        pull_number: int = 0,
+        run_stage: str = "",
+        harness: str = "",
+        model: str = "",
+        since: str = "",
+        until: str = "",
+        limit: int = 10_001,
+    ) -> list[dict[str, Any]]:
+        """Read compact lifecycle usage facts, including compatible legacy runs."""
+        limit = min(max(limit, 1), 10_001)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT r.id AS run_id, r.repository, r.issue_number,
+                       r.stage AS current_stage, r.status, r.details,
+                       r.created_at AS run_created_at,
+                       r.updated_at AS run_updated_at,
+                       h.work_item_id, h.harness, h.model,
+                       h.native_session_id, h.created_at AS harness_created_at,
+                       s.pr_url AS submission_pr_url,
+                       e.sequence AS usage_sequence, e.payload AS usage_payload,
+                       e.event_digest AS usage_event_digest,
+                       e.created_at AS usage_created_at
+                FROM harness_runs h
+                JOIN runs r ON r.id=h.run_id
+                LEFT JOIN submissions s
+                  ON s.repository=r.repository AND s.issue_number=r.issue_number
+                LEFT JOIN harness_usage_events e ON e.run_id=h.run_id
+                WHERE r.repository=?
+                  AND (?=0 OR r.issue_number=?)
+                  AND (
+                      ?=0
+                      OR CAST(
+                          json_extract(r.details, '$.repair_guard.pull_number')
+                          AS INTEGER
+                      )=?
+                      OR rtrim(
+                          COALESCE(json_extract(r.details, '$.pr_url'), ''), '/'
+                      ) LIKE ?
+                      OR rtrim(COALESCE(s.pr_url, ''), '/') LIKE ?
+                  )
+                  AND (?='' OR h.harness=?)
+                  AND (?='' OR h.model=?)
+                  AND (?='' OR h.created_at>=?)
+                  AND (?='' OR h.created_at<?)
+                ORDER BY h.created_at, r.id LIMIT ?
+                """,
+                (
+                    repository.casefold(),
+                    issue_number,
+                    issue_number,
+                    pull_number,
+                    pull_number,
+                    f"%/pull/{pull_number}",
+                    f"%/pull/{pull_number}",
+                    harness,
+                    harness,
+                    model,
+                    model,
+                    since,
+                    since,
+                    until,
+                    until,
+                    limit,
+                ),
+            ).fetchall()
+        if len(rows) >= limit:
+            raise StoreError(
+                "Harness usage query exceeded 10000 runs; narrow its filters"
+            )
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            raw = dict(row)
+            try:
+                details = json.loads(str(raw["details"]))
+            except json.JSONDecodeError as exc:
+                raise StoreError("run details were modified") from exc
+            if not isinstance(details, dict):
+                raise StoreError("run details were modified")
+            pr_url = str(details.get("pr_url") or raw["submission_pr_url"] or "")
+            parsed_pull = 0
+            if "/pull/" in pr_url:
+                tail = pr_url.rsplit("/pull/", 1)[1].rstrip("/")
+                parsed_pull = int(tail) if tail.isdigit() else 0
+            repair_guard = details.get("repair_guard")
+            if not parsed_pull and isinstance(repair_guard, dict):
+                guard_pull = repair_guard.get("pull_number")
+                if isinstance(guard_pull, int) and not isinstance(guard_pull, bool):
+                    parsed_pull = guard_pull
+            if pull_number and parsed_pull != pull_number:
+                continue
+            event: dict[str, Any] | None = None
+            if raw["usage_sequence"] is not None:
+                try:
+                    event_payload = json.loads(str(raw["usage_payload"]))
+                except json.JSONDecodeError as exc:
+                    raise StoreError("Harness usage ledger was modified") from exc
+                event_scope = {
+                    "run_id": str(raw["run_id"]),
+                    "work_item_id": str(raw["work_item_id"]),
+                    "repository": str(raw["repository"]),
+                    "issue_number": int(raw["issue_number"]),
+                    "harness": str(raw["harness"]),
+                    "model": str(raw["model"]),
+                }
+                if (
+                    not isinstance(event_payload, dict)
+                    or any(
+                        event_payload.get(key) != expected
+                        for key, expected in event_scope.items()
+                    )
+                    or _json_digest(event_payload) != str(raw["usage_event_digest"])
+                ):
+                    raise StoreError("Harness usage ledger was modified")
+                event = {"payload": event_payload}
+            if event is not None:
+                payload = event["payload"]
+                stage = str(payload["run_stage"])
+                metrics = dict(payload["metrics"])
+                budget = dict(payload["budget"])
+                session_resume = str(payload["session_resume"])
+                portable_fallback: bool | None = bool(
+                    payload["portable_context_fallback"]
+                )
+                source = "ledger"
+            else:
+                stage = (
+                    "repair"
+                    if details.get("source_run_id") or isinstance(repair_guard, dict)
+                    else (
+                        "adopt"
+                        if str(raw["harness"]) == "external-workspace"
+                        else "prepare"
+                    )
+                )
+                metrics = self._legacy_usage_metrics(details)
+                budget = self._legacy_usage_budget(details)
+                session_resume = "unknown"
+                portable_fallback = None
+                source = "legacy"
+            if run_stage and stage != run_stage:
+                continue
+            result.append(
+                {
+                    "run_id": str(raw["run_id"]),
+                    "work_item_id": str(raw["work_item_id"]),
+                    "repository": str(raw["repository"]),
+                    "issue_number": int(raw["issue_number"]),
+                    "pull_number": parsed_pull or None,
+                    "run_stage": stage,
+                    "current_stage": str(raw["current_stage"]),
+                    "status": str(raw["status"]),
+                    "harness": str(raw["harness"]),
+                    "model": str(raw["model"]),
+                    "created_at": str(raw["harness_created_at"]),
+                    "metrics": metrics,
+                    "budget": budget,
+                    "session_resume": session_resume,
+                    "portable_context_fallback": portable_fallback,
+                    "source": source,
+                }
+            )
+        return result
 
     @staticmethod
     def _validate_checkpoint_record(
@@ -1549,6 +2005,17 @@ class Store:
                        COALESCE(SUM(length(CAST(payload AS BLOB))), 0) AS bytes,
                        MIN(created_at) AS oldest_at, MAX(created_at) AS newest_at
                 FROM owner_review_attestations
+                WHERE (?='' OR repository=?) AND (?='' OR created_at>=?)
+                GROUP BY repository
+                """,
+            ),
+            (
+                "harness_usage_ledger",
+                """
+                SELECT repository, COUNT(*) AS records,
+                       COALESCE(SUM(length(CAST(payload AS BLOB))), 0) AS bytes,
+                       MIN(created_at) AS oldest_at, MAX(created_at) AS newest_at
+                FROM harness_usage_events
                 WHERE (?='' OR repository=?) AND (?='' OR created_at>=?)
                 GROUP BY repository
                 """,
@@ -2815,6 +3282,25 @@ class Store:
             value["payload"] = json.loads(str(value["payload"]))
             result.append(value)
         return result
+
+    def latest_merge_outcomes(self, repository: str) -> dict[int, str]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                WITH ranked AS (
+                    SELECT pull_number, outcome,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY repository, pull_number
+                               ORDER BY created_at DESC, rowid DESC
+                           ) AS outcome_rank
+                    FROM merge_executions
+                    WHERE repository=? AND stage='completed'
+                )
+                SELECT pull_number, outcome FROM ranked WHERE outcome_rank=1
+                """,
+                (repository.casefold(),),
+            ).fetchall()
+        return {int(row["pull_number"]): str(row["outcome"]) for row in rows}
 
     def record_submission(
         self, repository: str, issue_number: int, pr_url: str
