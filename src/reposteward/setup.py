@@ -104,6 +104,7 @@ max_log_chars = 2000000
 
 [storage]
 cache_retention_days = 30
+workspace_retention_days = 30
 max_gc_items = 1000
 
 [context]

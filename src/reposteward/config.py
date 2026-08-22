@@ -115,6 +115,7 @@ class RunnerConfig:
 @dataclass(frozen=True, slots=True)
 class StorageConfig:
     cache_retention_days: int = 30
+    workspace_retention_days: int = 30
     max_gc_items: int = 1_000
 
 
@@ -605,6 +606,7 @@ def load_config(
     storage_raw = _section(raw, "storage")
     storage = StorageConfig(
         cache_retention_days=int(storage_raw.get("cache_retention_days", 30)),
+        workspace_retention_days=int(storage_raw.get("workspace_retention_days", 30)),
         max_gc_items=int(storage_raw.get("max_gc_items", 1_000)),
     )
 
@@ -799,6 +801,10 @@ def load_config(
         )
     if not 1 <= storage.cache_retention_days <= 36_500:
         raise ConfigError("storage.cache_retention_days must be between 1 and 36500")
+    if not 1 <= storage.workspace_retention_days <= 36_500:
+        raise ConfigError(
+            "storage.workspace_retention_days must be between 1 and 36500"
+        )
     if not 1 <= storage.max_gc_items <= 10_000:
         raise ConfigError("storage.max_gc_items must be between 1 and 10000")
     if not 512 <= context.follow_up_max_tokens <= 100_000:

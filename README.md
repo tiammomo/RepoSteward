@@ -531,9 +531,9 @@ uv run reposteward storage stats
 uv run reposteward storage stats --repo owner/repository --since-days 30
 ```
 
-输出分别给出逻辑载荷字节、验证日志缓存和 SQLite/WAL/SHM 的实际文件字节；跨仓库共享的内容
-寻址 Blob 会在各仓库行中显示引用字节，并在说明字段中明确其可能重复计算，避免把逻辑引用误当成
-全局物理占用。
+输出分别给出逻辑载荷字节、验证日志缓存、隔离工作区和 SQLite/WAL/SHM 的实际文件字节。工作区
+统计只读取文件系统元数据，不读取文件正文或跟随符号链接；跨仓库共享的内容寻址 Blob 会在各仓库
+行中显示引用字节，并在说明字段中明确其可能重复计算，避免把逻辑引用误当成全局物理占用。
 
 清理命令默认只生成精确计划，不写数据库或删除文件：
 
@@ -541,10 +541,12 @@ uv run reposteward storage stats --repo owner/repository --since-days 30
 uv run reposteward storage gc --repo owner/repository
 ```
 
-默认候选只有超过用户级 `cache_retention_days` 且已有终态 Checkpoint 的验证日志。原始 GitHub
-事件正文没有默认期限；只有仓库显式配置 `event_payload_retention_days` 后，超过期限且每个 run 水位
-都已覆盖的正文才进入候选。计划会列出每个候选、预计可回收字节及保留原因汇总，并始终保护事件
-索引、Checkpoint、Merge Decision、Merge Execution 和 GC 审计。
+验证日志候选必须超过用户级 `cache_retention_days` 且已有终态 Checkpoint。工作区候选必须超过
+`workspace_retention_days`，关联的所有 run 均到达终态 Checkpoint，并且 Git 工作区干净、提交已由
+submitted run 或远端引用证明可恢复；活跃、未知、脏、未推送、路径异常和符号链接工作区都会保留。
+原始 GitHub 事件正文没有默认期限；只有仓库显式配置 `event_payload_retention_days` 后，超过期限且
+每个 run 水位都已覆盖的正文才进入候选。计划会列出每个候选、预计可回收字节及保留原因汇总，并
+始终保护事件索引、Checkpoint、Merge Decision、Merge Execution 和 GC 审计。
 
 实际应用需要命令参数和独立环境开关同时存在：
 
@@ -553,8 +555,9 @@ REPOSTEWARD_ENABLE_GC=1 uv run reposteward storage gc \
   --repo owner/repository --apply
 ```
 
-apply 前会追加 `applying` 审计，删除后再追加 `completed` 审计；中断后可从未完成记录识别并安全
-重跑。SQLite Blob 删除释放的是可复用数据库页，不会自动执行 `VACUUM` 或承诺立即缩小数据库文件。
+apply 前会追加 `applying` 审计；每个工作区在删除前会重新扫描并核对目录身份、快照、HEAD 和 run
+状态，删除后再追加 `completed` 审计。中断后可从未完成记录识别并安全重跑。SQLite Blob 删除释放
+的是可复用数据库页，不会自动执行 `VACUUM` 或承诺立即缩小数据库文件。
 
 ## 安全约束
 
