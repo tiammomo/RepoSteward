@@ -419,6 +419,52 @@ class CliSetupTests(unittest.TestCase):
             lease_seconds=60,
         )
 
+    def test_batch_commands_separate_read_only_plan_from_reviewed_apply(self) -> None:
+        pipeline = MagicMock()
+        pipeline.batch_plan.return_value = {
+            "batch_digest": "d" * 64,
+            "plan": {"repository": "owner/repo", "queue_order": []},
+        }
+        pipeline.batch_apply.return_value = {
+            "batch_digest": "d" * 64,
+            "tasks": [],
+            "public_write": False,
+        }
+
+        with (
+            patch("reposteward.cli.load_config", return_value=object()),
+            patch("reposteward.cli.Pipeline", return_value=pipeline),
+            redirect_stdout(io.StringIO()),
+        ):
+            plan_code = main(["batch", "plan", "owner/repo", "--max-parallel", "6"])
+            apply_code = main(
+                [
+                    "batch",
+                    "apply",
+                    "owner/repo",
+                    "--expected-digest",
+                    "d" * 64,
+                    "--reviewed-by",
+                    "alice",
+                    "--max-parallel",
+                    "6",
+                    "--priority",
+                    "80",
+                ]
+            )
+
+        self.assertEqual((plan_code, apply_code), (0, 0))
+        pipeline.batch_plan.assert_called_once_with(
+            "owner/repo", expected_digest="", max_parallel=6
+        )
+        pipeline.batch_apply.assert_called_once_with(
+            "owner/repo",
+            expected_digest="d" * 64,
+            reviewed_by="alice",
+            max_parallel=6,
+            priority=80,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

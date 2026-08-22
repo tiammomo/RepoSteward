@@ -295,6 +295,40 @@ REPOSTEWARD_ENABLE_QUEUE_APPLY=1 \
 动作白名单和有界标量参数，不保存 prompt、token、评论正文或绝对工作区路径；attempt 审计不参与
 普通 GC。
 
+多个已提交 PR 可以先生成只读 merge-train 计划。计划复用同一次 Portfolio/Dependency 快照，输出
+权威依赖顺序、非权威重叠分组、可并行预检集合、WIP 状态、逐 PR blocker 和稳定 batch digest；
+Draft、缺失本地 submitted run、外部 head 变化及不完整事实都会失败关闭：
+
+```bash
+uv run reposteward batch plan owner/repository --max-parallel 6 --format text
+```
+
+审核该输出后，apply 必须带回精确 digest，并且只把计划写成串行 `batch-advance` 队列任务，不会立即
+修改 workspace 或 GitHub。仓库级写入刻意串行，避免一个 PR 合并后其他 PR 继续消费旧 base：
+
+```bash
+REPOSTEWARD_ENABLE_BATCH_APPLY=1 \
+  uv run reposteward batch apply owner/repository \
+  --expected-digest BATCH_DIGEST --reviewed-by your-github-login
+```
+
+执行这些任务仍需显式开启队列和原有公开写入边界：
+
+```bash
+REPOSTEWARD_ENABLE_BATCH_APPLY=1 \
+REPOSTEWARD_ENABLE_QUEUE_APPLY=1 \
+REPOSTEWARD_ENABLE_SUBMIT=1 \
+REPOSTEWARD_ENABLE_OWNER_ATTESTATION=1 \
+REPOSTEWARD_ENABLE_MERGE=1 \
+  uv run reposteward queue apply --repo owner/repository --limit 20
+```
+
+每个任务都会重新读取当前 PR。base 未变化时直接复用 owner attestation、merge decision 和 merge
+executor；base 变化时在原 clean worktree 上执行确定性 Git replay，并用原验证命令重新进入
+`adopt`/`submit`，不会调用 Harness。CI 尚未结束会进入有界退避，rebase 冲突会先 abort 恢复已验证
+HEAD，再标记 `manual_required`，不会自动解决冲突或覆盖维护者改动。文件重叠只影响预检分组，不能
+凭自身制造依赖；公开 push 和 merge 仍有各自的身份、租约、SHA 与 intent/result 审计。
+
 检查贡献门禁并准备修复：
 
 ```bash

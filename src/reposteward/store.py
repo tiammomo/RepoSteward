@@ -675,10 +675,21 @@ QUEUE_ACTIONS = frozenset(
         "merge-decision",
         "merge-attest",
         "merge",
+        "batch-advance",
     }
 )
 QUEUE_STATES = frozenset({"pending", "running", "completed", "failed", "cancelled"})
-QUEUE_PARAMETER_KEYS = frozenset({"reviewed_by", "decision_id", "reopen_pull_request"})
+QUEUE_PARAMETER_KEYS = frozenset(
+    {
+        "reviewed_by",
+        "decision_id",
+        "reopen_pull_request",
+        "batch_plan_digest",
+        "batch_head_sha",
+        "batch_base_sha",
+        "batch_verified_base_sha",
+    }
+)
 QUEUE_RESULT_KEYS = frozenset(
     {
         "run_id",
@@ -3167,6 +3178,15 @@ class Store:
             "submit": frozenset({"reviewed_by"}),
             "merge-attest": frozenset({"reviewed_by"}),
             "merge": frozenset({"reviewed_by", "decision_id"}),
+            "batch-advance": frozenset(
+                {
+                    "reviewed_by",
+                    "batch_plan_digest",
+                    "batch_head_sha",
+                    "batch_base_sha",
+                    "batch_verified_base_sha",
+                }
+            ),
         }
         required_keys = required[action]
         missing = required_keys - set(parameters)
@@ -3195,6 +3215,19 @@ class Store:
             not isinstance(decision_id, str) or not _is_lower_hex(decision_id, 32)
         ):
             raise ValueError("queue decision_id must be 32 lowercase hex characters")
+        for key, length in (
+            ("batch_plan_digest", 64),
+            ("batch_head_sha", 40),
+            ("batch_base_sha", 40),
+            ("batch_verified_base_sha", 40),
+        ):
+            value = parameters.get(key)
+            if value is not None and (
+                not isinstance(value, str) or not _is_lower_hex(value, length)
+            ):
+                raise ValueError(
+                    f"queue {key} must be {length} lowercase hex characters"
+                )
         reopen = parameters.get("reopen_pull_request")
         if reopen is not None and (
             isinstance(reopen, bool) or not isinstance(reopen, int) or reopen < 0

@@ -101,6 +101,24 @@ GitHub，Merge Decision 只在当前 PR 存在直接依赖时读取目标 PR，�
 的两次 freshness 检查。RepoSteward 不能阻止维护者绕过它直接在 GitHub 点击 Ready，但所有由
 RepoSteward 产生的 Ready 判断和 merge 决策都会失败关闭。
 
+Batch Orchestrator 是 Portfolio 与持久队列之间的确定性协调层。它在一次 open-PR listing 上复用
+Portfolio Snapshot 和 Dependency Plan，将本地最新 submitted run 与精确 PR branch/head 关联，
+然后生成带 batch digest 的计划。显式依赖决定拓扑顺序；文件重叠通过倒排索引结果形成连通分组，
+并用于把预检候选拆成互不重叠的有界 parallel set，但不升级为依赖。Draft、缺失或歧义 run、外部
+head/branch 变化、循环和不完整分页事实进入明确 blocker。WIP 超限被展示而不阻止减少现有 WIP。
+
+Batch apply 必须重读全部线上事实并匹配维护者审阅过的 digest，随后只写 `batch-advance` 队列意图。
+即使计划展示可并行预检集合，仓库级 merge train 仍使用 task dependency 串行化公开写入，因为任何
+一次 merge 都会改变其余 PR 的 base。任务只携带 root run、PR、计划摘要及计划时 head/base；切换
+进程、账号或 Harness 不需要重建顺序，也不会把 prompt 或 workspace 路径复制进队列。
+
+执行者在每一步重新读取 PR：当前 verified head/base 可直接进入原 owner attestation、merge decision
+和 merge executor；base 已前进时，对 clean worktree 使用 `git rebase --onto` 重放原提交，并用原
+verification commands 创建 successor run。该路径不调用 Harness。重放通过后仍复用 adopt 的隔离
+Runner 和 submit 的 force-with-lease/intent-result 边界；CI pending 作为有界可重试等待，冲突则
+执行 `rebase --abort` 恢复原 HEAD 并进入人工状态。每个独立公开动作的环境开关和身份门禁继续有效，
+batch 与 queue 开关不能代替它们。
+
 ## 持久数据模型
 
 SQLite 使用显式 `PRAGMA user_version` 迁移。现有用户的未版本化数据库会原地升级；高于当前

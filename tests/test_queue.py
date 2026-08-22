@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from reposteward.config import RepositoryPolicy
-from reposteward.pipeline import Pipeline
+from reposteward.pipeline import BatchConflictError, BatchDeferred, Pipeline
 from reposteward.policy import PolicyError
 from reposteward.store import SCHEMA_VERSION, QueueLease, Store, StoreError
 
@@ -150,6 +150,21 @@ class QueueStoreTests(unittest.TestCase):
             parameters={},
         )
         self.assertEqual(follow_up["issue_number"], 3)
+
+    def test_batch_parameters_are_exact_bounded_hashes(self) -> None:
+        parameters = {
+            "reviewed_by": "alice",
+            "batch_plan_digest": "d" * 64,
+            "batch_head_sha": "a" * 40,
+            "batch_base_sha": "b" * 40,
+            "batch_verified_base_sha": "b" * 40,
+        }
+
+        Store._validate_queue_parameters("batch-advance", parameters)
+        with self.assertRaisesRegex(ValueError, "batch_head_sha"):
+            Store._validate_queue_parameters(
+                "batch-advance", {**parameters, "batch_head_sha": "not-a-sha"}
+            )
 
     def test_expired_claim_is_taken_over_and_old_generation_is_fenced(self) -> None:
         task = self.enqueue(3, max_attempts=2)
@@ -380,6 +395,43 @@ class QueuePipelineTests(unittest.TestCase):
         inspected = self.pipeline.queue_inspect(task_id=task["id"])
         self.assertEqual(inspected["counts"]["failed"], 1)
         self.assertEqual(inspected["manual_required"], 1)
+
+    def test_batch_wait_is_retryable_and_reports_prior_public_progress(self) -> None:
+        run_id = self.pipeline.store.start_run("owner/repo", 43, "pull_request")
+        self.pipeline.store.update_run(
+            run_id,
+            status="submitted",
+            details={"pr_url": "https://github.com/owner/repo/pull/43"},
+        )
+        task = self.pipeline.enqueue_task(
+            "owner/repo",
+            action="batch-advance",
+            run_id=run_id,
+            pull_number=43,
+            max_attempts=2,
+            reviewed_by="alice",
+            batch_plan_digest="d" * 64,
+            batch_head_sha="a" * 40,
+            batch_base_sha="b" * 40,
+            batch_verified_base_sha="b" * 40,
+        )["task"]
+        self.pipeline.batch_advance = Mock(
+            side_effect=BatchDeferred("wait for CI", public_write=True)
+        )
+
+        with patch.dict(os.environ, {"REPOSTEWARD_ENABLE_QUEUE_APPLY": "1"}):
+            result = self.pipeline.apply_queue(worker="worker")
+
+        self.assertEqual(result["outcomes"][0]["error_code"], "batch_waiting")
+        self.assertTrue(result["outcomes"][0]["retryable"])
+        self.assertFalse(result["outcomes"][0]["manual_required"])
+        self.assertTrue(result["public_write"])
+        inspected = self.pipeline.queue_inspect(task_id=task["id"])
+        self.assertEqual(inspected["counts"]["failed"], 1)
+        self.assertEqual(
+            self.pipeline._queue_failure(BatchConflictError("conflict")),
+            ("batch_conflict", False),
+        )
 
 
 if __name__ == "__main__":
