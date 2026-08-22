@@ -6,7 +6,10 @@ import os
 import re
 import sqlite3
 import subprocess
+import threading
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -64,7 +67,7 @@ from .portfolio import build_portfolio_snapshot
 from .protocol import read_context_bundle, validate_context_bundle
 from .repair_prompt import build_budgeted_repair_context_pack
 from .review import compact_command, compact_run
-from .store import Store, StoreError
+from .store import RunLease, Store, StoreError
 from .usage import (
     build_usage_report,
     compact_usage_budget,
@@ -137,6 +140,42 @@ class Pipeline:
         self.harness = harness or create_harness(config.agent)
         self.verifier = DockerVerifier(config)
         self.workspaces = WorkspaceManager(config)
+
+    @contextmanager
+    def _mutation_lease(self, repository: str, issue_number: int) -> Iterator[RunLease]:
+        """Serialize one Issue lifecycle while allowing unrelated Issues in parallel."""
+        scope = f"issue:{repository.casefold()}#{issue_number}"
+        owner = f"{os.getpid()}:{uuid.uuid4().hex}"
+        lease = self.store.acquire_run_lease(scope, owner=owner, ttl_seconds=90)
+        stopped = threading.Event()
+
+        def heartbeat() -> None:
+            nonlocal lease
+            while not stopped.wait(30):
+                try:
+                    lease = self.store.renew_run_lease(lease, ttl_seconds=90)
+                except (OSError, sqlite3.Error, StoreError):
+                    # A later retry may recover while the current lease is active.
+                    continue
+
+        thread = threading.Thread(
+            target=heartbeat,
+            name=f"reposteward-lease-{issue_number}",
+            daemon=True,
+        )
+        thread.start()
+        try:
+            with self.store.bind_run_lease(lease):
+                yield lease
+            self.store.validate_run_lease(lease)
+        finally:
+            stopped.set()
+            thread.join(timeout=1)
+            try:
+                self.store.release_run_lease(lease)
+            except (OSError, sqlite3.Error, StoreError):
+                # A stale owner must not remove a successor's lease.
+                pass
 
     def policy(self, repository: str) -> RepositoryPolicy:
         try:
@@ -1361,6 +1400,10 @@ class Pipeline:
         )
 
     def prepare(self, repository: str, issue_number: int) -> dict[str, Any]:
+        with self._mutation_lease(repository, issue_number):
+            return self._prepare_leased(repository, issue_number)
+
+    def _prepare_leased(self, repository: str, issue_number: int) -> dict[str, Any]:
         policy = self.policy(repository)
         candidate = self.ensure_candidate(repository, issue_number)
         if candidate.blockers:
@@ -1532,6 +1575,26 @@ class Pipeline:
             raise
 
     def adopt(
+        self,
+        repository: str,
+        issue_number: int,
+        *,
+        worktree: Path,
+        summary_text: str,
+        implementation_notes: str,
+        verification_commands: tuple[str, ...],
+    ) -> dict[str, Any]:
+        with self._mutation_lease(repository, issue_number):
+            return self._adopt_leased(
+                repository,
+                issue_number,
+                worktree=worktree,
+                summary_text=summary_text,
+                implementation_notes=implementation_notes,
+                verification_commands=verification_commands,
+            )
+
+    def _adopt_leased(
         self,
         repository: str,
         issue_number: int,
@@ -2316,7 +2379,11 @@ class Pipeline:
 
     def follow_up(self, run_id: str) -> dict[str, Any]:
         """Commit and return GitHub activity changed since the previous check."""
-        return self._follow_up(run_id, commit=True)
+        run = self.store.run(run_id)
+        if run is None:
+            raise KeyError(f"run not found: {run_id}")
+        with self._mutation_lease(str(run["repository"]), int(run["issue_number"])):
+            return self._follow_up(run_id, commit=True)
 
     def _follow_up(self, run_id: str, *, commit: bool) -> dict[str, Any]:
         """Collect one event batch, optionally advancing its Review Checkpoint."""
@@ -2554,6 +2621,15 @@ class Pipeline:
         return committed
 
     def prepare_repair(self, source_run_id: str) -> dict[str, Any]:
+        source_run = self.store.run(source_run_id)
+        if source_run is None:
+            raise KeyError(f"run not found: {source_run_id}")
+        with self._mutation_lease(
+            str(source_run["repository"]), int(source_run["issue_number"])
+        ):
+            return self._prepare_repair_leased(source_run_id)
+
+    def _prepare_repair_leased(self, source_run_id: str) -> dict[str, Any]:
         """Prepare one contributor repair from newly committed PR activity."""
         source_run = self.store.run(source_run_id)
         if source_run is None:
@@ -3350,6 +3426,27 @@ class Pipeline:
     def execute_merge(
         self, run_id: str, *, decision_id: str, reviewed_by: str
     ) -> dict[str, Any]:
+        run = self.store.run(run_id)
+        if run is None:
+            raise KeyError(f"run not found: {run_id}")
+        with self._mutation_lease(
+            str(run["repository"]), int(run["issue_number"])
+        ) as lease:
+            return self._execute_merge_leased(
+                run_id,
+                decision_id=decision_id,
+                reviewed_by=reviewed_by,
+                mutation_lease=lease,
+            )
+
+    def _execute_merge_leased(
+        self,
+        run_id: str,
+        *,
+        decision_id: str,
+        reviewed_by: str,
+        mutation_lease: RunLease,
+    ) -> dict[str, Any]:
         """Execute one fresh eligible maintainer decision behind explicit gates."""
         run = self.store.run(run_id)
         if run is None:
@@ -3597,6 +3694,7 @@ class Pipeline:
 
         public_write = False
         try:
+            self.store.validate_run_lease(mutation_lease)
             public_write = True
             result = self.github.merge_pull_request(
                 repository,
@@ -3680,6 +3778,24 @@ class Pipeline:
         *,
         reviewed_by: str,
         reopen_pull_request: int = 0,
+    ) -> dict[str, Any]:
+        with self._mutation_lease(repository, issue_number) as lease:
+            return self._submit_leased(
+                repository,
+                issue_number,
+                reviewed_by=reviewed_by,
+                reopen_pull_request=reopen_pull_request,
+                mutation_lease=lease,
+            )
+
+    def _submit_leased(
+        self,
+        repository: str,
+        issue_number: int,
+        *,
+        reviewed_by: str,
+        reopen_pull_request: int = 0,
+        mutation_lease: RunLease,
     ) -> dict[str, Any]:
         policy = self.policy(repository)
         submit_enabled = os.environ.get("REPOSTEWARD_ENABLE_SUBMIT") == "1"
@@ -3787,6 +3903,7 @@ class Pipeline:
 
         if reopen_pull_request:
             assert closed_pull is not None
+            self.store.validate_run_lease(mutation_lease)
             pull_request = client.reopen_pull_request(
                 policy.name,
                 reopen_pull_request,
@@ -3797,6 +3914,7 @@ class Pipeline:
                 body=body,
             )
             try:
+                self.store.validate_run_lease(mutation_lease)
                 self.workspaces.push(
                     worktree,
                     destination,
@@ -3828,6 +3946,7 @@ class Pipeline:
                         f"{existing_pull.base_branch!r}, expected "
                         f"{details['base_branch']!r}"
                     )
+                self.store.validate_run_lease(mutation_lease)
                 self.workspaces.push(
                     worktree,
                     destination,
@@ -3836,7 +3955,9 @@ class Pipeline:
                 )
                 pull_request = client.pull_request(policy.name, existing_pull.number)
             else:
+                self.store.validate_run_lease(mutation_lease)
                 self.workspaces.push(worktree, destination, details["branch"])
+                self.store.validate_run_lease(mutation_lease)
                 pull_request = client.create_pull_request(
                     policy.name,
                     owner=head_owner,

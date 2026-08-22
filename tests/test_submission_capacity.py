@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from reposteward.config import RepositoryPolicy
 from reposteward.github import GitHubError, PullRequest
 from reposteward.pipeline import Pipeline
 from reposteward.policy import PolicyError
+from reposteward.store import RunLease
 
 
 def _pull(number: int, *, author: str = "alice", draft: bool = False) -> PullRequest:
@@ -35,6 +37,26 @@ class _SubmissionStore:
 
     def latest_run(self, _repository: str, _issue_number: int) -> dict:
         return {"id": "run-1", "status": "ready", "details": self.details}
+
+    @staticmethod
+    def acquire_run_lease(scope: str, *, owner: str, ttl_seconds: int) -> RunLease:
+        return RunLease(scope, owner, 1, "2999-01-01T00:00:00+00:00")
+
+    @staticmethod
+    def renew_run_lease(lease: RunLease, *, ttl_seconds: int) -> RunLease:
+        return lease
+
+    @staticmethod
+    def bind_run_lease(_lease: RunLease):
+        return nullcontext()
+
+    @staticmethod
+    def validate_run_lease(_lease: RunLease) -> None:
+        return None
+
+    @staticmethod
+    def release_run_lease(_lease: RunLease) -> None:
+        return None
 
     def update_run(self, _run_id: str, **values) -> None:
         self.updated = values

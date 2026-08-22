@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -18,6 +19,17 @@ from reposteward.models import (
 )
 from reposteward.pipeline import Pipeline, _canonical_digest, _repair_feedback
 from reposteward.policy import DiffSummary, PolicyError
+from reposteward.store import RunLease
+
+
+def _lease_aware_store(store: Mock) -> Mock:
+    lease = RunLease(
+        "issue:owner/repo#7", "test-worker", 1, "2999-01-01T00:00:00+00:00"
+    )
+    store.acquire_run_lease.return_value = lease
+    store.renew_run_lease.return_value = lease
+    store.bind_run_lease.return_value = nullcontext()
+    return store
 
 
 def _follow(**extra: object) -> dict:
@@ -82,7 +94,7 @@ class RepairTests(unittest.TestCase):
             ("src/example.py",),
         )
         pipeline = object.__new__(Pipeline)
-        pipeline.store = Mock()
+        pipeline.store = _lease_aware_store(Mock())
         pipeline.store.commit_github_follow_up.return_value = {"sequence": 9}
         source = {
             "id": "source",
@@ -106,7 +118,7 @@ class RepairTests(unittest.TestCase):
         pipeline.config = SimpleNamespace(
             repositories={"owner/repo": RepositoryPolicy(name="owner/repo")}
         )
-        pipeline.store = Mock()
+        pipeline.store = _lease_aware_store(Mock())
         pipeline.store.run.return_value = {
             "id": "source",
             "repository": "owner/repo",
@@ -127,7 +139,7 @@ class RepairTests(unittest.TestCase):
         pipeline.config = SimpleNamespace(
             repositories={"owner/repo": RepositoryPolicy(name="owner/repo")}
         )
-        pipeline.store = Mock()
+        pipeline.store = _lease_aware_store(Mock())
         pipeline.store.run.return_value = {
             "id": "source",
             "repository": "owner/repo",
@@ -216,7 +228,7 @@ class RepairTests(unittest.TestCase):
                 },
             }
             ready = {"id": "repair", "repository": "owner/repo", "issue_number": 7}
-            store = Mock()
+            store = _lease_aware_store(Mock())
             store.run.side_effect = lambda run_id: (
                 source if run_id == "source" else ready
             )
@@ -316,7 +328,7 @@ class RepairSubmissionTests(unittest.TestCase):
             "snapshot_digest": _canonical_digest(snapshot),
         }
         pipeline = object.__new__(Pipeline)
-        pipeline.store = Mock()
+        pipeline.store = _lease_aware_store(Mock())
         pipeline.store.run.return_value = {"status": "submitted"}
         pipeline.store.ingest_github_pr_activity.return_value = {
             "previous_sequence": 9,
@@ -342,7 +354,7 @@ class RepairSubmissionTests(unittest.TestCase):
         policy = RepositoryPolicy(name="owner/repo")
         snapshot = {"head_sha": "a" * 40, "base_sha": "b" * 40}
         pipeline = object.__new__(Pipeline)
-        pipeline.store = Mock()
+        pipeline.store = _lease_aware_store(Mock())
         pipeline.store.run.return_value = {"status": "submitted"}
         pipeline.store.ingest_github_pr_activity.return_value = {
             "previous_sequence": 9,

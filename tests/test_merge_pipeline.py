@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -10,7 +11,7 @@ from reposteward.context import repository_policy_digest
 from reposteward.github import GitHubError, PullRequest
 from reposteward.pipeline import Pipeline
 from reposteward.policy import PolicyError
-from reposteward.store import StoreError
+from reposteward.store import RunLease, StoreError
 
 
 class StubStore:
@@ -27,6 +28,7 @@ class StubStore:
         return {
             "id": run_id,
             "repository": "owner/repo",
+            "issue_number": 7,
             "status": "submitted",
             "details": {
                 "pr_url": "https://github.com/owner/repo/pull/12",
@@ -35,6 +37,26 @@ class StubStore:
                 "branch": "alice/feat/example",
             },
         }
+
+    @staticmethod
+    def acquire_run_lease(scope: str, *, owner: str, ttl_seconds: int) -> RunLease:
+        return RunLease(scope, owner, 1, "2999-01-01T00:00:00+00:00")
+
+    @staticmethod
+    def renew_run_lease(lease: RunLease, *, ttl_seconds: int) -> RunLease:
+        return lease
+
+    @staticmethod
+    def bind_run_lease(_lease: RunLease):
+        return nullcontext()
+
+    @staticmethod
+    def validate_run_lease(_lease: RunLease) -> None:
+        return None
+
+    @staticmethod
+    def release_run_lease(_lease: RunLease) -> None:
+        return None
 
     def context_bundle(self, _run_id: str) -> dict:
         return {

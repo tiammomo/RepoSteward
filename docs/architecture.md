@@ -124,6 +124,13 @@ SQLite 使用显式 `PRAGMA user_version` 迁移。现有用户的未版本化�
 - `github_pr_watermarks`：保存每个 run 已经形成 Review Checkpoint 的事件序号。事件先幂等入库，
 Checkpoint 与水位再在同一事务中提交，因此中断后可以安全重试。
 
+会改变上述事实的长任务按 `repository + Issue` 获取 SQLite 运行租约。租约包含 owner、
+generation 和过期时间，并由执行进程续租；同一 Issue 的 prepare、adopt、repair、follow-up、
+submit 与 merge 串行，不同 Issue 仍可并行。绑定租约时，每次短 Store 操作在同一 SQLite 写事务内
+完成 generation 点查和状态写入；事务不会跨 Harness、Docker 或 GitHub 等慢边界。远端写入前还会
+重新检查租约，并继续使用 head SHA、force-with-lease 等远端幂等条件。崩溃后的租约可在到期后接管，
+但旧 generation 不能继续写入本地事实，所有获取、续租、接管和释放动作都保留追加式审计记录。
+
 事件正文默认没有清理期限。只有仓库策略显式设置正整数 `event_payload_retention_days`，且同一 PR
 的每个 run 水位都已经越过该事件时，正文才可成为 GC 候选。候选在删除事务内重新计算；删除会先
 写 tombstone，再移除 Blob。无配置、保留期内或任一 run 尚未形成 Checkpoint 的正文都必须保留。
