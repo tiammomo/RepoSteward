@@ -46,6 +46,18 @@ max_gc_items = 1000
 [context]
 follow_up_max_tokens = 24000
 
+# Optional user-owned, dated rates per one million tokens. Repository-local
+# configuration cannot override this section. Replace these example values.
+# [[observability.prices]]
+# harness = "codex-sdk"
+# model = "your-model"
+# effective_from = "2026-08-01"
+# currency = "USD"
+# input_per_million = "1.00"
+# cached_input_per_million = "0.10"
+# output_per_million = "4.00"
+# reasoning_output_per_million = "4.00"
+
 [repositories."owner/repository"]
 enabled = true
 auto_prepare = false

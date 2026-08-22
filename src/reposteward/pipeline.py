@@ -8,7 +8,7 @@ import sqlite3
 import subprocess
 import uuid
 from dataclasses import asdict, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -57,13 +57,19 @@ from .issues import (
     validate_issue_title,
 )
 from .merge import MergeCheck, MergeDecision, MergeSnapshot, evaluate_merge
-from .models import AgentResult, Candidate
+from .models import AgentExecution, AgentResult, Candidate
 from .policy import PolicyError, conventional_scope, enforce_change_policy
 from .portfolio import build_portfolio_snapshot
 from .protocol import read_context_bundle, validate_context_bundle
 from .repair_prompt import build_budgeted_repair_context_pack
 from .review import compact_command, compact_run
-from .store import Store
+from .store import Store, StoreError
+from .usage import (
+    build_usage_report,
+    compact_usage_budget,
+    compact_usage_metrics,
+    session_resume_outcome,
+)
 from .verifier import DockerVerifier
 from .workspace import WorkspaceManager
 
@@ -129,6 +135,34 @@ class Pipeline:
             return self.config.repositories[repository.casefold()]
         except KeyError as exc:
             raise PolicyError(f"repository is not allowlisted: {repository}") from exc
+
+    def _record_harness_usage(
+        self,
+        *,
+        run_id: str,
+        run_stage: str,
+        requested_session_id: str,
+        context: ContextPack,
+        execution: AgentExecution,
+        budget: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        outcome = session_resume_outcome(
+            requested_session_id,
+            execution.native_session_id,
+            execution.metrics.warnings,
+        )
+        return self.store.record_harness_usage(
+            run_id=run_id,
+            run_stage=run_stage,
+            harness=execution.harness or self.harness.name,
+            model=execution.model,
+            session_resume=outcome,
+            portable_context_fallback=(
+                context.handoff is not None and outcome != "resumed"
+            ),
+            metrics=compact_usage_metrics(execution.metrics),
+            budget=compact_usage_budget(budget),
+        )
 
     def portfolio_snapshot(
         self, repository: str, *, expected_digest: str = ""
@@ -1358,6 +1392,13 @@ class Pipeline:
                 model=agent_execution.model,
                 native_session_id=agent_execution.native_session_id,
             )
+            self._record_harness_usage(
+                run_id=run_id,
+                run_stage="prepare",
+                requested_session_id=native_session_id,
+                context=context,
+                execution=agent_execution,
+            )
             agent_result = agent_execution.result
             failure_details.update(
                 {
@@ -1802,6 +1843,76 @@ class Pipeline:
             "notes": (
                 "Per-repository event payload bytes are referenced bytes; one deduplicated "
                 "blob referenced by multiple repositories appears in each repository row."
+            ),
+            "public_write": False,
+        }
+
+    @staticmethod
+    def _usage_boundary(value: str, *, end: bool) -> str:
+        if not value:
+            return ""
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("usage dates must use YYYY-MM-DD") from exc
+        if parsed.isoformat() != value:
+            raise ValueError("usage dates must use YYYY-MM-DD")
+        if end:
+            parsed += timedelta(days=1)
+        return datetime.combine(parsed, datetime.min.time(), tzinfo=UTC).isoformat()
+
+    def usage_report(
+        self,
+        repository: str,
+        *,
+        issue_number: int = 0,
+        pull_number: int = 0,
+        run_stage: str = "",
+        harness: str = "",
+        model: str = "",
+        since: str = "",
+        until: str = "",
+        group_by: str = "pull-request",
+        include_runs: bool = False,
+    ) -> dict[str, Any]:
+        """Aggregate prompt-free Harness usage over one repository lifecycle."""
+        policy = self.policy(repository)
+        if issue_number < 0 or pull_number < 0:
+            raise ValueError("usage issue and pull filters must not be negative")
+        if run_stage and run_stage not in {"prepare", "repair", "adopt"}:
+            raise ValueError("usage stage must be prepare, repair, or adopt")
+        since_boundary = self._usage_boundary(since, end=False)
+        until_boundary = self._usage_boundary(until, end=True)
+        if since_boundary and until_boundary and since_boundary >= until_boundary:
+            raise ValueError("usage since date must not be after until date")
+        rows = self.store.harness_usage_rows(
+            policy.name,
+            issue_number=issue_number,
+            pull_number=pull_number,
+            run_stage=run_stage,
+            harness=harness,
+            model=model,
+            since=since_boundary,
+            until=until_boundary,
+        )
+        filters = {
+            "repository": policy.name.casefold(),
+            "issue_number": issue_number or None,
+            "pull_number": pull_number or None,
+            "run_stage": run_stage or None,
+            "harness": harness or None,
+            "model": model or None,
+            "since": since or None,
+            "until": until or None,
+        }
+        return {
+            **build_usage_report(
+                rows,
+                prices=self.config.observability.prices,
+                filters=filters,
+                group_by=group_by,
+                include_runs=include_runs,
+                merge_outcomes=self.store.latest_merge_outcomes(policy.name),
             ),
             "public_write": False,
         }
@@ -2528,6 +2639,14 @@ class Pipeline:
                 model=execution.model,
                 native_session_id=execution.native_session_id,
             )
+            self._record_harness_usage(
+                run_id=run_id,
+                run_stage="repair",
+                requested_session_id=native_session_id,
+                context=context,
+                execution=execution,
+                budget=final_prompt_budget,
+            )
             result = execution.result
             failure_details.update(
                 {
@@ -3158,6 +3277,30 @@ class Pipeline:
             )
             raise PolicyError(reason)
 
+        def successful_usage_summary() -> dict[str, Any]:
+            try:
+                report = self.usage_report(
+                    repository,
+                    pull_number=pull_number,
+                    group_by="none",
+                )
+            except (
+                ArithmeticError,
+                AttributeError,
+                KeyError,
+                sqlite3.Error,
+                StoreError,
+                TypeError,
+                ValueError,
+            ):
+                # The GitHub merge is already authoritative at these return sites.
+                # A local observability fault must not turn that success into a retry.
+                return {
+                    "status": "unavailable",
+                    "reason": "usage_summary_unavailable",
+                }
+            return {"status": "available", **report["summary"]}
+
         if os.environ.get("REPOSTEWARD_ENABLE_MERGE") != "1":
             block(
                 "merge execution is disabled; set REPOSTEWARD_ENABLE_MERGE=1 "
@@ -3255,6 +3398,7 @@ class Pipeline:
                 "merge_commit_sha": str(raw.get("merge_commit_sha") or ""),
                 "attempt_id": attempt_id,
                 "audit": audits,
+                "usage_summary": successful_usage_summary(),
                 "public_write": False,
             }
         if (
@@ -3303,6 +3447,7 @@ class Pipeline:
                 "merge_commit_sha": str(latest_raw.get("merge_commit_sha") or ""),
                 "attempt_id": attempt_id,
                 "audit": audits,
+                "usage_summary": successful_usage_summary(),
                 "public_write": False,
             }
         if (
@@ -3395,6 +3540,7 @@ class Pipeline:
             "merge_commit_sha": str(result.get("sha") or ""),
             "attempt_id": attempt_id,
             "audit": audits,
+            "usage_summary": successful_usage_summary(),
             "public_write": public_write,
         }
 

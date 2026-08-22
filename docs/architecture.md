@@ -182,6 +182,13 @@ Reviewer 时创建。创建动作有独立环境开关，并要求除 ReviewDeci
 Merge Executor 每次重新读取事实后才接受完全匹配的最新声明。它不会提交 GitHub Approval，也不会
 调用 admin bypass。
 
+Harness Usage Ledger 是本地追加式观测投影。Pipeline 在 Harness 返回后、进入 Runner 验证前写入
+每个 run 唯一的 prompt-free 事件，因此后续验证失败仍能归因实际消耗。事件绑定 run、work item、
+Issue、阶段、Harness 和模型，只包含规范化资源计数、原生会话恢复结果、可移植上下文兜底和裁剪原因；
+事件摘要用于发现本地记录被意外修改。报告层再关联 run 中的 PR 和 Merge Executor 结果，按用户维护
+的生效日期价格计算成本。历史记录缺失、定价缺失和不一致指标均保持 unknown。报告是确定性只读路径，
+不会调用 Harness，也不会存储或重新加载原始提示。
+
 三类协议文档都使用 Draft 2020-12 JSON Schema，schema 随 Python 包发布。持久化和导入边界会
 拒绝未知字段、未来版本、跨 work item/run 的关联错配及不一致摘要。Bundle digest 只能检测意外
 损坏或内容变化，不是数字签名；导入数据仍保留其原始信任级别。
