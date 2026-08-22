@@ -211,7 +211,8 @@ uv run reposteward issue review PROJECT_ITEM_ID_OR_URL \
   --repository owner/repository
 ```
 
-另一位 reviewer 检查 Project 正文和所有潜在重复项后，使用该次 review 返回的精确摘要进行转换：
+符合当前 reviewer 策略的维护者检查 Project 正文和所有潜在重复项后，使用该次 review 返回的精确
+摘要进行转换：
 
 ```bash
 REPOSTEWARD_ENABLE_ISSUE_PROMOTION=1 \
@@ -222,8 +223,13 @@ REPOSTEWARD_ENABLE_ISSUE_PROMOTION=1 \
   --duplicates-reviewed
 ```
 
-线上正文、Project、重复项结果或目标仓库发生变化时，旧摘要失效，必须重新 review。默认禁止提案
-创建者自行转换；检测到凭据或疑似安全漏洞时，暂存和转换都会失败，必须改用私有报告渠道。
+线上正文、Project、重复项结果或目标仓库发生变化时，旧摘要失效，必须重新 review。默认配置
+`require_distinct_reviewer = true`，禁止提案创建者自行转换；单维护者仓库可在用户配置的
+`[issue_review]` 中显式设为 `false`，或在初始化时使用 `--allow-issue-self-review`，此时同一维护者
+可以通过本地 CLI 审核并转换。该配置属于可信用户层，项目级 `.reposteward.toml` 不能覆盖。附带的
+GitHub Actions 模板仍固定采用默认的团队第二人模式；无论采用哪种模式，最新 digest、重复项确认、
+安全扫描、身份校验、环境开关和独立 promotion 都保持强制。检测到凭据或疑似安全漏洞时必须改用
+私有报告渠道。
 GitHub Actions 的人工审查与转换流程见 [`docs/github-actions.md`](docs/github-actions.md)。
 Project 页面 URL 里的数字 `itemId` 也可直接使用，因此不经本地 `stage` 而在线创建的提案同样可审核。
 

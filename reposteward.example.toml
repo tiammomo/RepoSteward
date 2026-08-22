@@ -16,6 +16,8 @@ signoff_commits = true
 project_owner = "your-github-login-or-organization"
 project_number = 1
 project_owner_type = "user"
+# Keep this true for team repositories. A single maintainer may explicitly set
+# it to false only in the trusted per-user configuration.
 require_distinct_reviewer = true
 
 [discovery]

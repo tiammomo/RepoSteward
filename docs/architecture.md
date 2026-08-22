@@ -18,7 +18,9 @@ RepoSteward 在 Harness 之外持续保存这些信息，并提供稳定的控�
 - 可移植交接：不依赖某个供应商的会话 ID，也不依赖某个 GPT 账号的历史记录。
 
 Issue 在进入实现流水线前也采用准备/发布分离：GitHub Project Draft Issue 是多人共享的线上
-提案，仓库正式 Issue 是经过第二人审核后的工作契约。二者不能由一次无审核写操作直接贯通。
+提案，仓库正式 Issue 是经过配置化 reviewer 策略审核后的工作契约。团队模式默认要求第二人审核；
+单维护者模式只有在可信用户配置显式关闭 distinct reviewer 时才允许自审。二者不能由一次无审核
+写操作直接贯通。
 
 Harness 仍然可以保留自己的原生 session，作为命中缓存或继续推理的加速信息；它不是任务事实
 的唯一副本。
@@ -51,7 +53,7 @@ local draft ── explicit stage ──► Project Draft Issue
                                       │ online edits
                                       ▼
                          duplicate + security review digest
-                                      │ distinct reviewer
+                                      │ configured reviewer policy
                                       ▼
                               repository Issue
 ```

@@ -82,6 +82,19 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(parsed["issue_review"]["project_number"], 7)
         self.assertEqual(parsed["issue_review"]["project_owner_type"], "organization")
 
+    def test_init_can_explicitly_allow_single_maintainer_self_review(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+
+            initialize_user_config(
+                path=path,
+                login="alice",
+                require_distinct_reviewer=False,
+            )
+            parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+
+        self.assertFalse(parsed["issue_review"]["require_distinct_reviewer"])
+
     def test_repo_add_creates_project_config_that_layers_over_user_config(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

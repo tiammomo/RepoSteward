@@ -54,6 +54,7 @@ def render_user_config(
     issue_project_owner: str = "",
     issue_project_number: int = 0,
     issue_project_owner_type: str = "user",
+    require_distinct_reviewer: bool = True,
 ) -> str:
     return f"""config_version = {CONFIG_VERSION}
 
@@ -76,7 +77,7 @@ gh_auth_command = ["gh", "auth", "token", "--hostname", "github.com"]
 project_owner = {_toml_string(issue_project_owner)}
 project_number = {issue_project_number}
 project_owner_type = {_toml_string(issue_project_owner_type)}
-require_distinct_reviewer = true
+require_distinct_reviewer = {str(require_distinct_reviewer).lower()}
 
 [safety]
 max_active_pull_requests = 4
@@ -139,6 +140,7 @@ def initialize_user_config(
     issue_project_owner: str = "",
     issue_project_number: int = 0,
     issue_project_owner_type: str = "user",
+    require_distinct_reviewer: bool = True,
     force: bool = False,
 ) -> dict[str, Any]:
     if not login:
@@ -166,6 +168,7 @@ def initialize_user_config(
             issue_project_owner=issue_project_owner.strip(),
             issue_project_number=issue_project_number,
             issue_project_owner_type=issue_project_owner_type,
+            require_distinct_reviewer=require_distinct_reviewer,
         ),
         force=force,
     )
