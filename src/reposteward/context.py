@@ -45,10 +45,12 @@ def _digest(value: object) -> str:
 
 def repository_policy_digest(policy: RepositoryPolicy) -> str:
     value = asdict(policy)
-    # Preserve outstanding run digests when upgrading to the default-off feature.
-    # Enabling it remains a material policy change and receives a different digest.
+    # Preserve outstanding run digests when adding default-neutral policy fields.
+    # Enabling either field remains material and receives a different digest.
     if not policy.owner_attestation:
         value.pop("owner_attestation")
+    if policy.max_active_pull_requests is None:
+        value.pop("max_active_pull_requests")
     return _digest(value)
 
 

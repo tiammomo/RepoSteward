@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from reposteward.config import load_config
-from reposteward.models import AgentResult
+from reposteward.config import RepositoryPolicy, load_config
+from reposteward.models import AgentResult, VerificationResult
 from reposteward.pipeline import Pipeline
-from reposteward.policy import PolicyError, conventional_scope
+from reposteward.policy import (
+    DiffSummary,
+    PolicyError,
+    conventional_scope,
+    enforce_change_policy,
+)
 from reposteward.verifier import DockerVerifier, VerificationError
 from reposteward.workspace import sanitized_environment, slugify
 
@@ -86,6 +91,39 @@ class PolicyTests(unittest.TestCase):
         slug = slugify("BaseSandbox.grep path globs fail because shell is unsafe")
         self.assertLessEqual(len(slug), 48)
         self.assertNotIn(".", slug)
+
+    def test_repository_change_limits_cannot_raise_user_capacity(self) -> None:
+        repository = RepositoryPolicy(
+            name="owner/repo",
+            max_files_changed=100,
+            max_diff_lines=10_000,
+        )
+        verification = VerificationResult(passed=True, commands=())
+        successful_diff_check = Mock(returncode=0, stdout="")
+
+        with (
+            patch(
+                "reposteward.policy.subprocess.run", return_value=successful_diff_check
+            ),
+            patch(
+                "reposteward.policy.summarize_diff",
+                return_value=DiffSummary(tuple(f"file-{i}" for i in range(41)), 1, 0),
+            ),
+            self.assertRaisesRegex(PolicyError, "policy limit is 40"),
+        ):
+            enforce_change_policy(Path("."), verification, repository, self.config)
+
+        with (
+            patch(
+                "reposteward.policy.subprocess.run", return_value=successful_diff_check
+            ),
+            patch(
+                "reposteward.policy.summarize_diff",
+                return_value=DiffSummary(("file",), 2_001, 0),
+            ),
+            self.assertRaisesRegex(PolicyError, "policy limit is 2000"),
+        ):
+            enforce_change_policy(Path("."), verification, repository, self.config)
 
     def test_pull_request_body_contains_review_attestation(self) -> None:
         body = Pipeline._pull_request_body(

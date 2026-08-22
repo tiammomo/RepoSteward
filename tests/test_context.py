@@ -48,10 +48,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RepositoryPolicyDigestTests(unittest.TestCase):
-    def test_default_off_owner_attestation_preserves_legacy_policy_digest(self) -> None:
+    def test_default_capacity_and_attestation_preserve_legacy_policy_digest(
+        self,
+    ) -> None:
         policy = RepositoryPolicy(name="owner/repo")
         legacy = asdict(policy)
         legacy.pop("owner_attestation")
+        legacy.pop("max_active_pull_requests")
         encoded = json.dumps(
             legacy, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode()
@@ -61,6 +64,10 @@ class RepositoryPolicyDigestTests(unittest.TestCase):
         )
         self.assertNotEqual(
             repository_policy_digest(replace(policy, owner_attestation=True)),
+            repository_policy_digest(policy),
+        )
+        self.assertNotEqual(
+            repository_policy_digest(replace(policy, max_active_pull_requests=3)),
             repository_policy_digest(policy),
         )
 

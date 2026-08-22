@@ -20,6 +20,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.runner.max_output_chars, 12_000)
         self.assertEqual(config.runner.passed_output_chars, 2_000)
         self.assertEqual(config.runner.max_log_chars, 2_000_000)
+        self.assertEqual(config.safety.max_active_pull_requests, 4)
+        self.assertEqual(config.safety.max_files_changed, 40)
+        self.assertEqual(config.safety.max_diff_lines, 2_000)
         policy = config.repositories["langchain-ai/deepagents"]
         self.assertTrue(policy.enabled)
         self.assertTrue(policy.require_assignment_before_submit)
@@ -217,6 +220,77 @@ event_payload_retention_days = 0
             )
 
             with self.assertRaisesRegex(ConfigError, "must be positive"):
+                load_config(path)
+
+    def test_capacity_defaults_can_be_raised_by_user_and_tightened_by_project(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            user = root / "user.toml"
+            project = root / "project.toml"
+            user.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[safety]
+max_active_pull_requests = 8
+max_files_changed = 80
+max_diff_lines = 5000
+""",
+                encoding="utf-8",
+            )
+            project.write_text(
+                """config_version = 1
+[safety]
+max_active_pull_requests = 6
+max_files_changed = 60
+max_diff_lines = 3000
+[repositories."owner/repo"]
+max_active_pull_requests = 5
+max_files_changed = 50
+max_diff_lines = 2500
+""",
+                encoding="utf-8",
+            )
+
+            config = load_config(project, user_path=user)
+
+        self.assertEqual(config.safety.max_active_pull_requests, 6)
+        self.assertEqual(config.safety.max_files_changed, 60)
+        self.assertEqual(config.safety.max_diff_lines, 3_000)
+        policy = config.repositories["owner/repo"]
+        self.assertEqual(policy.max_active_pull_requests, 5)
+        self.assertEqual(policy.max_files_changed, 50)
+        self.assertEqual(policy.max_diff_lines, 2_500)
+
+    def test_capacity_limits_must_be_positive(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[safety]
+max_active_pull_requests = 0
+""",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ConfigError, "capacity limits must be positive"
+            ):
+                load_config(path)
+
+            path.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+max_diff_lines = 0
+""",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "owner/repo capacity limits"):
                 load_config(path)
 
     def test_follow_up_token_budget_is_bounded(self) -> None:

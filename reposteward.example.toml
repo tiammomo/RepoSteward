@@ -23,8 +23,9 @@ min_score = 30
 preferred_labels = ["good first issue", "help wanted", "bug", "documentation"]
 
 [safety]
-max_files_changed = 18
-max_diff_lines = 700
+max_active_pull_requests = 4
+max_files_changed = 40
+max_diff_lines = 2000
 require_verification = true
 draft_pull_requests = true
 

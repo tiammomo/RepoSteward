@@ -71,7 +71,13 @@ GitHub 当前事实临时构建仓库级快照：先完整分页枚举开放 PR�
 重叠关系按 changed file 建立倒排索引，只为实际共同修改文件的 PR 组合生成边；成本与读取的文件
 引用和最终输出边数相关，不对所有 PR 两两重扫文件列表。规范化后的完整快照生成稳定摘要，调用方
 可以用 expected digest 检测后续读取是否已经陈旧。v1 不把快照写入数据库、不调用 Harness，也不
-修改 workspace 或 GitHub；它是后续依赖排序、WIP 策略和单步协调器的只读事实层。
+修改 workspace 或 GitHub；它是依赖排序、WIP 策略和单步协调器的只读事实层。
+
+WIP 容量门禁位于显式 submit 边界。RepoSteward 先按精确 branch 查询是否已有 open PR：已有 PR 的
+增量 push 不消耗新容量；创建或重新打开 PR 才完整分页读取仓库 open PR，并只统计当前配置身份创建
+的项目。默认每仓库 4 个，用户层可以调高，项目和仓库层只能取更小值。读取失败或达到上限时，在
+创建 fork、push 或写 PR 前失败关闭。该门禁控制在线并发，不调用 Harness，也不改变 Portfolio 的
+依赖、重叠或合并判断。
 
 Dependency Planner 在该快照上叠加两类权威边：PR 正文中严格、独立的 `Depends on #N` 声明，以及
 维护者通过显式本地门禁确认的 head-bound attestation。外部正文仍是不可信输入，解析器只接受仓库和

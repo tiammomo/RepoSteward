@@ -73,8 +73,9 @@ class DiscoveryConfig:
 
 @dataclass(frozen=True, slots=True)
 class SafetyConfig:
-    max_files_changed: int = 18
-    max_diff_lines: int = 700
+    max_active_pull_requests: int = 4
+    max_files_changed: int = 40
+    max_diff_lines: int = 2_000
     require_verification: bool = True
     draft_pull_requests: bool = True
     forbidden_paths: tuple[str, ...] = (
@@ -168,6 +169,7 @@ class RepositoryPolicy:
     pull_request_template_sha256: str = ""
     branch_template: str = "{login}/issue-{issue}-{slug}"
     default_scope: str = "repo"
+    max_active_pull_requests: int | None = None
     max_files_changed: int | None = None
     max_diff_lines: int | None = None
     merge_risk_paths: tuple[str, ...] = ()
@@ -388,6 +390,7 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
         merged_safety = _merge(user_safety, project_safety)
         defaults = SafetyConfig()
         for key, default in (
+            ("max_active_pull_requests", defaults.max_active_pull_requests),
             ("max_files_changed", defaults.max_files_changed),
             ("max_diff_lines", defaults.max_diff_lines),
         ):
@@ -568,8 +571,9 @@ def load_config(
     safety_defaults = SafetyConfig()
     configured_forbidden = _tuple(safety_raw.get("forbidden_paths"))
     safety = SafetyConfig(
-        max_files_changed=int(safety_raw.get("max_files_changed", 18)),
-        max_diff_lines=int(safety_raw.get("max_diff_lines", 700)),
+        max_active_pull_requests=int(safety_raw.get("max_active_pull_requests", 4)),
+        max_files_changed=int(safety_raw.get("max_files_changed", 40)),
+        max_diff_lines=int(safety_raw.get("max_diff_lines", 2_000)),
         require_verification=_boolean(safety_raw.get("require_verification"), True),
         draft_pull_requests=_boolean(safety_raw.get("draft_pull_requests"), True),
         forbidden_paths=tuple(
@@ -736,6 +740,11 @@ def load_config(
                 repo_value.get("branch_template", "{login}/issue-{issue}-{slug}")
             ),
             default_scope=str(repo_value.get("default_scope", "repo")),
+            max_active_pull_requests=(
+                int(repo_value["max_active_pull_requests"])
+                if "max_active_pull_requests" in repo_value
+                else None
+            ),
             max_files_changed=(
                 int(repo_value["max_files_changed"])
                 if "max_files_changed" in repo_value
@@ -794,9 +803,27 @@ def load_config(
         raise ConfigError("storage.max_gc_items must be between 1 and 10000")
     if not 512 <= context.follow_up_max_tokens <= 100_000:
         raise ConfigError("context.follow_up_max_tokens must be between 512 and 100000")
+    if any(
+        value < 1
+        for value in (
+            safety.max_active_pull_requests,
+            safety.max_files_changed,
+            safety.max_diff_lines,
+        )
+    ):
+        raise ConfigError("safety capacity limits must be positive")
     if not agent.harness:
         raise ConfigError("agent.harness must not be empty")
     for repository in repositories.values():
+        if any(
+            value is not None and value < 1
+            for value in (
+                repository.max_active_pull_requests,
+                repository.max_files_changed,
+                repository.max_diff_lines,
+            )
+        ):
+            raise ConfigError(f"{repository.name} capacity limits must be positive")
         if repository.mode not in {"contributor", "maintainer"}:
             raise ConfigError(
                 f"unsupported mode for {repository.name}: {repository.mode!r}"

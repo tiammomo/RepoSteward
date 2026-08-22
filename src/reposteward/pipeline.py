@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .capacity import effective_capacity_limit, pull_request_capacity
 from .ci import (
     FAILED_CONCLUSIONS,
     MAX_COMPARISON_LOGS,
@@ -838,6 +839,31 @@ class Pipeline:
                 "submission strategy or grant repository write access"
             )
         return policy.name, policy.name.split("/", 1)[0]
+
+    def _ensure_new_pull_capacity(
+        self, client: GitHubClient, policy: RepositoryPolicy
+    ) -> dict[str, Any]:
+        limit = effective_capacity_limit(
+            self.config.safety.max_active_pull_requests,
+            policy.max_active_pull_requests,
+        )
+        capacity = pull_request_capacity(
+            client.open_pull_requests(policy.name),
+            login=self.config.github.login,
+            limit=limit,
+        )
+        if not capacity["allows_new_pull_request"]:
+            numbers = ", ".join(
+                f"#{value['number']}" for value in capacity["active_pull_requests"]
+            )
+            omitted = int(capacity["active_pull_requests_omitted"])
+            suffix = f" (+{omitted} more)" if omitted else ""
+            raise PolicyError(
+                "active pull request capacity reached: "
+                f"{capacity['active_count']}/{capacity['limit']} open PRs for "
+                f"{self.config.github.login}; {numbers or 'no details'}{suffix}"
+            )
+        return capacity
 
     def ensure_candidate(self, repository: str, issue_number: int) -> Candidate:
         policy = self.policy(repository)
@@ -3093,15 +3119,11 @@ class Pipeline:
             expected_head_sha=str(details.get("commit_sha") or ""),
             expected_base_sha=str(details.get("base_commit") or ""),
             expected_policy_digest=expected_policy_digest,
-            max_files_changed=(
-                policy.max_files_changed
-                if policy.max_files_changed is not None
-                else self.config.safety.max_files_changed
+            max_files_changed=effective_capacity_limit(
+                self.config.safety.max_files_changed, policy.max_files_changed
             ),
-            max_diff_lines=(
-                policy.max_diff_lines
-                if policy.max_diff_lines is not None
-                else self.config.safety.max_diff_lines
+            max_diff_lines=effective_capacity_limit(
+                self.config.safety.max_diff_lines, policy.max_diff_lines
             ),
             extra_risk_patterns=policy.merge_risk_paths,
         )
@@ -3605,12 +3627,17 @@ class Pipeline:
             raise PolicyError("publication branch must differ from the base branch")
 
         client = GitHubClient(self.config.github, token)
-        destination, head_owner = self._publication_target(client, policy)
         self._validate_contribution_contract(worktree, policy)
         body = self._pull_request_body(
             issue_number, details, reviewed_by, policy=policy
         )
-        closed_pull = None
+        planned_head_owner = (
+            self.config.github.login
+            if policy.submission_strategy == "fork"
+            else policy.name.split("/", 1)[0]
+        )
+        closed_pull: PullRequest | None = None
+        existing_pull: PullRequest | None = None
         if reopen_pull_request:
             if isinstance(details.get("repair_guard"), dict):
                 raise PolicyError(
@@ -3622,7 +3649,7 @@ class Pipeline:
                     f"pull request {policy.name}#{reopen_pull_request} is not closed"
                 )
             expected = (
-                head_owner.casefold(),
+                planned_head_owner.casefold(),
                 details["branch"],
                 details["base_branch"],
             )
@@ -3634,9 +3661,25 @@ class Pipeline:
             if actual != expected:
                 raise PolicyError(
                     f"pull request {policy.name}#{reopen_pull_request} does not match "
-                    f"{head_owner}:{details['branch']} -> "
+                    f"{planned_head_owner}:{details['branch']} -> "
                     f"{details['base_branch']}"
                 )
+            self._ensure_new_pull_capacity(client, policy)
+        else:
+            existing_pull = client.existing_pull_request(
+                policy.name,
+                owner=planned_head_owner,
+                branch=details["branch"],
+            )
+            if existing_pull is None:
+                self._ensure_new_pull_capacity(client, policy)
+
+        destination, head_owner = self._publication_target(client, policy)
+        if head_owner.casefold() != planned_head_owner.casefold():
+            raise PolicyError("publication target identity changed during submission")
+
+        if reopen_pull_request:
+            assert closed_pull is not None
             pull_request = client.reopen_pull_request(
                 policy.name,
                 reopen_pull_request,
@@ -3658,11 +3701,6 @@ class Pipeline:
                 raise
             pull_request = client.pull_request(policy.name, reopen_pull_request)
         else:
-            existing_pull = client.existing_pull_request(
-                policy.name,
-                owner=head_owner,
-                branch=details["branch"],
-            )
             repair_guard = details.get("repair_guard")
             if isinstance(repair_guard, dict):
                 if existing_pull is None or existing_pull.number != int(

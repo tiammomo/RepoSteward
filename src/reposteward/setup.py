@@ -78,6 +78,13 @@ project_number = {issue_project_number}
 project_owner_type = {_toml_string(issue_project_owner_type)}
 require_distinct_reviewer = true
 
+[safety]
+max_active_pull_requests = 4
+max_files_changed = 40
+max_diff_lines = 2000
+require_verification = true
+draft_pull_requests = true
+
 [agent]
 harness = "codex-cli"
 executable = "codex"
