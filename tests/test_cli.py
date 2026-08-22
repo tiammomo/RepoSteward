@@ -284,6 +284,50 @@ class CliSetupTests(unittest.TestCase):
             ],
         )
 
+    def test_inbox_supports_json_and_text_without_a_harness(self) -> None:
+        result = {
+            "repository": "owner/repo",
+            "complete": True,
+            "items": [],
+            "omitted_count": 0,
+            "public_write": False,
+        }
+        pipeline = MagicMock()
+        pipeline.maintainer_inbox.return_value = result
+        json_output = io.StringIO()
+        text_output = io.StringIO()
+
+        with (
+            patch("reposteward.cli.load_config", return_value=object()),
+            patch("reposteward.cli.Pipeline", return_value=pipeline),
+        ):
+            with redirect_stdout(json_output):
+                json_code = main(["inbox", "--repo", "owner/repo"])
+            with redirect_stdout(text_output):
+                text_code = main(
+                    [
+                        "inbox",
+                        "--repo",
+                        "owner/repo",
+                        "--limit",
+                        "12",
+                        "--format",
+                        "text",
+                    ]
+                )
+
+        self.assertEqual(json_code, 0)
+        self.assertEqual(text_code, 0)
+        self.assertEqual(json.loads(json_output.getvalue()), result)
+        self.assertIn("Maintainer inbox: owner/repo", text_output.getvalue())
+        self.assertEqual(
+            pipeline.maintainer_inbox.call_args_list,
+            [
+                unittest.mock.call("owner/repo", limit=50),
+                unittest.mock.call("owner/repo", limit=12),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

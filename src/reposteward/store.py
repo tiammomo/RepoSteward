@@ -673,6 +673,21 @@ class Store:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def staged_issue_proposals(
+        self, repository: str, *, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        limit = min(max(limit, 1), 500)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM issue_proposals
+                WHERE repository=? AND status='staged'
+                ORDER BY updated_at, project_item_id LIMIT ?
+                """,
+                (repository.casefold(), limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def record_issue_proposal(
         self,
         *,
@@ -2950,6 +2965,41 @@ class Store:
             return None
         result = dict(row)
         result["details"] = json.loads(result["details"])
+        return result
+
+    def latest_runs_for_repository(
+        self, repository: str, *, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        """Return one latest run per Issue without N+1 queries."""
+        limit = min(max(limit, 1), 1_000)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                WITH ranked AS (
+                    SELECT r.*, r.rowid AS run_rowid,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY repository, issue_number
+                               ORDER BY created_at DESC, r.rowid DESC
+                           ) AS run_rank
+                    FROM runs r WHERE repository=?
+                )
+                SELECT ranked.*, submissions.pr_url AS submission_pr_url
+                FROM ranked
+                LEFT JOIN submissions
+                  ON submissions.repository=ranked.repository
+                 AND submissions.issue_number=ranked.issue_number
+                WHERE run_rank=1
+                ORDER BY updated_at, id LIMIT ?
+                """,
+                (repository.casefold(), limit),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            value.pop("run_rank", None)
+            value.pop("run_rowid", None)
+            value["details"] = json.loads(str(value["details"]))
+            result.append(value)
         return result
 
     def append_owner_review_attestation(

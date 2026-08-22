@@ -11,6 +11,7 @@ from .config import ConfigError, load_config
 from .dependencies import render_dependency_plan_text
 from .discovery import DiscoveryService
 from .doctor import run_doctor
+from .inbox import render_inbox_text
 from .issues import read_details
 from .pipeline import Pipeline
 from .portfolio import render_portfolio_text
@@ -278,6 +279,13 @@ def _parser() -> argparse.ArgumentParser:
     dependency_list.add_argument("repository")
     dependency_list.add_argument("--pull-number", type=int, default=0)
     dependency_list.add_argument("--limit", type=int, default=100)
+
+    inbox = subparsers.add_parser(
+        "inbox", help="aggregate maintainer attention without invoking a Harness"
+    )
+    inbox.add_argument("--repo", required=True, help="limit to owner/name")
+    inbox.add_argument("--limit", type=int, default=50)
+    inbox.add_argument("--format", choices=("json", "text"), default="json")
 
     follow_up = subparsers.add_parser(
         "follow-up",
@@ -600,6 +608,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "follow-up":
             _json(pipeline.follow_up(args.run_id))
+            return 0
+        if args.command == "inbox":
+            result = pipeline.maintainer_inbox(args.repo, limit=args.limit)
+            if args.format == "text":
+                print(render_inbox_text(result))
+            else:
+                _json(result)
             return 0
         if args.command == "repair":
             _json(pipeline.prepare_repair(args.run_id))

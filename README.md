@@ -244,6 +244,13 @@ uv run reposteward discover --repo owner/repository
 uv run reposteward list --all
 ```
 
+批量维护时，可用只读收件箱聚合待审提案、本地运行、CI、Review 和合并检查入口；
+该命令不会调用 Harness，也不会修改工作区或 GitHub：
+
+```bash
+uv run reposteward inbox --repo owner/repository --format text
+```
+
 检查贡献门禁并准备修复：
 
 ```bash

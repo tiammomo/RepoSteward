@@ -161,6 +161,50 @@ def _usage_run(store: Store, *, details: dict | None = None) -> tuple[str, str]:
 
 
 class StoreTests(unittest.TestCase):
+    def test_inbox_queries_return_only_staged_proposals_and_latest_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            store.record_issue_proposal(
+                project_item_id="staged",
+                project_id="project",
+                project_url="https://example.test/project",
+                draft_id="draft-1",
+                repository="owner/repo",
+                creator="alice",
+                content_digest="a" * 64,
+            )
+            store.record_issue_proposal(
+                project_item_id="published",
+                project_id="project",
+                project_url="https://example.test/project",
+                draft_id="draft-2",
+                repository="owner/repo",
+                creator="alice",
+                content_digest="b" * 64,
+            )
+            store.mark_issue_proposal_published(
+                "published", issue_number=7, issue_url="https://example.test/issues/7"
+            )
+            old_run = store.start_run("owner/repo", 7, "agent")
+            store.update_run(old_run, status="failed")
+            latest_run = store.start_run("owner/repo", 7, "verification")
+            store.update_run(latest_run, status="ready")
+            other_run = store.start_run("owner/repo", 8, "agent")
+            store.record_submission(
+                "owner/repo", 8, "https://github.com/owner/repo/pull/9"
+            )
+
+            proposals = store.staged_issue_proposals("OWNER/REPO")
+            runs = store.latest_runs_for_repository("OWNER/REPO")
+
+        self.assertEqual([value["project_item_id"] for value in proposals], ["staged"])
+        self.assertEqual({value["id"] for value in runs}, {latest_run, other_run})
+        submitted = next(value for value in runs if value["id"] == other_run)
+        self.assertEqual(
+            submitted["submission_pr_url"],
+            "https://github.com/owner/repo/pull/9",
+        )
+
     def test_legacy_unversioned_database_is_migrated_without_data_loss(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"
