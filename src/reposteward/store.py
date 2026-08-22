@@ -7,6 +7,8 @@ import sqlite3
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -14,7 +16,7 @@ from typing import Any
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -438,11 +440,45 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         ON harness_usage_events(work_item_id, sequence)
         """,
     ),
+    14: (
+        """
+        CREATE TABLE IF NOT EXISTS run_leases (
+            scope TEXT PRIMARY KEY,
+            owner TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK(generation >= 1),
+            expires_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS run_lease_events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope TEXT NOT NULL,
+            owner TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS run_lease_events_for_scope
+        ON run_lease_events(scope, sequence DESC)
+        """,
+    ),
 }
 
 
 class StoreError(RuntimeError):
     """The local state database cannot be opened or migrated safely."""
+
+
+@dataclass(frozen=True, slots=True)
+class RunLease:
+    scope: str
+    owner: str
+    generation: int
+    expires_at: str
 
 
 def utc_now() -> str:
@@ -510,16 +546,33 @@ USAGE_METRIC_KEYS = frozenset(
 class Store:
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._run_lease_context: ContextVar[RunLease | None] = ContextVar(
+            f"reposteward_run_lease_{id(self)}", default=None
+        )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
+    @staticmethod
+    def _begin_immediate(connection: sqlite3.Connection) -> None:
+        if not connection.in_transaction:
+            connection.execute("BEGIN IMMEDIATE")
+
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
+    def _connection(
+        self, *, guard_bound_lease: bool = True
+    ) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=5000")
         try:
+            lease = self._run_lease_context.get() if guard_bound_lease else None
+            if lease is not None:
+                # Keep the fencing check and any following write in one short
+                # transaction. The lock is released when this Store call returns;
+                # it is never held across Harness, Docker, or GitHub operations.
+                self._begin_immediate(connection)
+                self._assert_run_lease_row(connection, lease)
             yield connection
             connection.commit()
         except Exception:
@@ -543,7 +596,7 @@ class Store:
                 statements = MIGRATIONS.get(version)
                 if statements is None:
                     raise StoreError(f"missing database migration {version}")
-                connection.execute("BEGIN IMMEDIATE")
+                self._begin_immediate(connection)
                 try:
                     for statement in statements:
                         if version == 7 and statement.startswith(
@@ -794,7 +847,7 @@ class Store:
         )
         now = utc_now()
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(connection)
             self._validate_run_work_item(
                 connection, run_id, work_item_id, context_payload=payload
             )
@@ -916,7 +969,7 @@ class Store:
         native_session_id: str = "",
     ) -> None:
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(connection)
             context = connection.execute(
                 """
                 SELECT work_item_id, run_id FROM context_packs WHERE id=?
@@ -1049,7 +1102,7 @@ class Store:
             raise ValueError("Harness usage trim_reasons must be non-negative counts")
 
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(connection)
             scope = connection.execute(
                 """
                 SELECT h.work_item_id, h.harness, h.model,
@@ -1495,7 +1548,7 @@ class Store:
             payload=payload,
         )
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(connection)
             return self._insert_checkpoint(
                 connection,
                 work_item_id=work_item_id,
@@ -1574,7 +1627,7 @@ class Store:
         event_values = self._github_event_values(activity)
         now = utc_now()
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(connection)
             run = connection.execute(
                 "SELECT repository, details FROM runs WHERE id=?", (run_id,)
             ).fetchone()
@@ -1724,7 +1777,7 @@ class Store:
         if pull_number < 1 or sequence < 0:
             raise ValueError("pull number must be positive and sequence non-negative")
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(connection)
             run = connection.execute(
                 "SELECT repository FROM runs WHERE id=?", (run_id,)
             ).fetchone()
@@ -1790,7 +1843,7 @@ class Store:
             }
             self._validate_checkpoint_record(payload=checkpoint, **checkpoint_args)
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(connection)
             watermark = connection.execute(
                 "SELECT * FROM github_pr_watermarks WHERE run_id=?", (run_id,)
             ).fetchone()
@@ -2229,7 +2282,7 @@ class Store:
         }
         deleted = []
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(connection)
             inventory = self._event_payload_gc_inventory(connection, normalized)
             eligible = {value["digest"]: value for value in inventory["candidates"]}
             for digest in sorted(requested & eligible.keys()):
@@ -2439,7 +2492,7 @@ class Store:
         )
         serialized = json.dumps(bundle, ensure_ascii=False)
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(connection)
             existing = connection.execute(
                 """
                 SELECT id, work_item_id, imported_at FROM context_imports
@@ -2602,6 +2655,230 @@ class Store:
             if cursor.rowcount != 1:
                 raise KeyError(f"candidate not found: {repository}#{issue_number}")
 
+    @staticmethod
+    def _lease_inputs(
+        scope: str,
+        owner: str,
+        ttl_seconds: int,
+        now: datetime | None,
+    ) -> tuple[str, str, datetime, str, str]:
+        normalized_scope = scope.strip().casefold()
+        normalized_owner = owner.strip()
+        if not normalized_scope or len(normalized_scope) > 500:
+            raise ValueError("run lease scope must contain at most 500 characters")
+        if not normalized_owner or len(normalized_owner) > 128:
+            raise ValueError("run lease owner must contain at most 128 characters")
+        if isinstance(ttl_seconds, bool) or not 5 <= ttl_seconds <= 86_400:
+            raise ValueError("run lease ttl_seconds must be between 5 and 86400")
+        current = now or datetime.now(UTC)
+        if current.tzinfo is None:
+            raise ValueError("run lease time must include a timezone")
+        current = current.astimezone(UTC)
+        current_text = current.isoformat(timespec="microseconds")
+        expires_at = (current + timedelta(seconds=ttl_seconds)).isoformat(
+            timespec="microseconds"
+        )
+        return (
+            normalized_scope,
+            normalized_owner,
+            current,
+            current_text,
+            expires_at,
+        )
+
+    @staticmethod
+    def _append_run_lease_event(
+        connection: sqlite3.Connection,
+        lease: RunLease,
+        action: str,
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO run_lease_events(
+                scope, owner, generation, action, expires_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                lease.scope,
+                lease.owner,
+                lease.generation,
+                action,
+                lease.expires_at,
+                created_at,
+            ),
+        )
+
+    def acquire_run_lease(
+        self,
+        scope: str,
+        *,
+        owner: str,
+        ttl_seconds: int = 90,
+        now: datetime | None = None,
+    ) -> RunLease:
+        normalized_scope, normalized_owner, _, current_text, expires_at = (
+            self._lease_inputs(scope, owner, ttl_seconds, now)
+        )
+        with self._connection(guard_bound_lease=False) as connection:
+            self._begin_immediate(connection)
+            row = connection.execute(
+                "SELECT * FROM run_leases WHERE scope=?", (normalized_scope,)
+            ).fetchone()
+            if row is None:
+                generation = 1
+                action = "acquired"
+                connection.execute(
+                    """
+                    INSERT INTO run_leases(
+                        scope, owner, generation, expires_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        normalized_scope,
+                        normalized_owner,
+                        generation,
+                        expires_at,
+                        current_text,
+                    ),
+                )
+            else:
+                current_owner = str(row["owner"])
+                active = str(row["expires_at"]) > current_text
+                if active and current_owner != normalized_owner:
+                    raise StoreError(
+                        f"run lease is already held for {normalized_scope}"
+                    )
+                generation = int(row["generation"])
+                if not active:
+                    generation += 1
+                    action = (
+                        "taken_over"
+                        if current_owner != normalized_owner
+                        else "reacquired"
+                    )
+                else:
+                    action = "renewed"
+                connection.execute(
+                    """
+                    UPDATE run_leases
+                    SET owner=?, generation=?, expires_at=?, updated_at=?
+                    WHERE scope=?
+                    """,
+                    (
+                        normalized_owner,
+                        generation,
+                        expires_at,
+                        current_text,
+                        normalized_scope,
+                    ),
+                )
+            lease = RunLease(normalized_scope, normalized_owner, generation, expires_at)
+            self._append_run_lease_event(connection, lease, action, current_text)
+        return lease
+
+    def renew_run_lease(
+        self,
+        lease: RunLease,
+        *,
+        ttl_seconds: int = 90,
+        now: datetime | None = None,
+    ) -> RunLease:
+        scope, owner, _, current_text, expires_at = self._lease_inputs(
+            lease.scope, lease.owner, ttl_seconds, now
+        )
+        renewed = RunLease(scope, owner, lease.generation, expires_at)
+        with self._connection(guard_bound_lease=False) as connection:
+            self._begin_immediate(connection)
+            cursor = connection.execute(
+                """
+                UPDATE run_leases SET expires_at=?, updated_at=?
+                WHERE scope=? AND owner=? AND generation=? AND expires_at>?
+                """,
+                (
+                    expires_at,
+                    current_text,
+                    scope,
+                    owner,
+                    lease.generation,
+                    current_text,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise StoreError(f"run lease is stale for {scope}")
+            self._append_run_lease_event(connection, renewed, "renewed", current_text)
+        return renewed
+
+    @staticmethod
+    def _assert_run_lease_row(
+        connection: sqlite3.Connection,
+        lease: RunLease,
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        current = now or datetime.now(UTC)
+        if current.tzinfo is None:
+            raise ValueError("run lease time must include a timezone")
+        current_text = current.astimezone(UTC).isoformat(timespec="microseconds")
+        row = connection.execute(
+            """
+            SELECT 1 FROM run_leases
+            WHERE scope=? AND owner=? AND generation=? AND expires_at>?
+            """,
+            (lease.scope, lease.owner, lease.generation, current_text),
+        ).fetchone()
+        if row is None:
+            raise StoreError(f"run lease is stale for {lease.scope}")
+
+    def validate_run_lease(
+        self, lease: RunLease, *, now: datetime | None = None
+    ) -> None:
+        with self._connection(guard_bound_lease=False) as connection:
+            self._assert_run_lease_row(connection, lease, now=now)
+
+    def release_run_lease(self, lease: RunLease) -> None:
+        created_at = utc_now()
+        released = RunLease(lease.scope, lease.owner, lease.generation, created_at)
+        with self._connection(guard_bound_lease=False) as connection:
+            self._begin_immediate(connection)
+            cursor = connection.execute(
+                """
+                UPDATE run_leases SET expires_at=?, updated_at=?
+                WHERE scope=? AND owner=? AND generation=?
+                """,
+                (
+                    created_at,
+                    created_at,
+                    lease.scope,
+                    lease.owner,
+                    lease.generation,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise StoreError(f"run lease is stale for {lease.scope}")
+            self._append_run_lease_event(connection, released, "released", created_at)
+
+    @contextmanager
+    def bind_run_lease(self, lease: RunLease) -> Iterator[None]:
+        """Require guarded run updates in the current execution context."""
+        token = self._run_lease_context.set(lease)
+        try:
+            yield
+        finally:
+            self._run_lease_context.reset(token)
+
+    def run_lease_events(self, scope: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        limit = min(max(limit, 1), 500)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM run_lease_events
+                WHERE scope=? ORDER BY sequence DESC LIMIT ?
+                """,
+                (scope.strip().casefold(), limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def start_run(self, repository: str, issue_number: int, stage: str) -> str:
         run_id = uuid.uuid4().hex
         now = utc_now()
@@ -2624,6 +2901,7 @@ class Store:
         stage: str | None = None,
         worktree: str | None = None,
         details: dict[str, Any] | None = None,
+        lease: RunLease | None = None,
     ) -> None:
         assignments = ["status=?", "updated_at=?"]
         values: list[Any] = [status, utc_now()]
@@ -2638,6 +2916,11 @@ class Store:
             values.append(json.dumps(details, ensure_ascii=False))
         values.append(run_id)
         with self._connection() as connection:
+            effective_lease = lease
+            if effective_lease is not None:
+                if self._run_lease_context.get() is None:
+                    self._begin_immediate(connection)
+                self._assert_run_lease_row(connection, effective_lease)
             connection.execute(
                 f"UPDATE runs SET {', '.join(assignments)} WHERE id=?", values
             )
@@ -2716,7 +2999,7 @@ class Store:
         now = utc_now()
         attestation_id = uuid.uuid4().hex
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(connection)
             run = connection.execute(
                 "SELECT repository FROM runs WHERE id=?", (normalized["run_id"],)
             ).fetchone()
@@ -2930,7 +3213,7 @@ class Store:
         ):
             raise ValueError("dependency head_sha must be 40 lowercase hex chars")
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(connection)
             previous = connection.execute(
                 """
                 SELECT id, head_sha, action, actor, source,
