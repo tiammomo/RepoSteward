@@ -171,6 +171,109 @@ class VerificationSandboxTests(unittest.TestCase):
             ):
                 DockerVerifier._copy_workspace(worktree, root / "snapshot")
 
+    def test_tracked_empty_environment_templates_are_copied(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            _repository(worktree)
+            names = (".env.example", ".env.sample", ".env.template")
+            for name in names:
+                (worktree / name).write_text(
+                    "# Safe defaults for local development\nAPI_KEY=\nLOG_LEVEL=info\n",
+                    encoding="utf-8",
+                )
+            subprocess.run(["git", "add", *names], cwd=worktree, check=True)
+
+            DockerVerifier._copy_workspace(worktree, root / "snapshot")
+
+            for name in names:
+                with self.subTest(name=name):
+                    self.assertEqual(
+                        (root / "snapshot" / name).read_text(encoding="utf-8"),
+                        (worktree / name).read_text(encoding="utf-8"),
+                    )
+
+    def test_untracked_environment_template_is_excluded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            _repository(worktree)
+            (worktree / ".env.example").write_text("API_KEY=\n", encoding="utf-8")
+
+            DockerVerifier._copy_workspace(worktree, root / "snapshot")
+
+            self.assertFalse((root / "snapshot" / ".env.example").exists())
+
+    def test_tracked_environment_template_with_secret_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            _repository(worktree)
+            (worktree / ".env.example").write_text(
+                "API_KEY=real-value\n", encoding="utf-8"
+            )
+            subprocess.run(["git", "add", ".env.example"], cwd=worktree, check=True)
+
+            with self.assertRaisesRegex(VerificationError, "non-empty sensitive field"):
+                DockerVerifier._copy_workspace(worktree, root / "snapshot")
+
+    def test_tracked_environment_template_symlink_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            _repository(worktree)
+            (worktree / "template-source").write_text("API_KEY=\n", encoding="utf-8")
+            (worktree / ".env.example").symlink_to("template-source")
+            subprocess.run(["git", "add", ".env.example"], cwd=worktree, check=True)
+
+            with self.assertRaisesRegex(VerificationError, "must be a regular file"):
+                DockerVerifier._copy_workspace(worktree, root / "snapshot")
+
+    def test_tracked_environment_template_in_sensitive_directory_fails_closed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            _repository(worktree)
+            template = worktree / "secrets" / ".env.example"
+            template.parent.mkdir()
+            template.write_text("API_KEY=\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "secrets/.env.example"], cwd=worktree, check=True
+            )
+
+            with self.assertRaisesRegex(
+                VerificationError, "tracked sensitive path cannot enter verification"
+            ):
+                DockerVerifier._copy_workspace(worktree, root / "snapshot")
+
+    def test_environment_template_must_be_bounded_utf8(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, content, message in (
+                ("oversized", b"#" * (64 * 1024 + 1), "exceeds 65536 bytes"),
+                ("non-utf8", b"API_KEY=\xff\n", "must be UTF-8"),
+            ):
+                with self.subTest(name=name):
+                    worktree = root / name
+                    worktree.mkdir()
+                    _repository(worktree)
+                    (worktree / ".env.example").write_bytes(content)
+                    subprocess.run(
+                        ["git", "add", ".env.example"], cwd=worktree, check=True
+                    )
+
+                    with self.assertRaisesRegex(VerificationError, message):
+                        DockerVerifier._copy_workspace(
+                            worktree, root / f"{name}-snapshot"
+                        )
+
     def test_container_receives_shared_cache_and_read_only_git_mounts(self) -> None:
         verifier = self._verifier()
         completed = subprocess.CompletedProcess(

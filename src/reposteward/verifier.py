@@ -42,6 +42,19 @@ UNTRACKED_SANDBOX_EXCLUDED_NAMES = frozenset(
     }
 )
 SENSITIVE_SANDBOX_NAMES = frozenset({"credentials", "secrets"})
+SUPPORTED_ENV_TEMPLATE_NAMES = frozenset(
+    {".env.example", ".env.sample", ".env.template"}
+)
+MAX_ENV_TEMPLATE_BYTES = 64 * 1024
+ENV_ASSIGNMENT = re.compile(
+    r"(?:export\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>.*)"
+)
+SENSITIVE_ENV_NAME = re.compile(
+    r"(?:^|_)(?:ACCESS_KEY|API_KEY|AUTH|CREDENTIALS?|PASS(?:WORD|WD)?|"
+    r"PRIVATE_KEY|SECRET|TOKEN)(?:_|$)",
+    re.IGNORECASE,
+)
+EMPTY_ENV_VALUE = re.compile(r"(?:|''|\"\")(?:\s+#.*)?")
 
 
 class VerificationError(RuntimeError):
@@ -179,6 +192,47 @@ class DockerVerifier:
         )
 
     @classmethod
+    def _is_supported_env_template(cls, relative: Path) -> bool:
+        return relative.name.casefold() in SUPPORTED_ENV_TEMPLATE_NAMES and not any(
+            part.casefold() in SENSITIVE_SANDBOX_NAMES for part in relative.parent.parts
+        )
+
+    @staticmethod
+    def _validate_env_template(source: Path, relative: Path) -> None:
+        if source.is_symlink() or not source.is_file():
+            raise VerificationError(
+                f"tracked environment template must be a regular file: {relative}"
+            )
+        if source.stat().st_size > MAX_ENV_TEMPLATE_BYTES:
+            raise VerificationError(
+                f"tracked environment template exceeds {MAX_ENV_TEMPLATE_BYTES} bytes: "
+                f"{relative}"
+            )
+        try:
+            content = source.read_text(encoding="utf-8")
+        except UnicodeDecodeError as error:
+            raise VerificationError(
+                f"tracked environment template must be UTF-8: {relative}"
+            ) from error
+        for line_number, line in enumerate(content.splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            assignment = ENV_ASSIGNMENT.fullmatch(stripped)
+            if assignment is None:
+                raise VerificationError(
+                    "tracked environment template contains an unsupported line "
+                    f"at {relative}:{line_number}"
+                )
+            if SENSITIVE_ENV_NAME.search(
+                assignment.group("name")
+            ) and not EMPTY_ENV_VALUE.fullmatch(assignment.group("value")):
+                raise VerificationError(
+                    "tracked environment template contains a non-empty sensitive "
+                    f"field at {relative}:{line_number}"
+                )
+
+    @classmethod
     def _copy_workspace(cls, worktree: Path, target: Path) -> int:
         """Copy tracked and non-ignored untracked files without scanning caches."""
         tracked = cls._git_file_list(worktree, "--cached")
@@ -193,11 +247,14 @@ class DockerVerifier:
             if relative.is_absolute() or ".." in relative.parts:
                 raise VerificationError("Git returned an unsafe workspace path")
             if cls._sensitive_path(relative):
-                if is_tracked:
+                if is_tracked and cls._is_supported_env_template(relative):
+                    cls._validate_env_template(worktree / relative, relative)
+                elif is_tracked:
                     raise VerificationError(
                         f"tracked sensitive path cannot enter verification: {relative}"
                     )
-                continue
+                else:
+                    continue
             if not is_tracked and any(
                 part in UNTRACKED_SANDBOX_EXCLUDED_NAMES for part in relative.parts
             ):
