@@ -48,7 +48,7 @@ from .dependencies import (
 )
 from .discovery import score_issue
 from .github import GitHubClient, GitHubError, PullRequest, resolve_token
-from .harness import Harness, HarnessRequest, create_harness
+from .harness import Harness, HarnessRequest, create_harness, harness_capabilities
 from .issues import (
     attach_proposal_marker,
     issue_review_digest,
@@ -1383,8 +1383,13 @@ class Pipeline:
                 "base_commit": base_commit,
             }
             self._validate_contribution_contract(worktree, policy)
-            native_session_id = self.store.latest_harness_session(
-                str(work_item["id"]), self.harness.name
+            capabilities = harness_capabilities(self.harness)
+            native_session_id = (
+                self.store.latest_harness_session(
+                    str(work_item["id"]), self.harness.name
+                )
+                if capabilities.native_session_resume.supported
+                else ""
             )
             context = self._create_context(
                 candidate,
@@ -2745,8 +2750,13 @@ class Pipeline:
                 details=failure_details,
             )
             run_dir = self.config.state_dir / "runs" / run_id
-            native_session_id = self.store.latest_harness_session(
-                context.work_item_id, self.harness.name
+            capabilities = harness_capabilities(self.harness)
+            native_session_id = (
+                self.store.latest_harness_session(
+                    context.work_item_id, self.harness.name
+                )
+                if capabilities.native_session_resume.supported
+                else ""
             )
             execution = self.harness.run(
                 HarnessRequest(

@@ -29,7 +29,7 @@ from reposteward.context_budget import (
     build_follow_up_context,
     estimate_tokens,
 )
-from reposteward.harness import create_harness
+from reposteward.harness import SUPPORTED, HarnessCapabilities, create_harness
 from reposteward.models import (
     AgentExecution,
     AgentMetrics,
@@ -624,6 +624,13 @@ class HarnessContractTests(unittest.TestCase):
 
             class FakeHarness:
                 name = "fake-harness"
+                capabilities = HarnessCapabilities(
+                    schema_version=1,
+                    workspace_write=SUPPORTED,
+                    structured_result=SUPPORTED,
+                    native_session_resume=SUPPORTED,
+                    usage_metrics=SUPPORTED,
+                )
 
                 def __init__(self) -> None:
                     self.request = None
