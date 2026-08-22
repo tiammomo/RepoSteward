@@ -32,7 +32,7 @@ from .ci import (
 )
 from .config import AppConfig, RepositoryPolicy
 from .context import (
-    CONTEXT_SCHEMA_VERSION,
+    CHECKPOINT_SCHEMA_VERSION,
     ContextPack,
     build_context_pack,
     failed_checkpoint,
@@ -4021,7 +4021,7 @@ class Pipeline:
                     context_pack_id=str(context_bundle["context_metadata"]["id"]),
                     status="submitted",
                     payload={
-                        "schema_version": CONTEXT_SCHEMA_VERSION,
+                        "schema_version": CHECKPOINT_SCHEMA_VERSION,
                         "work_item_id": context_bundle["work_item"]["id"],
                         "run_id": run["id"],
                         "context_pack_id": context_bundle["context_metadata"]["id"],

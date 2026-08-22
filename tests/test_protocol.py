@@ -76,12 +76,19 @@ def _pack(root: Path):
 
 class ProtocolSchemaTests(unittest.TestCase):
     def test_packaged_schemas_are_draft_2020_12_documents(self) -> None:
-        for name in ("context-pack", "checkpoint", "context-bundle"):
+        expected_versions = {
+            "context-pack": 2,
+            "checkpoint": 1,
+            "context-bundle": 2,
+        }
+        for name, version in expected_versions.items():
             schema = schema_document(name)
             self.assertEqual(
                 schema["$schema"], "https://json-schema.org/draft/2020-12/schema"
             )
             self.assertTrue(str(schema["$id"]).startswith("urn:reposteward:schema:"))
+            self.assertTrue(str(schema["$id"]).endswith(f":{version}"))
+        self.assertTrue(schema_document("context-pack", 1)["$id"].endswith(":1"))
 
     def test_generated_context_and_every_checkpoint_state_validate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -130,8 +137,59 @@ class ProtocolSchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolValidationError, "unexpected"):
             validate_context_pack(payload)
         payload.pop("unexpected")
-        payload["schema_version"] = 2
+        payload["schema_version"] = 3
         with self.assertRaisesRegex(ProtocolValidationError, "schema_version"):
+            validate_context_pack(payload)
+
+    def test_v1_context_pack_and_bundle_remain_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            generated = _pack(Path(directory))
+        legacy_pack = generated.to_dict()
+        legacy_pack.pop("skill_catalog")
+        legacy_pack["schema_version"] = 1
+        validate_context_pack(legacy_pack)
+        checkpoint = running_checkpoint(
+            generated,
+            head_commit="a" * 40,
+            completed=("Cloned repository.",),
+            next_action="run_harness",
+        )
+        raw = {
+            "work_item": {
+                "id": "work-1",
+                "repository": "owner/repo",
+                "kind": "github_issue",
+                "external_id": "7",
+                "title": "Fix the edge case",
+                "status": "active",
+                "payload": {},
+            },
+            "harness_run": {
+                "run_id": "run-1",
+                "harness": "codex-cli",
+                "model": "gpt-example",
+                "native_session_id": "",
+                "created_at": "2026-01-02T00:00:00Z",
+            },
+            "context_metadata": {
+                "id": generated.id,
+                "schema_version": 1,
+                "source_digest": generated.source_digest,
+                "base_commit": "a" * 40,
+                "created_at": "2026-01-02T00:00:00Z",
+            },
+            "context_pack": legacy_pack,
+            "checkpoint": checkpoint,
+        }
+        bundle = portable_bundle(raw)
+        self.assertEqual(bundle["bundle_schema_version"], 1)
+        validate_context_bundle(bundle, require_checkpoint=True)
+
+    def test_skill_catalog_digest_is_part_of_the_v2_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = _pack(Path(directory)).to_dict()
+        payload["skill_catalog"]["digest"] = "0" * 64
+        with self.assertRaisesRegex(ProtocolValidationError, "catalog digest"):
             validate_context_pack(payload)
 
     def test_bundle_validation_checks_digest_and_cross_document_identity(self) -> None:
@@ -162,7 +220,7 @@ class ProtocolSchemaTests(unittest.TestCase):
             },
             "context_metadata": {
                 "id": pack.id,
-                "schema_version": 1,
+                "schema_version": pack.schema_version,
                 "source_digest": pack.source_digest,
                 "base_commit": "a" * 40,
                 "created_at": "2026-01-02T00:00:00Z",

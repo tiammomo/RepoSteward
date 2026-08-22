@@ -209,9 +209,19 @@ Issue、阶段、Harness 和模型，只包含规范化资源计数、原生会�
 的生效日期价格计算成本。历史记录缺失、定价缺失和不一致指标均保持 unknown。报告是确定性只读路径，
 不会调用 Harness，也不会存储或重新加载原始提示。
 
-三类协议文档都使用 Draft 2020-12 JSON Schema，schema 随 Python 包发布。持久化和导入边界会
-拒绝未知字段、未来版本、跨 work item/run 的关联错配及不一致摘要。Bundle digest 只能检测意外
-损坏或内容变化，不是数字签名；导入数据仍保留其原始信任级别。
+三类协议文档都使用 Draft 2020-12 JSON Schema，schema 随 Python 包发布。协议按文档类型独立
+分派版本：新 Context Pack/Bundle 使用 v2，Checkpoint 仍使用 v1；历史 Context Pack/Bundle v1
+继续严格可读，未知未来版本失败关闭。持久化和导入边界会拒绝未知字段、跨 work item/run 的关联
+错配及不一致摘要。Bundle digest 只能检测意外损坏或内容变化，不是数字签名；导入数据仍保留其
+原始信任级别。
+
+Context Pack v2 包含一个技能目录 v1。RepoSteward 按稳定相对路径扫描最多 24 个项目技能，只扫描
+每个 `SKILL.md` 前 8 KiB 内的简单 frontmatter 标量，单个技能文件最多 1 MiB，并记录清洗后的
+名称、描述、内容指纹、来源、
+信任状态、有效性、无效原因和截断数量。目录自身摘要通过 `repository_skill_catalog` source 进入
+Context Pack 的 source digest。越界链接、超限、坏 UTF-8 和不支持的 frontmatter 都只形成无效
+条目，不会把原始内容送入 Prompt。Harness 对语义相关性作最终选择，只读取选中技能的完整正文；
+目录被截断时再检查工作区剩余候选。
 
 ## 跨会话与跨账号恢复
 

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:reposteward:schema:context-bundle:2",
+  "title": "RepoSteward Portable Context Bundle v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "bundle_schema_version",
+    "work_item",
+    "harness_run",
+    "context_metadata",
+    "context_pack",
+    "checkpoint",
+    "continuity",
+    "bundle_digest",
+    "estimated_tokens"
+  ],
+  "properties": {
+    "bundle_schema_version": {"const": 2},
+    "work_item": {"$ref": "urn:reposteward:schema:context-bundle:1#/$defs/workItem"},
+    "harness_run": {"$ref": "urn:reposteward:schema:context-bundle:1#/$defs/harnessRun"},
+    "context_metadata": {"$ref": "#/$defs/contextMetadata"},
+    "context_pack": {"$ref": "urn:reposteward:schema:context-pack:2"},
+    "checkpoint": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "urn:reposteward:schema:checkpoint:1"}
+      ]
+    },
+    "continuity": {"$ref": "urn:reposteward:schema:context-bundle:1#/$defs/continuity"},
+    "bundle_digest": {"$ref": "urn:reposteward:schema:context-bundle:1#/$defs/sha256"},
+    "estimated_tokens": {"type": "integer", "minimum": 1}
+  },
+  "$defs": {
+    "contextMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "schema_version", "source_digest", "base_commit", "created_at"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "schema_version": {"const": 2},
+        "source_digest": {"$ref": "urn:reposteward:schema:context-bundle:1#/$defs/sha256"},
+        "base_commit": {"type": "string", "maxLength": 128},
+        "created_at": {"type": "string", "maxLength": 100}
+      }
+    }
+  }
+}
