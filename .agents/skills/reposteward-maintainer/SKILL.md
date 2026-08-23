@@ -19,3 +19,6 @@ state machine, credentials, digests, storage, verification, and GitHub writes.
 - Never place credentials, local state, harness caches, or target repositories in Git.
 
 For the end-to-end procedure, read [references/lifecycle.md](references/lifecycle.md).
+After a managed PR reaches a terminal state, use the `reposteward-branch-cleanup`
+skill to plan remote branch cleanup. Its temporary operational audit does not replace
+RepoSteward's code-enforced publication or merge records.

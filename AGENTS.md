@@ -33,7 +33,13 @@ opens pull requests only after repository-specific gates and local human review.
   allowed only when `issue_review.require_distinct_reviewer = false` is explicitly
   set in the user-owned configuration for a single-maintainer repository.
 - Keep public-repository tests inside the hardened verifier container.
+- Treat remote branch deletion as a separate terminal cleanup. Delete only an exact
+  RepoSteward-managed same-repository head after its PR merged, the SHA is unchanged,
+  and fresh checks show it is neither default, protected, active, shared, nor used by
+  another open PR. Keep closed-unmerged and fork branches by default.
 
 For Issue triage, implementation handoff, PR preparation, and CI/reviewer follow-up,
 read `.agents/skills/reposteward-maintainer/SKILL.md`. The skill describes the human
 workflow; the code-enforced safety invariants above remain authoritative.
+For remote branch audits and explicitly authorized cleanup, read
+`.agents/skills/reposteward-branch-cleanup/SKILL.md`.
