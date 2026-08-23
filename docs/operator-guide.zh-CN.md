@@ -509,7 +509,33 @@ Context Pack、Checkpoint 和导出包采用 Draft 2020-12 JSON Schema，并在�
 
 RepoSteward 使用 `.agents/skills/<name>/SKILL.md` 保存可跨 Coding Harness 复用的维护流程。本仓库
 提供的 `reposteward-maintainer` skill 覆盖 Issue 审核、聚焦 PR、CI/Reviewer 跟进和上下文交接；
-状态机、凭据隔离、内容摘要、验证与 GitHub 公开写入仍由代码强制执行，不下放给提示词。
+`reposteward-branch-cleanup` skill 用于盘点已合并 PR 留下的远端分支，并在明确授权后清理精确
+匹配的同仓库 head。状态机、凭据隔离、内容摘要、验证与已有 GitHub 公开写入门禁不会由 skill
+放宽。
+
+分支清理默认只输出 JSON 计划，不执行删除：
+
+```bash
+uv run python .agents/skills/reposteward-branch-cleanup/scripts/branch_cleanup.py \
+  owner/repository --run-id SUBMITTED_RUN_ID
+```
+
+可以重复 `--run-id`。计划只把本地 submitted run 明确绑定、当前 SHA 与已合并 PR head 精确一致，
+且该名称没有其他 PR 历史的非默认、明确未保护同仓库分支列为 `candidates`。确认候选和
+`plan_digest` 后，删除仍需要独立环境门禁、`--apply`、相同摘要和实际 GitHub 身份：
+
+```bash
+REPOSTEWARD_ENABLE_BRANCH_CLEANUP=1 \
+  uv run python .agents/skills/reposteward-branch-cleanup/scripts/branch_cleanup.py \
+  owner/repository --run-id SUBMITTED_RUN_ID --apply \
+  --expected-digest PLAN_DIGEST --reviewed-by GITHUB_LOGIN
+```
+
+脚本会验证当前身份与 push 权限，并逐分支重新读取仓库、保护状态、完整 PR 历史和 head SHA。
+删除通过宿主 SSH 身份和绑定已审核 SHA 的 Git `--force-with-lease` 执行，同时禁用仓库 hooks 并
+移除 token 环境变量。结果不确定时再读取精确分支：已不存在记为 `reconciled_deleted`，仍存在则
+失败关闭，读回也失败则报告 `outcome_unknown`。该流程是 Issue #77 原生持久化清理状态机完成前
+的运维入口；运行结果需随维护记录保存，不能冒充 RepoSteward 本地追加审计。
 
 Context Pack v2 先建立最多 24 项的轻量技能目录，只保存经过清洗和长度限制的 `name`、
 `description`、仓库相对路径、状态和内容指纹，不复制完整正文。目录会显式报告无效项和被截断的
