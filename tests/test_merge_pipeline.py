@@ -172,6 +172,8 @@ class StubGitHub:
         self.can_admin = True
         self.owner_login = "owner"
         self.files = ["src/example.py"]
+        self.additions = 10
+        self.deletions = 2
         self.optional_check_pending = False
 
     def pull_request_activity(
@@ -215,8 +217,8 @@ class StubGitHub:
             "unresolved_conversations": 0,
             "conversation_digest": self.conversation_marker,
             "files": self.files,
-            "additions": 10,
-            "deletions": 2,
+            "additions": self.additions,
+            "deletions": self.deletions,
             "checks": [
                 {
                     "name": "quality",
@@ -305,12 +307,14 @@ class MergePipelineTests(unittest.TestCase):
         auto_merge: bool = False,
         owner_attestation: bool = False,
         branch_cleanup: bool = False,
+        unlimited_diff_lines: bool = False,
     ) -> Pipeline:
         policy = RepositoryPolicy(
             name="owner/repo",
             auto_merge=auto_merge,
             owner_attestation=owner_attestation,
             branch_cleanup=branch_cleanup,
+            unlimited_diff_lines=unlimited_diff_lines,
             mode="maintainer",
             submission_strategy="same-repository",
         )
@@ -324,6 +328,19 @@ class MergePipelineTests(unittest.TestCase):
         pipeline.store = StubStore(policy)
         pipeline.github = StubGitHub()
         return pipeline
+
+    def test_trusted_unlimited_diff_policy_reaches_merge_evaluation(self) -> None:
+        pipeline = self.pipeline(unlimited_diff_lines=True)
+        pipeline.github.additions = 100_000
+        pipeline.github.deletions = 100_000
+
+        decision = pipeline.merge_decision("run-1")
+
+        self.assertTrue(decision["eligible"])
+        self.assertEqual(
+            pipeline.store.audits[0]["decision"]["snapshot"]["additions"],
+            100_000,
+        )
 
     def test_decision_reads_current_snapshot_and_appends_every_audit(self) -> None:
         policy = RepositoryPolicy(name="owner/repo")

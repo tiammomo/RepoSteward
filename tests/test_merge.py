@@ -33,7 +33,7 @@ class MergeDecisionTests(unittest.TestCase):
             expected_base_sha="b" * 40,
             expected_policy_digest="c" * 64,
             max_files_changed=18,
-            max_diff_lines=700,
+            max_diff_lines=kwargs.pop("max_diff_lines", 700),
             **kwargs,
         )
 
@@ -196,4 +196,17 @@ class MergeDecisionTests(unittest.TestCase):
                 "file_limit_exceeded",
                 "diff_limit_exceeded",
             },
+        )
+
+    def test_unlimited_diff_mode_keeps_exact_counts_without_blocking_merge(
+        self,
+    ) -> None:
+        result = self.evaluate(
+            replace(self.snapshot, additions=100_000, deletions=100_000),
+            max_diff_lines=None,
+        )
+
+        self.assertTrue(result.eligible)
+        self.assertNotIn(
+            "diff_limit_exceeded", [reason.code for reason in result.reasons]
         )

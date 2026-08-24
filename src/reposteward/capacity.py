@@ -16,6 +16,23 @@ def effective_capacity_limit(global_limit: int, repository_limit: int | None) ->
     )
 
 
+def effective_diff_line_limit(
+    global_limit: int,
+    repository_limit: int | None,
+    *,
+    user_allows_unlimited: bool,
+) -> int | None:
+    """Resolve a changed-line limit without weakening any other capacity gate.
+
+    Unlimited mode is a user-owned repository exception. A finite repository
+    value still tightens that exception, while repositories without the trusted
+    opt-out keep the existing global-minimum behavior.
+    """
+    if user_allows_unlimited:
+        return repository_limit
+    return effective_capacity_limit(global_limit, repository_limit)
+
+
 def pull_request_capacity(
     pulls: tuple[PullRequest, ...], *, login: str, limit: int
 ) -> dict[str, Any]:

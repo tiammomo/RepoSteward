@@ -5,7 +5,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .capacity import effective_capacity_limit
+from .capacity import effective_capacity_limit, effective_diff_line_limit
 from .config import AppConfig, RepositoryPolicy
 from .models import VerificationResult
 
@@ -116,14 +116,16 @@ def enforce_change_policy(
     file_limit = effective_capacity_limit(
         config.safety.max_files_changed, repository.max_files_changed
     )
-    line_limit = effective_capacity_limit(
-        config.safety.max_diff_lines, repository.max_diff_lines
+    line_limit = effective_diff_line_limit(
+        config.safety.max_diff_lines,
+        repository.max_diff_lines,
+        user_allows_unlimited=repository.unlimited_diff_lines,
     )
     if len(summary.files) > file_limit:
         raise PolicyError(
             f"change touches {len(summary.files)} files; policy limit is {file_limit}"
         )
-    if summary.total_lines > line_limit:
+    if line_limit is not None and summary.total_lines > line_limit:
         raise PolicyError(
             f"change has {summary.total_lines} changed lines; policy limit is {line_limit}"
         )

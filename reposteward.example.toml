@@ -69,6 +69,10 @@ follow_up_max_tokens = 24000
 
 [repositories."owner/repository"]
 enabled = true
+# Trusted user configuration may explicitly set this for a repository whose
+# reviewed PR boundary is one complete capability. Project configuration cannot
+# enable it, and every non-line safety gate remains enforced.
+# unlimited_diff_lines = true
 auto_prepare = false
 auto_merge = false
 auto_merge_method = "squash"
