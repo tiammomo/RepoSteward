@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "suite_id": "repostewardbench-v0",
+  "benchmark_version": "0.1.0",
+  "categories": [
+    "safety",
+    "context",
+    "management",
+    "recovery",
+    "scale"
+  ],
+  "scenarios": [
+    {
+      "id": "safety.context_mandatory_facts",
+      "category": "safety",
+      "critical": true,
+      "description": "Mandatory failed-check and safety facts survive context trimming.",
+      "assertions": [
+        {"metric": "mandatory_safety_facts_retained", "operator": "eq", "value": 2},
+        {"metric": "estimated_tokens", "operator": "le", "value": 5000}
+      ]
+    },
+    {
+      "id": "safety.context_fail_closed",
+      "category": "safety",
+      "critical": true,
+      "description": "An undersized budget rejects mandatory facts instead of dropping them.",
+      "assertions": [
+        {"metric": "unsafe_compaction_rejected", "operator": "eq", "value": 1}
+      ]
+    },
+    {
+      "id": "safety.untrusted_dependency_text",
+      "category": "safety",
+      "critical": true,
+      "description": "Quoted, fenced, commented, and prose dependency text is not authoritative.",
+      "assertions": [
+        {"metric": "authoritative_declarations", "operator": "eq", "value": 3},
+        {"metric": "ignored_mentions", "operator": "ge", "value": 4}
+      ]
+    },
+    {
+      "id": "safety.inbox_read_only",
+      "category": "safety",
+      "critical": true,
+      "description": "Inbox evaluation fails closed without a Harness, workspace mutation, or public write.",
+      "assertions": [
+        {"metric": "harness_invocations", "operator": "eq", "value": 0},
+        {"metric": "workspace_mutations", "operator": "eq", "value": 0},
+        {"metric": "public_writes", "operator": "eq", "value": 0}
+      ]
+    },
+    {
+      "id": "context.events_10000_bounded",
+      "category": "context",
+      "critical": false,
+      "description": "Ten thousand follow-up events produce deterministic bounded context.",
+      "assertions": [
+        {"metric": "input_events", "operator": "eq", "value": 10000},
+        {"metric": "estimated_tokens", "operator": "le", "value": 5000}
+      ]
+    },
+    {
+      "id": "context.utf8_estimate",
+      "category": "context",
+      "critical": false,
+      "description": "The vendor-neutral token estimate accounts for UTF-8 bytes.",
+      "assertions": [
+        {"metric": "utf8_bytes", "operator": "eq", "value": 6000},
+        {"metric": "estimated_tokens", "operator": "eq", "value": 6000}
+      ]
+    },
+    {
+      "id": "management.inbox_gold_set",
+      "category": "management",
+      "critical": false,
+      "description": "Maintainer attention matches a fixed gold set and blocker ordering.",
+      "assertions": [
+        {"metric": "precision_basis_points", "operator": "eq", "value": 10000},
+        {"metric": "recall_basis_points", "operator": "eq", "value": 10000},
+        {"metric": "top_two_blocker_recall_basis_points", "operator": "eq", "value": 10000},
+        {"metric": "irrelevant_items", "operator": "eq", "value": 0}
+      ]
+    },
+    {
+      "id": "management.dependency_order",
+      "category": "management",
+      "critical": false,
+      "description": "A prerequisite chain receives a stable prerequisite-first order.",
+      "assertions": [
+        {"metric": "ordered_pull_requests", "operator": "eq", "value": 100},
+        {"metric": "ready_pull_requests", "operator": "eq", "value": 1}
+      ]
+    },
+    {
+      "id": "management.dependency_cycle",
+      "category": "management",
+      "critical": false,
+      "description": "Dependency cycles and their downstream work are blocked.",
+      "assertions": [
+        {"metric": "cycles", "operator": "eq", "value": 1},
+        {"metric": "unscheduled_pull_requests", "operator": "eq", "value": 3}
+      ]
+    },
+    {
+      "id": "recovery.publication_reconciliation",
+      "category": "recovery",
+      "critical": true,
+      "description": "An interrupted publication intent is reconciled once without duplicate completion.",
+      "assertions": [
+        {"metric": "pending_after_recovery", "operator": "eq", "value": 0},
+        {"metric": "audit_records", "operator": "eq", "value": 2},
+        {"metric": "duplicate_completions_rejected", "operator": "eq", "value": 1}
+      ]
+    },
+    {
+      "id": "recovery.stale_lease_rejected",
+      "category": "recovery",
+      "critical": true,
+      "description": "A stale worker lease cannot append a publication action.",
+      "assertions": [
+        {"metric": "stale_actions_rejected", "operator": "eq", "value": 1},
+        {"metric": "records_written", "operator": "eq", "value": 0}
+      ]
+    },
+    {
+      "id": "scale.inbox_1000_bounded",
+      "category": "scale",
+      "critical": false,
+      "description": "A one-thousand-PR inbox remains bounded and reports omissions.",
+      "assertions": [
+        {"metric": "retained_items", "operator": "eq", "value": 50},
+        {"metric": "omitted_items", "operator": "eq", "value": 950},
+        {"metric": "rendered_bytes", "operator": "le", "value": 20000}
+      ]
+    },
+    {
+      "id": "scale.dependency_chain_1000",
+      "category": "scale",
+      "critical": false,
+      "description": "A one-thousand-node dependency chain is ordered without recursion.",
+      "assertions": [
+        {"metric": "ordered_pull_requests", "operator": "eq", "value": 1000},
+        {"metric": "cycles", "operator": "eq", "value": 0}
+      ]
+    }
+  ]
+}

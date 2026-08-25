@@ -148,10 +148,17 @@ uv run reposteward portfolio plan owner/repository --format text
 uv run reposteward batch plan owner/repository --format text
 uv run reposteward usage report owner/repository
 uv run reposteward storage stats --repo owner/repository
+uv run reposteward benchmark run --output .artifacts/benchmark.json
 ```
 
 The persistent queue and batch planner store bounded control-plane intent. They do not
 turn on submit, owner-attestation, or merge permissions.
+
+`benchmark run` executes RepoStewardBench v0 entirely offline. Its versioned fixtures
+cover safety gates, context bounds, maintainer attention, recovery, and scale. Every
+scenario is repeated to detect nondeterminism, critical safety and recovery scenarios
+form a hard gate, and machine-specific duration is reported only as informational data.
+Use `--baseline PREVIOUS.json` to compare semantic metric deltas between commits.
 
 ## Trust boundaries
 
@@ -238,6 +245,7 @@ uv run python -m unittest discover -s tests -v
 uvx ruff check .
 uvx ruff format --check .
 uv run reposteward --help
+uv run reposteward benchmark run
 uv build
 ```
 

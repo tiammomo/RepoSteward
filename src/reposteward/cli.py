@@ -8,6 +8,12 @@ import sys
 from pathlib import Path
 
 from .batch import render_batch_plan_text
+from .benchmark import (
+    BENCHMARK_CATEGORIES,
+    load_benchmark_report,
+    run_benchmark,
+    write_benchmark_report,
+)
 from .config import ConfigError, load_config
 from .dependencies import render_dependency_plan_text
 from .discovery import DiscoveryService
@@ -230,6 +236,32 @@ def _parser() -> argparse.ArgumentParser:
         default="pull-request",
     )
     usage_report.add_argument("--include-runs", action="store_true")
+
+    benchmark = subparsers.add_parser(
+        "benchmark", help="run deterministic offline RepoStewardBench scenarios"
+    )
+    benchmark_commands = benchmark.add_subparsers(
+        dest="benchmark_command", required=True
+    )
+    benchmark_run = benchmark_commands.add_parser(
+        "run", help="evaluate safety gates and multi-dimensional metrics"
+    )
+    benchmark_run.add_argument(
+        "--category",
+        action="append",
+        choices=BENCHMARK_CATEGORIES,
+        default=[],
+        help="limit the suite to one or more categories",
+    )
+    benchmark_run.add_argument(
+        "--scenario",
+        action="append",
+        default=[],
+        help="limit the suite to one or more exact scenario IDs",
+    )
+    benchmark_run.add_argument("--repeat", type=int, default=2)
+    benchmark_run.add_argument("--baseline", type=Path, default=None)
+    benchmark_run.add_argument("--output", type=Path, default=None)
 
     ci = subparsers.add_parser("ci", help="inspect CI failures without rerunning jobs")
     ci_commands = ci.add_subparsers(dest="ci_command", required=True)
@@ -470,6 +502,24 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 0
             raise AssertionError(f"unhandled repo command: {args.repo_command}")
+        if args.command == "benchmark":
+            if args.benchmark_command == "run":
+                baseline = (
+                    load_benchmark_report(args.baseline) if args.baseline else None
+                )
+                report = run_benchmark(
+                    categories=tuple(args.category),
+                    scenario_ids=tuple(args.scenario),
+                    repeat=args.repeat,
+                    baseline=baseline,
+                )
+                if args.output is not None:
+                    write_benchmark_report(args.output, report)
+                _json(report)
+                return 0 if report["summary"]["all_passed"] else 1
+            raise AssertionError(
+                f"unhandled benchmark command: {args.benchmark_command}"
+            )
         config = load_config(args.config, include_user=True)
         pipeline = Pipeline(config)
         if args.command == "issue":

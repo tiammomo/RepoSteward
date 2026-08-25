@@ -63,6 +63,11 @@ local draft ── explicit stage ──► Project Draft Issue
 - Runner 只安装依赖并执行已允许的验证命令，不接触宿主凭据。
 - 人类审阅者决定是否发布，并对最终提交负责。
 
+RepoStewardBench 位于这些运行时边界之外，只调用确定性的控制面纯函数和临时 SQLite fixture。
+版本化 manifest 把安全硬门槛与 context、management、recovery、scale 指标分开；场景重复执行得到
+稳定结果摘要，机器相关耗时只作为观察值。评测器不加载仓库账号配置、不联网、不调用 Harness，
+也不拥有公开写入能力，因此 benchmark 本身不能扩大运行时权限。
+
 Runner 不把宿主工作区直接以读写方式交给容器。每次验证先创建一份临时快照，
 Bootstrap 和后续无网络命令共享该快照及专用 HOME/工具缓存，因此依赖只安装一次，
 但宿主 `.venv`、`node_modules` 和其他本地环境不会被替换。Git 元数据单独只读挂载；
