@@ -286,6 +286,11 @@ uv run reposteward list --all
 uv run reposteward inbox --repo owner/repository --format text
 ```
 
+Portfolio 只读取开放 PR；当一个 tracked submitted PR 已不在开放快照中时，Inbox 仅在
+RepoSteward 本地原生合并审计的最新终态精确为 `merged` 或 `already_merged` 时隐藏该历史项目。
+缺失、失败、未知或 closed-unmerged 结果仍显示为 `refresh_required`，开放 PR 的新鲜在线事实始终
+优先。
+
 需要跨进程、账号或 Harness 保存批量待办顺序时，可先把稳定控制面引用写入本地任务队列；enqueue
 不会执行任务、调用 Harness 或写入 GitHub：
 
