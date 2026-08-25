@@ -26,9 +26,22 @@ historical summary. Treat an incident as high-risk only when it can cause unauth
 publication, credential disclosure, external state loss or corruption, or a materially
 false audit of a write.
 
-## Decision
+An assertion in a request or summary that events were independent does not establish
+independence. Require non-sensitive provenance for the observation date, action
+attempt, and root condition. If those facts cannot be checked without retaining
+sensitive material, quarantine or reject the candidate instead of counting it.
 
-Promote a candidate when all of the following hold:
+## Evidence, decision, and route
+
+First classify `evidence_state` independently:
+
+- `weak`: the source, independence, current binding, or outcome cannot be checked;
+- `corroborated`: at least two independently attributable incidents support the same
+  bounded condition and result;
+- `deterministic-high-risk`: one isolated reproducer establishes a high-risk failure
+  and a nearby counterexample establishes its boundary.
+
+Then set `decision: promote` only when all of the following hold:
 
 - it is supported by at least two independent incidents, or one deterministically
   reproduced high-risk incident;
@@ -38,15 +51,25 @@ Promote a candidate when all of the following hold:
 - it has a measurable validation method and an explicit stale condition;
 - the durable artifact contains no raw transcript, secret, or machine-local detail.
 
-Quarantine a candidate when it is plausible but has only one non-deterministic example,
-its scope or counterexample is unclear, or current validation is incomplete. Record
-the evidence needed to decide later; do not add provisional requirements to an active
-skill.
+Set `decision: quarantine` when a candidate is plausible but has only one
+non-deterministic example, its sources cannot establish independence, its scope or
+counterexample is unclear, or current validation is incomplete. Record the evidence
+needed to decide later; do not add provisional requirements to an active skill.
 
-Reject a candidate when it is generic good practice, a personal preference, a
-repository-independent answer Codex already handles, duplicated by current guidance,
-contradicted by current facts, inseparable from sensitive data, or useful only on one
-machine.
+Set `decision: reject` when a candidate is generic good practice, a personal
+preference, a repository-independent answer Codex already handles, duplicated by
+current guidance, contradicted by current facts, inseparable from sensitive data, or
+useful only on one machine. Evidence may be weak and the decision still be `reject`
+when a current authoritative rule already makes the proposed repository change a
+duplicate.
+
+Record the durable route separately; whether anything changes now is controlled by the
+decision. Use `route: none` when no artifact should be created, `existing-skill` for a
+missing boundary inside an existing trigger, `new-skill` for a distinct operator
+request surface, `product-issue` when the lesson requires deterministic behavior,
+persistence, or protocol support, and `private-security` for a possible vulnerability
+or credential exposure governed by `SECURITY.md`. A quarantined candidate may name a
+route for later evaluation, but it must not change an active artifact.
 
 ## Candidate record
 
@@ -55,37 +78,36 @@ Use a compact record rather than copying source material:
 ```text
 candidate:
 trigger:
-sources: <non-sensitive IDs, projects, dates>
+sources: <non-sensitive IDs, scopes, dates, action attempts>
+authority_levels:
+independence_check:
+evidence_state: weak | corroborated | deterministic-high-risk
 observed_failure_or_gain:
 current_validation:
 counterexample:
 stale_when:
 existing_overlap:
-decision: reject | quarantine | update-existing | new-skill | product-issue
+decision: reject | quarantine | promote
+route: none | existing-skill | new-skill | product-issue | private-security
 verification:
 ```
 
-Use `update-existing` only for a new validated boundary within an existing trigger.
-Use `reject` with no repository change when current guidance already contains the same
-rule. For `product-issue`, state whether a matching reviewed Issue already exists so a
-duplicate is not created.
+Use `existing-skill` only for a new validated boundary within an existing trigger. For
+`product-issue`, state whether a matching reviewed Issue already exists so a duplicate
+is not created. When only some actions lack code coverage, list those exact actions;
+do not infer a system-wide gap from uneven implementations.
 
 ## Forward tests
 
-Use realistic prompts and inspect decisions and side effects.
+Use realistic held-out prompts and inspect decisions and side effects. Do not reuse the
+candidate's wording or provide the evaluator with the intended answer. Include:
 
-- Duplicate case: repeated incidents show that a stale remote snapshot invalidates an
-  approved action, and current code and maintainer guidance already enforce fresh
-  bindings. Expected result: reject the duplicate repository change and route the live
-  action to the existing maintenance workflow.
-- Positive case: independent histories expose a decision-changing failure class that
-  current code, documentation, and skills do not cover. Expected result: update the
-  existing trigger or propose one focused skill or product Issue, with provenance,
-  current validation, a counterexample, and a stale condition.
-- Negative case: one session used a particular local path or command alias. Expected
-  result: reject it as machine-specific rather than adding a project rule.
-- Boundary case: a single high-risk failure has a deterministic reproducer. Expected
-  result: it may be promoted, but only with the reproducer, current validation, narrow
-  trigger, and reviewed Issue.
+- one supported candidate whose decision changes after checking current facts;
+- one apparent repetition that turns out to be a retry, downstream symptom, or rule
+  already enforced elsewhere;
+- one candidate whose provenance is too weak or sensitive to establish independence;
+- one negative case from a different failure class that should not trigger this skill;
+- for a high-risk single incident, both a deterministic reproducer and a nearby case
+  where the reproducer's preconditions do not hold.
 
 Treat a test that only checks headings, keywords, or generated prose as insufficient.

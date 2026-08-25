@@ -19,6 +19,10 @@ bounded user requests, final conclusions, and tool evidence needed for the candi
 being evaluated. Codex storage schemas may change, so discover them read-only instead
 of assuming a fixed path or database layout.
 
+Stop searching once the routing decision has enough evidence and every relevant
+current binding has been checked. Do not exhaust history merely to increase a count;
+report which potentially relevant sources were not inspected.
+
 Never read, reproduce, or commit authentication files, Codex configuration, shell
 snapshots, credential-bearing commands, raw environment dumps, or complete
 transcripts. Do not inspect unrelated private projects. If a relevant excerpt contains
@@ -39,6 +43,12 @@ For each candidate, capture only non-sensitive or pseudonymized values for:
 - the applicability boundary, counterexample, and event that would make it stale;
 - overlap with existing skills, documentation, code-enforced policy, and candidates.
 
+A summary that merely asserts repeated or independent events is a lead, not proof.
+Without non-sensitive provenance that identifies the date, action attempt, and enough
+context to distinguish retries or shared root causes, mark the evidence weak and do
+not promote it. After checking current overlap, quarantine an unresolved candidate or
+reject a duplicate independently of that evidence state.
+
 Read [references/evidence-rubric.md](references/evidence-rubric.md) when deciding
 whether a candidate should be rejected, quarantined, or promoted.
 
@@ -56,9 +66,18 @@ Prefer the narrowest durable home:
    generic, stale, machine-specific, or unsupported. Route the live operation to the
    existing workflow without calling the duplicate a skill update.
 
+If a candidate may be a vulnerability or credential exposure, stop public routing,
+read `SECURITY.md`, and use its private process. Do not create, stage, or recommend a
+public product Issue for security-sensitive evidence.
+
 Do not turn personal style, a one-off workaround, benchmark wording, or a successful
 final answer into a universal rule. Do not encode policy that the product already
 enforces more reliably in code.
+
+When related actions have uneven product coverage, name the uncovered actions rather
+than claiming a universal gap. Route durable intent, reconciliation, or persistence
+work to a product Issue; reserve a skill for reusable operator judgment that cannot be
+enforced reliably in code.
 
 ## Promote safely
 
@@ -68,13 +87,14 @@ dry-run, or isolated fixture without credentials or public writes. For risky wor
 include adversarial or interrupted cases and inspect the actual fixture outcome, not
 only the wording of the response.
 
-Any project change still requires a reviewed open Issue, an isolated branch or
-worktree, skill validation, focused verification, and human review through the normal
-RepoSteward lifecycle. A retrospective never authorizes direct edits to `main`, public
-writes, credential access, or automatic self-modification.
+Any non-security project change still requires a reviewed open Issue, an isolated
+branch or worktree, validation with skill-creator's validator, focused verification,
+and human review through the normal RepoSteward lifecycle. Security changes follow the
+private process in `SECURITY.md`. A retrospective never authorizes direct edits to
+`main`, public writes, credential access, or automatic self-modification.
 
 ## Report
 
-State the history coverage and missing sources; promoted, quarantined, rejected, and
-product-Issue candidates; current-fact verification; residual uncertainty; changed
+State the history coverage and missing sources; each candidate's evidence state,
+decision, durable route, and current-fact verification; residual uncertainty; changed
 files; and validation. Do not imply that unavailable or deleted history was reviewed.
