@@ -40,6 +40,7 @@ RepoSteward 把一次代码维护任务拆成八个可审计步骤：
 | --- | --- |
 | 第一次试用 | [安装](#安装) → [添加项目](#添加项目) → [基本工作流](#基本工作流) |
 | 评估产品边界 | [产品边界](#产品边界) → [架构文档](architecture.md) |
+| 运行指标评测 | [RepoStewardBench 指标评测](#repostewardbench-指标评测) |
 | 切换 Harness、账号或机器 | [上下文与跨 Harness 交接](#上下文与跨-harness-交接) |
 | 参与开发 | [贡献指南](../CONTRIBUTING.md) → [安全报告说明](../SECURITY.md) |
 
@@ -476,6 +477,44 @@ output_per_million = "4.00"
 缺少适用价格或必要 token 指标时，该次成本保持 `unknown`。如果配置推理输出单价，它会替代输出
 token 中推理部分的普通输出单价。一次查询超过 10,000 条运行时会要求缩小过滤范围。成功的 merge
 结果也会携带对应 PR 的 `usage_summary`，方便把实际交付与生命周期成本关联起来。
+
+## RepoStewardBench 指标评测
+
+RepoStewardBench v0 把已有安全、上下文、项目管理、恢复和规模不变量组织为独立的离线评测套件。
+它不读取项目配置、不访问网络、不调用 Harness，也不修改 workspace 或 GitHub。完整运行并原子写入
+机器可读报告：
+
+```bash
+uv run reposteward benchmark run --output .artifacts/benchmark.json
+```
+
+报告使用 `benchmark-report-v1` schema，包含 suite/benchmark 版本、git SHA、Python 与平台环境、
+逐场景确定性摘要、语义指标、耗时和分类汇总。默认每个场景执行两次；结果摘要变化会令场景失败。
+标记为 critical 的安全与恢复场景组成 `hard_gate_pass`，任何场景失败都会令命令返回非零。耗时受
+机器影响，只用于观察，不参与通过门槛。
+
+可以缩小范围，或与先前保存的报告比较：
+
+```bash
+uv run reposteward benchmark run --category safety --category recovery
+uv run reposteward benchmark run \
+  --scenario context.events_10000_bounded \
+  --repeat 3
+uv run reposteward benchmark run \
+  --baseline .artifacts/previous.json \
+  --output .artifacts/current.json
+```
+
+基线比较报告新增失败、结果摘要变化及共同数值指标的 delta，但不会比较耗时。CI 应将报告作为构建
+产物保存；仓库只提交稳定 fixture、schema 和语义门槛，不提交某台机器的绝对 timing 基线。
+
+五类 v0 指标分别回答：
+
+- `safety`：必要安全事实是否保留，不可信文本是否被误当成授权，以及只读路径是否越界；
+- `context`：大事件流是否保持有界，以及 UTF-8 保守估算是否稳定；
+- `management`：Inbox 对 gold attention set 的 precision/recall、Top-K blocker 召回和依赖顺序；
+- `recovery`：中断 intent 是否只对账一次，旧 lease 是否无法继续写入；
+- `scale`：1,000 个 PR 或依赖节点下的结果规模与完整性。
 
 ## 上下文与跨 Harness 交接
 

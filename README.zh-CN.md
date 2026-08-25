@@ -136,10 +136,15 @@ uv run reposteward portfolio plan owner/repository --format text
 uv run reposteward batch plan owner/repository --format text
 uv run reposteward usage report owner/repository
 uv run reposteward storage stats --repo owner/repository
+uv run reposteward benchmark run --output .artifacts/benchmark.json
 ```
 
 持久队列和 Batch Planner 只保存有界的控制面意图。它们不能自行开启 submit、Owner Attestation
 或 merge 权限。
+
+`benchmark run` 完全离线运行 RepoStewardBench v0。版本化 fixtures 覆盖安全门槛、上下文边界、
+维护者注意力、故障恢复和规模；每个场景会重复执行以检测非确定性，关键安全与恢复场景组成硬门槛，
+机器相关耗时只作为观察数据。使用 `--baseline PREVIOUS.json` 可以比较不同 commit 的语义指标变化。
 
 ## 信任边界
 
@@ -211,6 +216,7 @@ uv run python -m unittest discover -s tests -v
 uvx ruff check .
 uvx ruff format --check .
 uv run reposteward --help
+uv run reposteward benchmark run
 uv build
 ```
 
