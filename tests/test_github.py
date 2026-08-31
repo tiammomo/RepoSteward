@@ -223,6 +223,60 @@ class GitHubBranchHeadTests(unittest.TestCase):
         ):
             client.branch_head_sha("owner/repo", "main")
 
+    def test_branch_cleanup_reads_normalize_complete_branch_facts(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        values = [
+            {
+                "name": "topic/z",
+                "protected": False,
+                "commit": {"sha": "b" * 40},
+            },
+            {
+                "name": "main",
+                "protected": True,
+                "commit": {"sha": "a" * 40},
+            },
+        ]
+        with patch.object(client, "_paginated_rest_values", return_value=values):
+            branches = client.repository_branches("owner/repo")
+
+        self.assertEqual([value["name"] for value in branches], ["main", "topic/z"])
+
+        with patch.object(
+            client,
+            "_request",
+            return_value=(values[0], None),
+        ) as request:
+            branch = client.repository_branch("owner/repo", "topic/z")
+
+        self.assertEqual(branch, branches[1])
+        request.assert_called_once_with("GET", "/repos/owner/repo/branches/topic%2Fz")
+
+    def test_branch_cleanup_reads_fail_closed_on_incomplete_facts(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        with (
+            patch.object(
+                client,
+                "_paginated_rest_values",
+                return_value=[
+                    {
+                        "name": "topic",
+                        "protected": "false",
+                        "commit": {"sha": "a" * 40},
+                    }
+                ],
+            ),
+            self.assertRaisesRegex(GitHubError, "snapshot was incomplete"),
+        ):
+            client.repository_branches("owner/repo")
+
+        with patch.object(
+            client,
+            "_request",
+            side_effect=GitHubError("missing", status_code=404),
+        ):
+            self.assertIsNone(client.repository_branch("owner/repo", "missing"))
+
 
 class GitHubCompetingWorkTests(unittest.TestCase):
     def test_claim_comment_and_linked_pull_request_are_blockers(self) -> None:

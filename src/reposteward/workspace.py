@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -214,3 +215,65 @@ class WorkspaceManager:
         )
         if result.returncode:
             raise WorkspaceError(f"git push failed: {result.stderr.strip()}")
+
+    @staticmethod
+    def delete_remote_branch(
+        destination: str, branch: str, *, expected_sha: str
+    ) -> None:
+        """Delete one exact SSH ref with an atomic SHA lease and no hooks."""
+        if destination.count("/") != 1 or not all(destination.split("/")):
+            raise WorkspaceError("remote repository must use owner/name")
+        if not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
+            raise WorkspaceError("expected remote SHA is invalid")
+        check = subprocess.run(
+            ["git", "check-ref-format", f"refs/heads/{branch}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=sanitized_environment(keep_codex_credentials=False),
+        )
+        if check.returncode:
+            raise WorkspaceError("remote branch name is invalid")
+        environment = sanitized_environment(
+            keep_codex_credentials=False,
+            keep_ssh_credentials=True,
+        )
+        environment.update(
+            {
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_TERMINAL_PROMPT": "0",
+            }
+        )
+        with tempfile.TemporaryDirectory(prefix="reposteward-branch-cleanup-") as path:
+            initialized = subprocess.run(
+                ["git", "init", "-q", path],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+            if initialized.returncode:
+                raise WorkspaceError("temporary Git repository initialization failed")
+            result = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "push",
+                    "--porcelain",
+                    "--no-verify",
+                    f"--force-with-lease=refs/heads/{branch}:{expected_sha}",
+                    f"git@github.com:{destination}.git",
+                    f":refs/heads/{branch}",
+                ],
+                cwd=path,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+        if result.returncode:
+            raise WorkspaceError(
+                f"leased Git branch deletion failed with exit code {result.returncode}"
+            )

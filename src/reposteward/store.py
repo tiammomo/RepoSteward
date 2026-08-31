@@ -2298,6 +2298,20 @@ class Store:
                 """,
             ),
             (
+                "branch_cleanup_attempt_audit",
+                """
+                SELECT repository, COUNT(*) AS records,
+                       COALESCE(SUM(
+                           length(CAST(reasons AS BLOB)) +
+                           length(CAST(payload AS BLOB))
+                       ), 0) AS bytes,
+                       MIN(created_at) AS oldest_at, MAX(created_at) AS newest_at
+                FROM branch_cleanup_attempts
+                WHERE (?='' OR repository=?) AND (?='' OR created_at>=?)
+                GROUP BY repository
+                """,
+            ),
+            (
                 "task_queue_control",
                 """
                 SELECT repository, COUNT(*) AS records,
@@ -4876,6 +4890,296 @@ class Store:
                 (run_id, action, target_pull_number, target_pull_number),
             ).fetchone()
         return row is not None
+
+    def branch_cleanup_runs(
+        self, repository: str, *, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        """Return every bounded submitted run with authoritative merge outcomes."""
+        limit = min(max(limit, 1), 500)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                WITH ranked_merges AS (
+                    SELECT m.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY run_id
+                               ORDER BY created_at DESC, rowid DESC
+                           ) AS merge_rank
+                    FROM merge_executions m WHERE stage='completed'
+                ),
+                ranked_cleanup AS (
+                    SELECT c.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY run_id
+                               ORDER BY created_at DESC, rowid DESC
+                           ) AS cleanup_rank
+                    FROM branch_cleanup_attempts c WHERE stage='completed'
+                )
+                SELECT r.id, r.repository, r.issue_number, r.status, r.details,
+                       r.created_at, s.pr_url,
+                       m.pull_number AS merge_pull_number,
+                       m.outcome AS merge_outcome,
+                       m.head_sha AS merge_head_sha,
+                       c.outcome AS cleanup_outcome
+                FROM runs r
+                LEFT JOIN submissions s
+                  ON s.repository=r.repository AND s.issue_number=r.issue_number
+                LEFT JOIN ranked_merges m
+                  ON m.run_id=r.id AND m.merge_rank=1
+                LEFT JOIN ranked_cleanup c
+                  ON c.run_id=r.id AND c.cleanup_rank=1
+                WHERE r.repository=? AND r.status='submitted'
+                ORDER BY r.created_at, r.id LIMIT ?
+                """,
+                (repository.casefold(), limit + 1),
+            ).fetchall()
+        if len(rows) > limit:
+            raise StoreError(
+                "branch cleanup backlog exceeded 500 runs; narrow repository state"
+            )
+        result = []
+        for row in rows:
+            value = dict(row)
+            try:
+                details = json.loads(str(value.pop("details")))
+            except json.JSONDecodeError as exc:
+                raise StoreError("branch cleanup run details were modified") from exc
+            if not isinstance(details, dict):
+                raise StoreError("branch cleanup run details were modified")
+            pr_url = str(details.get("pr_url") or value.pop("pr_url") or "")
+            pull_number = int(value.pop("merge_pull_number") or 0)
+            if not pull_number and "/pull/" in pr_url:
+                tail = pr_url.rsplit("/pull/", 1)[1].rstrip("/")
+                pull_number = int(tail) if tail.isdecimal() else 0
+            result.append(
+                {
+                    "run_id": str(value["id"]),
+                    "repository": str(value["repository"]),
+                    "issue_number": int(value["issue_number"]),
+                    "status": str(value["status"]),
+                    "branch": str(details.get("branch") or ""),
+                    "head_sha": str(details.get("commit_sha") or ""),
+                    "pull_number": pull_number,
+                    "pr_url": pr_url,
+                    "merge_outcome": str(value.pop("merge_outcome") or ""),
+                    "merge_head_sha": str(value.pop("merge_head_sha") or ""),
+                    "cleanup_outcome": str(value.pop("cleanup_outcome") or ""),
+                    "created_at": str(value["created_at"]),
+                }
+            )
+        return result
+
+    def append_branch_cleanup_attempt(
+        self,
+        *,
+        attempt_id: str,
+        run_id: str,
+        repository: str,
+        issue_number: int,
+        pull_number: int,
+        actor: str,
+        branch: str,
+        head_sha: str,
+        plan_digest: str,
+        stage: str,
+        outcome: str,
+        reasons: tuple[str, ...] = (),
+        lease: RunLease,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Append one lease-bound branch cleanup intent or terminal result."""
+        repository = repository.casefold()
+        actor = actor.strip()
+        if (
+            not _is_lower_hex(attempt_id, 32)
+            or not _is_lower_hex(run_id, 32)
+            or not repository
+            or not actor
+            or len(actor) > 128
+            or not branch
+        ):
+            raise ValueError("branch cleanup identities must not be empty")
+        if issue_number < 1 or pull_number < 1:
+            raise ValueError("branch cleanup issue and pull numbers must be positive")
+        if not _is_lower_hex(head_sha, 40) or not _is_lower_hex(plan_digest, 64):
+            raise ValueError("branch cleanup SHA or plan digest is invalid")
+        if len(branch) > 255:
+            raise ValueError("branch cleanup branch name is too long")
+        if stage not in {"applying", "completed"}:
+            raise ValueError("branch cleanup stage is unsupported")
+        completed = {
+            "deleted",
+            "already_absent",
+            "reconciled_deleted",
+            "blocked",
+            "failed",
+        }
+        if (stage == "applying" and outcome != "pending") or (
+            stage == "completed" and outcome not in completed
+        ):
+            raise ValueError("branch cleanup stage and outcome do not match")
+        normalized_reasons = tuple(str(value)[:200] for value in reasons[:16])
+        if any(not value for value in normalized_reasons):
+            raise ValueError("branch cleanup reasons must not be empty")
+        if set(payload) != {"public_write", "reconciliation", "observed_by"}:
+            raise ValueError("branch cleanup payload contains unsupported fields")
+        if (
+            not isinstance(payload["public_write"], bool)
+            or not isinstance(payload["reconciliation"], str)
+            or not isinstance(payload["observed_by"], str)
+            or not payload["observed_by"].strip()
+            or len(payload["observed_by"]) > 128
+        ):
+            raise TypeError("branch cleanup payload values must be bounded scalars")
+        encoded_payload = _canonical_json(payload)
+        if len(encoded_payload.encode()) > 2_048:
+            raise ValueError("branch cleanup payload exceeds 2048 bytes")
+        if lease.scope != f"issue:{repository}#{issue_number}":
+            raise StoreError("branch cleanup lease does not match its Issue")
+
+        record_id = uuid.uuid4().hex
+        now = utc_now()
+        with self._connection() as connection:
+            self._begin_immediate(connection)
+            self._assert_run_lease_row(connection, lease)
+            run = connection.execute(
+                "SELECT repository, issue_number FROM runs WHERE id=?", (run_id,)
+            ).fetchone()
+            if run is None or (
+                str(run["repository"]) != repository
+                or int(run["issue_number"]) != issue_number
+            ):
+                raise StoreError("branch cleanup attempt does not match its run")
+            merged = connection.execute(
+                """
+                SELECT 1 FROM merge_executions
+                WHERE run_id=? AND repository=? AND pull_number=?
+                  AND head_sha=? AND stage='completed'
+                  AND outcome IN ('merged', 'already_merged')
+                LIMIT 1
+                """,
+                (run_id, repository, pull_number, head_sha),
+            ).fetchone()
+            if merged is None:
+                raise StoreError("branch cleanup lacks an exact successful merge audit")
+            previous = connection.execute(
+                """
+                SELECT run_id, repository, issue_number, pull_number, actor,
+                       branch, head_sha, plan_digest, stage
+                FROM branch_cleanup_attempts WHERE attempt_id=? LIMIT 1
+                """,
+                (attempt_id,),
+            ).fetchone()
+            identity = {
+                "run_id": run_id,
+                "repository": repository,
+                "issue_number": issue_number,
+                "pull_number": pull_number,
+                "actor": actor,
+                "branch": branch,
+                "head_sha": head_sha,
+                "plan_digest": plan_digest,
+            }
+            if previous is not None and any(
+                previous[key] != value for key, value in identity.items()
+            ):
+                raise StoreError("branch cleanup attempt identity changed")
+            if stage == "applying" and previous is not None:
+                raise StoreError("branch cleanup attempt is already terminal")
+            if (
+                stage == "completed"
+                and outcome
+                in {
+                    "deleted",
+                    "reconciled_deleted",
+                }
+                and (previous is None or str(previous["stage"]) != "applying")
+            ):
+                raise StoreError(
+                    "branch cleanup deletion outcome lacks an applying intent"
+                )
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO branch_cleanup_attempts(
+                        id, attempt_id, run_id, repository, issue_number,
+                        pull_number, actor, branch, head_sha, plan_digest,
+                        stage, outcome, reasons, lease_owner, lease_generation,
+                        payload, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record_id,
+                        attempt_id,
+                        run_id,
+                        repository,
+                        issue_number,
+                        pull_number,
+                        actor,
+                        branch,
+                        head_sha,
+                        plan_digest,
+                        stage,
+                        outcome,
+                        _canonical_json(normalized_reasons),
+                        lease.owner,
+                        lease.generation,
+                        encoded_payload,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise StoreError(
+                    "branch cleanup attempt already contains this stage"
+                ) from exc
+        return {
+            "id": record_id,
+            "attempt_id": attempt_id,
+            "stage": stage,
+            "outcome": outcome,
+            "created_at": now,
+        }
+
+    @staticmethod
+    def _branch_cleanup_attempt(row: sqlite3.Row) -> dict[str, Any]:
+        value = dict(row)
+        value["reasons"] = json.loads(str(value["reasons"]))
+        value["payload"] = json.loads(str(value["payload"]))
+        return value
+
+    def incomplete_branch_cleanup_attempts(
+        self, repository: str, *, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        limit = min(max(limit, 1), 500)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT applying.* FROM branch_cleanup_attempts applying
+                WHERE applying.repository=? AND applying.stage='applying'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM branch_cleanup_attempts completed
+                      WHERE completed.attempt_id=applying.attempt_id
+                        AND completed.stage='completed'
+                  )
+                ORDER BY applying.sequence LIMIT ?
+                """,
+                (repository.casefold(), limit),
+            ).fetchall()
+        return [self._branch_cleanup_attempt(row) for row in rows]
+
+    def branch_cleanup_attempts(
+        self, run_id: str, *, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        limit = min(max(limit, 1), 500)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM branch_cleanup_attempts
+                WHERE run_id=? ORDER BY sequence LIMIT ?
+                """,
+                (run_id, limit),
+            ).fetchall()
+        return [self._branch_cleanup_attempt(row) for row in rows]
 
     def append_merge_execution(
         self,

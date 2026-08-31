@@ -53,6 +53,7 @@ class PullRequest:
     author: str = ""
     merged: bool = False
     head_owner: str = ""
+    head_repository: str = ""
     head_branch: str = ""
     head_sha: str = ""
     base_branch: str = ""
@@ -848,11 +849,79 @@ class GitHubClient:
             )
         )
 
+    def all_pull_requests(self, upstream: str) -> tuple[PullRequest, ...]:
+        """Return complete PR history used by terminal branch classification."""
+        values = self._paginated_rest_values(
+            f"/repos/{upstream}/pulls", query={"state": "all", "sort": "updated"}
+        )
+        return tuple(
+            sorted(
+                (self._parse_pull_request(value) for value in values),
+                key=lambda value: value.number,
+            )
+        )
+
+    def repository_branches(self, upstream: str) -> tuple[dict[str, Any], ...]:
+        """Return a complete normalized branch snapshot or fail closed."""
+        values = self._paginated_rest_values(f"/repos/{upstream}/branches")
+        branches = []
+        for value in values:
+            name = str(value.get("name") or "")
+            protected = value.get("protected")
+            head_sha = str(((value.get("commit") or {}).get("sha")) or "")
+            if (
+                not name
+                or not isinstance(protected, bool)
+                or not re.fullmatch(r"[0-9a-f]{40}", head_sha)
+            ):
+                raise GitHubError("GitHub branch snapshot was incomplete")
+            branches.append(
+                {"name": name, "head_sha": head_sha, "protected": protected}
+            )
+        return tuple(sorted(branches, key=lambda branch: str(branch["name"])))
+
+    def repository_branch(self, upstream: str, branch: str) -> dict[str, Any] | None:
+        """Read one exact branch including protection, or return absent."""
+        if not branch:
+            raise ValueError("branch must not be empty")
+        encoded = urllib.parse.quote(branch, safe="")
+        try:
+            value, _ = self._request("GET", f"/repos/{upstream}/branches/{encoded}")
+        except GitHubError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        protected = value.get("protected") if isinstance(value, dict) else None
+        head_sha = str(((value.get("commit") or {}).get("sha")) or "")
+        if not isinstance(protected, bool) or not re.fullmatch(
+            r"[0-9a-f]{40}", head_sha
+        ):
+            raise GitHubError("GitHub branch response was incomplete")
+        return {"name": branch, "head_sha": head_sha, "protected": protected}
+
+    def pull_requests_for_head(
+        self, upstream: str, *, owner: str, branch: str
+    ) -> tuple[PullRequest, ...]:
+        """Return all PR history for one exact same-repository head."""
+        if not owner or not branch:
+            raise ValueError("pull request head owner and branch must not be empty")
+        values = self._paginated_rest_values(
+            f"/repos/{upstream}/pulls",
+            query={"state": "all", "head": f"{owner}:{branch}"},
+        )
+        return tuple(
+            sorted(
+                (self._parse_pull_request(value) for value in values),
+                key=lambda value: value.number,
+            )
+        )
+
     @staticmethod
     def _parse_pull_request(item: dict[str, Any]) -> PullRequest:
         head = item.get("head") or {}
         base = item.get("base") or {}
         head_owner = ((head.get("repo") or {}).get("owner") or {}).get("login") or ""
+        head_repository = str((head.get("repo") or {}).get("full_name") or "")
         return PullRequest(
             number=int(item["number"]),
             url=str(item["html_url"]),
@@ -864,6 +933,7 @@ class GitHubClient:
             author=str((item.get("user") or {}).get("login") or ""),
             merged=bool(item.get("merged_at")),
             head_owner=str(head_owner),
+            head_repository=head_repository,
             head_branch=str(head.get("ref") or ""),
             head_sha=str(head.get("sha") or ""),
             base_branch=str(base.get("ref") or ""),

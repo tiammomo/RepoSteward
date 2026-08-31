@@ -158,6 +158,7 @@ class RepositoryPolicy:
     auto_prepare: bool = False
     auto_merge: bool = False
     auto_merge_method: str = "squash"
+    branch_cleanup: bool = False
     mode: str = "contributor"
     submission_strategy: str = "fork"
     min_stars: int = 1_000
@@ -794,6 +795,7 @@ def load_config(
             auto_merge_method=str(
                 repo_value.get("auto_merge_method", "squash")
             ).strip(),
+            branch_cleanup=_boolean(repo_value.get("branch_cleanup"), False),
             owner_attestation=_boolean(repo_value.get("owner_attestation"), False),
             mode=str(repo_value.get("mode", "contributor")).strip(),
             submission_strategy=str(
@@ -937,6 +939,14 @@ def load_config(
         ):
             raise ConfigError(
                 f"{repository.name} may enable auto_merge only in maintainer "
+                "same-repository mode"
+            )
+        if repository.branch_cleanup and (
+            repository.mode != "maintainer"
+            or repository.submission_strategy != "same-repository"
+        ):
+            raise ConfigError(
+                f"{repository.name} may enable branch_cleanup only in maintainer "
                 "same-repository mode"
             )
         if repository.owner_attestation and (
