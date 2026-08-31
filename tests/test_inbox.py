@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from reposteward.github import GitHubError
 from reposteward.inbox import build_maintainer_inbox, render_inbox_text
 from reposteward.pipeline import Pipeline
 
@@ -146,6 +147,30 @@ class MaintainerInboxTests(unittest.TestCase):
         self.assertTrue(result["complete"])
         self.assertEqual(result["items"], [])
 
+    def test_merged_outcome_does_not_suppress_without_complete_portfolio(self) -> None:
+        for portfolio, error in (
+            (None, "rate limit"),
+            ({"snapshot": {"complete": False, "pull_requests": []}}, ""),
+        ):
+            with self.subTest(portfolio=portfolio):
+                result = build_maintainer_inbox(
+                    "owner/repo",
+                    proposals=[],
+                    runs=[_run("merged", "submitted", issue=1, pull=10)],
+                    portfolio=portfolio,
+                    merge_outcomes={10: "merged"},
+                    observed_at="2026-08-22T01:00:00+00:00",
+                    error=error,
+                )
+
+                self.assertIn(
+                    (10, "refresh_required"),
+                    [
+                        (item["pull_number"], item["reason_code"])
+                        for item in result["items"]
+                    ],
+                )
+
     def test_open_facts_and_non_merged_outcomes_remain_visible(self) -> None:
         result = build_maintainer_inbox(
             "owner/repo",
@@ -194,6 +219,25 @@ class MaintainerInboxTests(unittest.TestCase):
         self.assertEqual(result["items"], [])
         pipeline.portfolio_snapshot.assert_called_once_with("owner/repo")
         pipeline.store.latest_merge_outcomes.assert_called_once_with("owner/repo")
+
+    def test_pipeline_refresh_failure_keeps_locally_merged_run_visible(self) -> None:
+        pipeline = Pipeline.__new__(Pipeline)
+        pipeline.policy = Mock(return_value=SimpleNamespace(name="owner/repo"))
+        pipeline.portfolio_snapshot = Mock(side_effect=GitHubError("rate limit"))
+        pipeline.store = Mock()
+        pipeline.store.staged_issue_proposals.return_value = []
+        pipeline.store.latest_runs_for_repository.return_value = [
+            _run("merged", "submitted", issue=1, pull=10)
+        ]
+        pipeline.store.latest_merge_outcomes.return_value = {10: "merged"}
+
+        result = pipeline.maintainer_inbox("owner/repo")
+
+        self.assertFalse(result["complete"])
+        self.assertEqual(
+            [item["reason_code"] for item in result["items"]],
+            ["github_refresh_failed", "refresh_required"],
+        )
 
     def test_empty_inbox_has_stable_text_and_digest(self) -> None:
         arguments = {

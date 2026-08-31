@@ -143,6 +143,7 @@ def build_maintainer_inbox(
         if (
             pull is None
             and pull_number
+            and portfolio_complete
             and str((merge_outcomes or {}).get(pull_number) or "").casefold()
             in MERGED_OUTCOMES
         ):
