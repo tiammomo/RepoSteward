@@ -21,7 +21,13 @@ from .discovery import DiscoveryService
 from .doctor import run_doctor
 from .inbox import render_inbox_text
 from .issues import read_details
+from .lifecycle import (
+    DEFAULT_EVENT_LIMIT,
+    build_lifecycle_trace,
+    render_lifecycle_text,
+)
 from .pipeline import Pipeline
+from .policy import PolicyError
 from .portfolio import render_portfolio_text
 from .setup import add_repository, initialize_user_config
 
@@ -130,6 +136,14 @@ def _parser() -> argparse.ArgumentParser:
     listing.add_argument(
         "--all", action="store_true", help="include blocked candidates"
     )
+
+    lifecycle = subparsers.add_parser(
+        "trace", help="read one bounded work-item lifecycle trace"
+    )
+    lifecycle.add_argument("repository")
+    lifecycle.add_argument("issue", type=int)
+    lifecycle.add_argument("--limit", type=int, default=DEFAULT_EVENT_LIMIT)
+    lifecycle.add_argument("--format", choices=("json", "text"), default="json")
     listing.add_argument("--status", default="candidate")
     listing.add_argument("--limit", type=int, default=30)
 
@@ -543,6 +557,24 @@ def main(argv: list[str] | None = None) -> int:
                 f"unhandled benchmark command: {args.benchmark_command}"
             )
         config = load_config(args.config, include_user=True)
+        if args.command == "trace":
+            try:
+                policy = config.repositories[args.repository.casefold()]
+            except KeyError as exc:
+                raise PolicyError(
+                    f"repository is not allowlisted: {args.repository}"
+                ) from exc
+            result = build_lifecycle_trace(
+                config.state_dir,
+                policy.name,
+                args.issue,
+                event_limit=args.limit,
+            )
+            if args.format == "text":
+                print(render_lifecycle_text(result))
+            else:
+                _json(result)
+            return 0
         pipeline = Pipeline(config)
         if args.command == "issue":
             if args.issue_command == "draft":

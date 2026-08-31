@@ -134,6 +134,7 @@ uv run reposteward inbox --repo owner/repository --format text
 uv run reposteward portfolio inspect owner/repository --format text
 uv run reposteward portfolio plan owner/repository --format text
 uv run reposteward batch plan owner/repository --format text
+uv run reposteward trace owner/repository 123 --format text
 uv run reposteward usage report owner/repository
 uv run reposteward storage stats --repo owner/repository
 uv run reposteward benchmark run --output .artifacts/benchmark.json
