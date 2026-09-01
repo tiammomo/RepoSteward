@@ -494,6 +494,7 @@ class GitHubClient:
             can_push=bool((payload.get("permissions") or {}).get("push", False)),
             can_admin=bool((payload.get("permissions") or {}).get("admin", False)),
             owner_login=str((payload.get("owner") or {}).get("login") or ""),
+            delete_branch_on_merge=bool(payload.get("delete_branch_on_merge")),
         )
 
     def branch_review_policy(self, full_name: str, branch: str) -> dict[str, Any]:

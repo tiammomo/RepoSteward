@@ -178,6 +178,7 @@ class GitHubOwnerReviewPolicyTests(unittest.TestCase):
             "license": None,
             "permissions": {"push": True, "admin": True},
             "owner": {"login": "owner"},
+            "delete_branch_on_merge": True,
         }
         with patch.object(client, "_request", return_value=(payload, None)):
             repository = client.repository("owner/repo")
@@ -185,6 +186,7 @@ class GitHubOwnerReviewPolicyTests(unittest.TestCase):
         self.assertTrue(repository.can_push)
         self.assertTrue(repository.can_admin)
         self.assertEqual(repository.owner_login, "owner")
+        self.assertTrue(repository.delete_branch_on_merge)
 
 
 class GitHubBranchHeadTests(unittest.TestCase):

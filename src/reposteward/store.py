@@ -17,7 +17,7 @@ from typing import Any
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -579,6 +579,43 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         """
         CREATE INDEX IF NOT EXISTS queue_attempts_for_task
         ON queue_attempts(task_id, sequence)
+        """,
+    ),
+    17: (
+        """
+        CREATE TABLE IF NOT EXISTS branch_cleanup_attempts (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            attempt_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            repository TEXT NOT NULL,
+            issue_number INTEGER NOT NULL,
+            pull_number INTEGER NOT NULL,
+            actor TEXT NOT NULL,
+            branch TEXT NOT NULL,
+            head_sha TEXT NOT NULL,
+            plan_digest TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            reasons TEXT NOT NULL,
+            lease_owner TEXT NOT NULL,
+            lease_generation INTEGER NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES runs(id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS branch_cleanup_attempts_for_repository
+        ON branch_cleanup_attempts(repository, sequence DESC)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS branch_cleanup_attempts_for_run
+        ON branch_cleanup_attempts(run_id, sequence)
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS branch_cleanup_attempts_stage_once
+        ON branch_cleanup_attempts(attempt_id, stage)
         """,
     ),
 }
