@@ -113,6 +113,35 @@ def _parser() -> argparse.ArgumentParser:
         elif action in {"apply", "revert"}:
             command.add_argument("--plan-digest", required=True)
 
+    knowledge = subparsers.add_parser(
+        "knowledge", help="review and query evidence-backed project guidance"
+    )
+    knowledge_commands = knowledge.add_subparsers(
+        dest="knowledge_command", required=True
+    )
+    for action in ("propose", "promote", "inspect", "list"):
+        command = knowledge_commands.add_parser(action)
+        command.add_argument("run_id")
+        if action == "propose":
+            command.add_argument("--input", type=Path, required=True)
+        elif action == "promote":
+            command.add_argument("knowledge_id")
+            command.add_argument("--reviewed-by", required=True)
+            command.add_argument(
+                "--basis",
+                choices=("human_confirmation", "verification_evidence"),
+                required=True,
+            )
+            command.add_argument("--rationale", required=True)
+            command.add_argument("--verification-id", default="")
+        elif action == "inspect":
+            command.add_argument("knowledge_id")
+            command.add_argument("--live", action="store_true")
+        else:
+            command.add_argument("--scope-path", action="append", default=[])
+            command.add_argument("--limit", type=int, default=5)
+            command.add_argument("--all", action="store_true")
+
     task = subparsers.add_parser(
         "task", help="assist coding agents in linked local projects"
     )
@@ -135,12 +164,14 @@ def _parser() -> argparse.ArgumentParser:
     task_context.add_argument("run_id")
     task_context.add_argument("--budget", type=int, default=24_000)
     task_context.add_argument("--live", action="store_true")
+    task_context.add_argument("--scope-path", action="append", default=[])
     task_context.add_argument("--format", choices=("json", "markdown"), default="json")
     task_current = task_commands.add_parser(
         "current", help="get the current task for a linked workspace"
     )
     task_current.add_argument("path", type=Path, nargs="?", default=Path.cwd())
     task_current.add_argument("--budget", type=int, default=24_000)
+    task_current.add_argument("--scope-path", action="append", default=[])
     task_current.add_argument("--format", choices=("json", "markdown"), default="json")
     task_checkpoint = task_commands.add_parser(
         "checkpoint", help="save unverified Agent claims with revision checks"
@@ -674,6 +705,36 @@ def main(argv: list[str] | None = None) -> int:
                 )
             _json(result)
             return 0
+        if args.command == "knowledge":
+            from .knowledge import ProjectKnowledge
+
+            service = ProjectKnowledge(config)
+            if args.knowledge_command == "propose":
+                with args.input.open("rb") as handle:
+                    raw = handle.read(100_001)
+                if len(raw) > 100_000:
+                    raise ValueError("knowledge input exceeds 100000 bytes")
+                result = service.propose(args.run_id, json.loads(raw))
+            elif args.knowledge_command == "promote":
+                result = service.promote(
+                    args.run_id,
+                    args.knowledge_id,
+                    reviewed_by=args.reviewed_by,
+                    basis=args.basis,
+                    rationale=args.rationale,
+                    verification_id=args.verification_id,
+                )
+            elif args.knowledge_command == "inspect":
+                result = service.inspect(args.run_id, args.knowledge_id, live=args.live)
+            else:
+                result = service.list(
+                    args.run_id,
+                    scope_paths=tuple(args.scope_path) or (".",),
+                    limit=args.limit,
+                    include_inactive=args.all,
+                )
+            _json(result)
+            return 0
         if args.command == "verification":
             from .external_verification import ExternalVerification
 
@@ -733,10 +794,15 @@ def main(argv: list[str] | None = None) -> int:
             elif args.task_command == "inspect":
                 result = service.inspect(args.run_id, live=args.live)
             elif args.task_command == "current":
-                result = service.current(args.path, budget=args.budget)
+                result = service.current(
+                    args.path, budget=args.budget, scope_paths=tuple(args.scope_path)
+                )
             elif args.task_command == "context":
                 result = service.context(
-                    args.run_id, budget=args.budget, live=args.live
+                    args.run_id,
+                    budget=args.budget,
+                    live=args.live,
+                    scope_paths=tuple(args.scope_path),
                 )
             else:
                 result = service.checkpoint(

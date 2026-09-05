@@ -441,7 +441,15 @@ class ExternalVerification:
         raw = None
         digest = ""
         complete = True
-        if len(parts) == 2 and parts[0] == "verification":
+        if len(parts) == 2 and parts[0] == "knowledge":
+            from .knowledge import ProjectKnowledge
+
+            raw = json.dumps(
+                ProjectKnowledge(self.config).inspect(run_id, parts[1]),
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode()
+        elif len(parts) == 2 and parts[0] == "verification":
             raw = json.dumps(
                 self.inspect(run_id, parts[1]), ensure_ascii=False, sort_keys=True
             ).encode()

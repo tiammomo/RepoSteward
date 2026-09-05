@@ -515,7 +515,12 @@ class ExternalTasks:
         }
 
     def context(
-        self, run_id: str, *, budget: int = 24_000, live: bool = False
+        self,
+        run_id: str,
+        *,
+        budget: int = 24_000,
+        live: bool = False,
+        scope_paths: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         if type(budget) is not int or not 512 <= budget <= 100_000:
             raise ValueError("context budget must be between 512 and 100000")
@@ -545,6 +550,29 @@ class ExternalTasks:
             )
         pack = report.pop("context_pack")
         checkpoint = report.pop("checkpoint")
+        knowledge = {"entries": [], "selection": "scope_not_requested"}
+        if scope_paths:
+            from .knowledge import ProjectKnowledge
+
+            guidance = ProjectKnowledge(self.config).list(
+                run_id, scope_paths=scope_paths
+            )
+            knowledge = {
+                **guidance,
+                "entries": [
+                    {
+                        "evidence_id": "knowledge:" + entry["id"],
+                        "statement": entry["statement"],
+                        "scope_paths": entry["scope_paths"],
+                        "conditions": entry["conditions"],
+                        "basis": entry["review"]["basis"],
+                        "trust": entry["review"]["trust"],
+                        "source_evidence": entry["evidence"],
+                    }
+                    for entry in guidance["entries"]
+                ],
+                "selection": "explicit_scope",
+            }
         # Open work and decisions come directly from the current ledger, never from a summary of a summary.
         mandatory = {
             **report,
@@ -560,6 +588,12 @@ class ExternalTasks:
             "verification": {
                 "items": verification_items,
                 "omitted": verification["omitted"],
+            },
+            "knowledge": knowledge,
+            "preferences": {
+                "source": "user_config",
+                "kind": "user_preference",
+                "values": list(self.config.guidance_preferences),
             },
             "agent_claims": {
                 "completed": checkpoint.get("completed", []) if checkpoint else [],
@@ -580,6 +614,34 @@ class ExternalTasks:
             if mandatory["estimated_tokens"] == size:
                 break
             mandatory["estimated_tokens"] = size
+        for field, key, locator in (
+            ("knowledge", "entries", "knowledge list " + run_id),
+            ("preferences", "values", "user_config:guidance_preferences"),
+        ):
+            optional = mandatory[field]
+            if estimate_tokens(mandatory) <= budget or not optional[key]:
+                continue
+            omitted = optional[key]
+            mandatory[field] = {
+                **optional,
+                key: [],
+                "omitted": optional.get("omitted", 0) + len(omitted),
+            }
+            mandatory["coverage"].append(
+                {
+                    "field": f"{field}.{key}",
+                    "reason": "context_budget",
+                    "unit": "items",
+                    "omitted": len(omitted),
+                    "locator": locator,
+                    "digest": canonical_digest(omitted),
+                }
+            )
+            for _ in range(8):
+                size = estimate_tokens(mandatory)
+                if mandatory["estimated_tokens"] == size:
+                    break
+                mandatory["estimated_tokens"] = size
         if estimate_tokens(mandatory) > budget:
             claims = mandatory["agent_claims"]
             count = len(json.dumps(claims, ensure_ascii=False, sort_keys=True))
@@ -609,7 +671,9 @@ class ExternalTasks:
             )
         return mandatory
 
-    def current(self, path: Path, *, budget: int = 24_000) -> dict[str, Any]:
+    def current(
+        self, path: Path, *, budget: int = 24_000, scope_paths: tuple[str, ...] = ()
+    ) -> dict[str, Any]:
         linked = self.registry.inspect(path)
         store = self._store()
         with store._connection() as db:
@@ -623,4 +687,6 @@ class ExternalTasks:
             raise KeyError(
                 "no active external task; start a reviewed Issue in this workspace"
             )
-        return self.context(row["run_id"], budget=budget, live=True)
+        return self.context(
+            row["run_id"], budget=budget, live=True, scope_paths=scope_paths
+        )
