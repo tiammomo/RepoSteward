@@ -459,6 +459,34 @@ RepoSteward 会从 Codex CLI JSONL 或 Codex SDK turn result 中提取输入、�
 token，并记录工具调用次数；CLI 适配器还记录事件流大小。资源预算告警会出现在 Review Packet
 中，但不会绕过验证。
 
+## Work-item 生命周期轨迹
+
+按仓库与 Issue 读取本地生命周期事实：
+
+```bash
+uv run reposteward trace owner/repository 40 --format text
+uv run reposteward trace owner/repository 40 --format json --limit 200
+```
+
+Trace 使用版本化 JSON 契约，把同一 work item 的 successor runs、Context Pack、Checkpoint、
+Harness 摘要、验证、租约、队列、发布、GitHub PR 事件与合并审计按稳定顺序聚合，并生成稳定的
+`trace_digest`。它不联网、不调用 Harness，也不修改 Store、workspace 或 GitHub；输出只保留
+白名单字段和摘要，不包含原始 Prompt、命令或日志正文、凭据、原生会话 ID、绝对 workspace 路径
+及 token 计数。
+
+默认最多返回 200 个事件，`--limit` 允许 1 到 500；文本渲染另有 50 个事件和 12,000 字符上限。
+被数量或文本边界裁剪的事实会进入 `stats` 与各 `sources[].omitted_records`，不会静默丢失。
+旧运行或尚未进入发布/合并阶段时，无法可靠关联的来源显示为 `unknown` 或 `incomplete`，不能把
+缺失事实解释成零事件。`current` 单独保留最新 run、HEAD/base、验证状态和 checkpoint 引用，
+不会随历史事件数量上限一起丢失。同一秒创建多个 run 时，以本地插入顺序确定最新记录。
+`next_action` 根据该 run 的状态推导；只有绑定同一 run 与精确 HEAD 的原生合并终态才表示
+`complete`，尚未完成的合并意图提示 `reconcile_merge`。这些结果是本地事实，不替代发布前的
+远端新鲜度检查。
+
+Checkpoint 中的自由文本下一步不直接输出，只有已知控制面动作码可以展示，其余显示 `unknown`。
+Checkpoint 来源标记为 `derived_review_required`，导入来源标记为 `imported_untrusted`。
+精简文本保留 `passed=False`、`eligible=False` 与零计数，避免省略影响判断的结果。
+
 ## 生命周期用量与成本
 
 每次 `prepare` 和 `repair` 的 Harness 执行完成后，RepoSteward 都会追加一条有摘要保护的紧凑
