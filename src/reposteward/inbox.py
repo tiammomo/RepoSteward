@@ -9,6 +9,7 @@ INBOX_SCHEMA_VERSION = 1
 MAX_TEXT_ITEMS = 100
 PULL_NUMBER = re.compile(r"/pull/([1-9][0-9]*)/?$")
 FAILED_CHECKS = {"failure", "timed_out", "cancelled", "action_required"}
+MERGED_OUTCOMES = {"merged", "already_merged"}
 
 
 def _canonical_digest(value: object) -> str:
@@ -61,6 +62,7 @@ def build_maintainer_inbox(
     proposals: list[dict[str, Any]],
     runs: list[dict[str, Any]],
     portfolio: dict[str, Any] | None,
+    merge_outcomes: dict[int, str] | None = None,
     observed_at: str,
     error: str = "",
     limit: int = 50,
@@ -138,6 +140,14 @@ def build_maintainer_inbox(
         if status != "submitted":
             continue
         pull = pulls.get(pull_number)
+        if (
+            pull is None
+            and pull_number
+            and portfolio_complete
+            and str((merge_outcomes or {}).get(pull_number) or "").casefold()
+            in MERGED_OUTCOMES
+        ):
+            continue
         if pull is None or not pull.get("facts_complete"):
             items.append(
                 _item(
