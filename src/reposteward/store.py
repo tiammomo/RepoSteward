@@ -14,12 +14,19 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .feedback import (
+    FEEDBACK_MIGRATION,
+    feedback_report,
+    sync_feedback,
+    verify_feedback,
+)
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
+    18: FEEDBACK_MIGRATION,
     1: (
         """
         CREATE TABLE IF NOT EXISTS candidates (
@@ -1968,6 +1975,7 @@ class Store:
                         event["source_state"],
                     ),
                 )
+            sync_feedback(connection, repository, pull_number, now)
             previous_sequence = int(watermark["sequence"])
             rows = connection.execute(
                 """
@@ -2008,6 +2016,35 @@ class Store:
             "batch_digest": batch_digest,
             "events": events,
         }
+
+    def pending_feedback(
+        self, repository: str, pull_number: int, *, limit: int = 1000
+    ) -> dict[str, Any]:
+        with self._connection() as connection:
+            return feedback_report(
+                connection, repository.casefold(), pull_number, limit=limit
+            )
+
+    def defer_feedback(
+        self,
+        repository: str,
+        pull_number: int,
+        sequences: tuple[int, ...],
+        *,
+        reason: str,
+    ) -> None:
+        if reason not in {"path_outside_existing_pull_request_scope", "context_budget"}:
+            raise ValueError("invalid feedback deferral reason")
+        with self._connection() as connection:
+            self._begin_immediate(connection)
+            for sequence in sequences:
+                connection.execute(
+                    """UPDATE feedback_items SET status='deferred',reason=?,updated_at=?
+                    WHERE event_sequence=? AND status IN ('pending','deferred') AND EXISTS (
+                    SELECT 1 FROM github_pr_events e WHERE e.sequence=event_sequence
+                    AND e.repository=? AND e.pull_number=?)""",
+                    (reason, utc_now(), sequence, repository.casefold(), pull_number),
+                )
 
     def seed_github_pr_watermark(
         self,
@@ -2492,10 +2529,12 @@ class Store:
             """
             SELECT b.digest, b.size_bytes, b.created_at,
                    e.repository, e.pull_number, e.sequence, e.ingested_at,
+                   f.status AS feedback_status,
                    COALESCE(w.watermark_count, 0) AS watermark_count,
                    COALESCE(w.minimum_watermark, 0) AS minimum_watermark
             FROM content_blobs b
             LEFT JOIN github_pr_events e ON e.payload_digest=b.digest
+            LEFT JOIN feedback_items f ON f.event_sequence=e.sequence
             LEFT JOIN (
                 SELECT repository, pull_number,
                        COUNT(*) AS watermark_count,
@@ -2527,6 +2566,8 @@ class Store:
             repository = str(row["repository"])
             value["repositories"].add(repository)
             value["reference_count"] += 1
+            if row["feedback_status"] in {"pending", "deferred", "addressed"}:
+                value["reasons"].add("unresolved_feedback_reference")
             cutoff = retention_cutoffs.get(repository)
             if not cutoff:
                 value["reasons"].add("no_explicit_event_retention")
@@ -4117,6 +4158,8 @@ class Store:
             connection.execute(
                 f"UPDATE runs SET {', '.join(assignments)} WHERE id=?", values
             )
+            if status == "ready" and details is not None:
+                verify_feedback(connection, run_id, details, utc_now())
 
     def latest_run(self, repository: str, issue_number: int) -> dict[str, Any] | None:
         with self._connection() as connection:

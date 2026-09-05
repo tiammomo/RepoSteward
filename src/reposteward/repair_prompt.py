@@ -159,6 +159,9 @@ def build_budgeted_repair_context_pack(
             return context, {
                 "budget_tokens": budget_tokens,
                 "estimated_tokens": prompt_tokens,
+                "retained_event_sequences": [
+                    int(value["sequence"]) for value in events if value.get("sequence")
+                ],
                 "initial_events": initial_events,
                 "retained_events": len(events),
                 "initial_diff_snippets": initial_snippets,
