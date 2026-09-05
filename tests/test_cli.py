@@ -349,6 +349,49 @@ class CliSetupTests(unittest.TestCase):
         pipeline.ci_failure_analysis.assert_called_once_with("owner/repo", 12)
         self.assertIn('"public_write": false', output.getvalue())
 
+    def test_lifecycle_trace_supports_json_and_text(self) -> None:
+        result = {
+            "repository": "owner/repo",
+            "issue_number": 7,
+            "trace_digest": "a" * 64,
+            "complete": False,
+            "next_action": "human_review",
+            "sources": [],
+            "events": [],
+            "stats": {"events": 0, "available_events": 0, "events_omitted": 0},
+        }
+        config = MagicMock()
+        config.state_dir = Path("/state")
+        config.repositories = {"owner/repo": MagicMock(name="owner/repo")}
+        config.repositories["owner/repo"].name = "owner/repo"
+        json_output = io.StringIO()
+        text_output = io.StringIO()
+
+        with (
+            patch("reposteward.cli.load_config", return_value=config),
+            patch(
+                "reposteward.cli.build_lifecycle_trace", return_value=result
+            ) as build_trace,
+            patch("reposteward.cli.Pipeline") as pipeline,
+        ):
+            with redirect_stdout(json_output):
+                json_code = main(["trace", "owner/repo", "7", "--limit", "12"])
+            with redirect_stdout(text_output):
+                text_code = main(["trace", "owner/repo", "7", "--format", "text"])
+
+        self.assertEqual(json_code, 0)
+        self.assertEqual(text_code, 0)
+        self.assertEqual(json.loads(json_output.getvalue()), result)
+        self.assertIn("Lifecycle: owner/repo#7", text_output.getvalue())
+        pipeline.assert_not_called()
+        self.assertEqual(
+            build_trace.call_args_list,
+            [
+                unittest.mock.call(Path("/state"), "owner/repo", 7, event_limit=12),
+                unittest.mock.call(Path("/state"), "owner/repo", 7, event_limit=200),
+            ],
+        )
+
     def test_logs_list_and_tail_are_routed_without_overwriting_command(self) -> None:
         pipeline = MagicMock()
         pipeline.run_logs.return_value = {"logs": [], "public_write": False}
