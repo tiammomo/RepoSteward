@@ -1034,3 +1034,27 @@ reposteward task context <run-id> --scope-path src --format markdown
 最多十条、每条一千字符；仓库文件里的同名字段不生效。上下文将其标为
 `user_preference`，不与项目经验或测试事实混合；预算不足时记录省略数量。
 项目经验不会自动写入此用户配置。
+
+## 多项目待办
+
+```bash
+reposteward overview show --project-limit 10 --item-limit 10 --format text
+reposteward overview refresh --project-limit 10 --item-limit 10
+reposteward overview show --previous-digest <digest>
+```
+
+默认只读已关联且配置启用的本机项目，展示本地任务与缓存的 PR 状态，不认证 GitHub、
+不启动 Harness。`refresh` 才联网更新缓存。每次最多五十个项目、每项目五十项输出；
+每项目最多检查二十个当前外部任务和五十个远程 PR 详情，未覆盖部分明确计数或标为
+不完整。刷新失败保留上次快照及其时间，同时显示错误；一个项目损坏不会把其他项目
+的待办变成空列表。缺少本地数据库时，show 报告 unknown，不创建或迁移数据库。
+
+视图复用既有 inbox/portfolio 和已审计合并终态规则。外部开发另列 dirty、阻塞、验证
+缺失/失败/未知/陈旧及等待本地审阅。新外部尝试不会遮住同 Issue 已管理的 PR。
+同一工作区、同一任务的接续尝试合并重复展示，并报告数量；变化后的事实重新出现。
+`--previous-digest` 比较事实，读取时间不导致无意义变化，尚未处理的反馈和 unknown
+始终保持可见。查看或刷新不会消耗反馈处理状态或读取水位。
+
+每项附下一步与可用的生命周期 trace、检查点或验证引用。较长下一步文本只展示前
+一千字符并注明省略量，完整记录从检查点证据取回。开发验证成功继续表示本地开发
+证据，仍需审阅余项、形成干净提交并走 adopt；视图不自动提交、发布或合并。
