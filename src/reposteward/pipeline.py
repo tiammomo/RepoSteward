@@ -797,6 +797,7 @@ class Pipeline:
             proposals=self.store.staged_issue_proposals(policy.name),
             runs=self.store.latest_runs_for_repository(policy.name),
             portfolio=portfolio,
+            merge_outcomes=self.store.latest_merge_outcomes(policy.name),
             observed_at=observed_at,
             error=error,
             limit=min(max(limit, 1), 500),
