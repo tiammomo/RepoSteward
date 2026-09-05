@@ -42,7 +42,9 @@ uv run reposteward image build
   分支或 worktree 上的 PR 合并。安全事件按 `SECURITY.md` 私下处理，不先创建公开 Issue。
 - 从最新 `main` 创建短生命周期分支，例如 `feat/context-redaction`、
   `fix/import-idempotency` 或 `perf/checkpoint-query`。
-- 每个 PR 只解决一个 Issue，避免捆绑无关重构、格式化或依赖升级。
+- 每个 Issue 和 PR 以一个具体、可独立验收的能力为边界，不按 diff 行数把同一能力拆成不可用的
+  中间切片。一个能力需要同时修改实现、测试、文档或多层接口时应完整交付；改动规模仍是 Review
+  证据，不能作为捆绑无关重构、格式化、依赖升级或其他能力的理由。
 - 提交标题使用 Conventional Commits，例如 `feat(context): import portable bundles`。
 - 提交不得包含 token、私钥、账号缓存、数据库、`.env`、运行日志或本机绝对路径。
 - 使用 Coding Harness 时，仍需由提交者检查完整 diff、测试结果和公开说明。

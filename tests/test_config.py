@@ -388,6 +388,78 @@ max_diff_lines = 2500
         self.assertEqual(policy.max_files_changed, 50)
         self.assertEqual(policy.max_diff_lines, 2_500)
 
+    def test_only_user_configuration_can_enable_unlimited_diff_lines(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            user = root / "user.toml"
+            project = root / "project.toml"
+            user.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+unlimited_diff_lines = true
+""",
+                encoding="utf-8",
+            )
+            project.write_text(
+                """config_version = 1
+[repositories."owner/repo"]
+enabled = true
+""",
+                encoding="utf-8",
+            )
+
+            trusted = load_config(project, user_path=user)
+
+            user.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+""",
+                encoding="utf-8",
+            )
+            project.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+unlimited_diff_lines = true
+""",
+                encoding="utf-8",
+            )
+            untrusted = load_config(project, user_path=user)
+            project_only = load_config(project)
+
+        self.assertTrue(trusted.repositories["owner/repo"].unlimited_diff_lines)
+        self.assertFalse(untrusted.repositories["owner/repo"].unlimited_diff_lines)
+        self.assertFalse(project_only.repositories["owner/repo"].unlimited_diff_lines)
+
+    def test_unlimited_diff_lines_requires_a_boolean(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            user = root / "user.toml"
+            project = root / "project.toml"
+            user.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+unlimited_diff_lines = "unlimited"
+""",
+                encoding="utf-8",
+            )
+            project.write_text(
+                """config_version = 1
+[repositories."owner/repo"]
+enabled = true
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "expected a boolean"):
+                load_config(project, user_path=user)
+
     def test_capacity_limits_must_be_positive(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"

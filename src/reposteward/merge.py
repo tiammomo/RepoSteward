@@ -145,7 +145,7 @@ def evaluate_merge(
     expected_base_sha: str,
     expected_policy_digest: str,
     max_files_changed: int,
-    max_diff_lines: int,
+    max_diff_lines: int | None,
     extra_risk_patterns: tuple[str, ...] = (),
 ) -> MergeDecision:
     """Evaluate a snapshot without mutating GitHub, a workspace, or the harness."""
@@ -223,7 +223,10 @@ def evaluate_merge(
             )
     if len(snapshot.files) > max_files_changed:
         block("file_limit_exceeded", "The change exceeds the configured file limit.")
-    if snapshot.additions + snapshot.deletions > max_diff_lines:
+    if (
+        max_diff_lines is not None
+        and snapshot.additions + snapshot.deletions > max_diff_lines
+    ):
         block("diff_limit_exceeded", "The change exceeds the configured diff limit.")
 
     risk_categories, risk_files = classify_merge_risk(

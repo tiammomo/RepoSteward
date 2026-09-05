@@ -21,7 +21,11 @@ from .branch_cleanup import (
     build_branch_cleanup_plan,
     fresh_candidate_blockers,
 )
-from .capacity import effective_capacity_limit, pull_request_capacity
+from .capacity import (
+    effective_capacity_limit,
+    effective_diff_line_limit,
+    pull_request_capacity,
+)
 from .ci import (
     FAILED_CONCLUSIONS,
     MAX_COMPARISON_LOGS,
@@ -4681,8 +4685,10 @@ class Pipeline:
             max_files_changed=effective_capacity_limit(
                 self.config.safety.max_files_changed, policy.max_files_changed
             ),
-            max_diff_lines=effective_capacity_limit(
-                self.config.safety.max_diff_lines, policy.max_diff_lines
+            max_diff_lines=effective_diff_line_limit(
+                self.config.safety.max_diff_lines,
+                policy.max_diff_lines,
+                user_allows_unlimited=policy.unlimited_diff_lines,
             ),
             extra_risk_patterns=policy.merge_risk_paths,
         )

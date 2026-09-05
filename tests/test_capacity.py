@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from reposteward.capacity import effective_capacity_limit, pull_request_capacity
+from reposteward.capacity import (
+    effective_capacity_limit,
+    effective_diff_line_limit,
+    pull_request_capacity,
+)
 from reposteward.github import PullRequest
 
 
@@ -66,6 +70,21 @@ class PullRequestCapacityTests(unittest.TestCase):
         )
         self.assertEqual(capacity["active_count"], 5)
         self.assertTrue(capacity["allows_new_pull_request"])
+
+    def test_trusted_unlimited_diff_mode_retains_finite_repository_tightening(
+        self,
+    ) -> None:
+        self.assertIsNone(
+            effective_diff_line_limit(2_000, None, user_allows_unlimited=True)
+        )
+        self.assertEqual(
+            effective_diff_line_limit(2_000, 3_000, user_allows_unlimited=True),
+            3_000,
+        )
+        self.assertEqual(
+            effective_diff_line_limit(2_000, 3_000, user_allows_unlimited=False),
+            2_000,
+        )
 
     def test_capacity_details_are_bounded_without_losing_the_total(self) -> None:
         capacity = pull_request_capacity(

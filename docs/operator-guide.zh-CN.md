@@ -192,6 +192,19 @@ max_diff_lines = 3000
 上限。所有容量值都必须是正整数。容量门禁用于控制并行负担，不替代“一个 PR 只解决一个清晰问题”
 的范围审查。
 
+当某个仓库明确以“一个完整可验收能力”作为 Issue/PR 边界，可信用户可以只对该仓库关闭 diff
+行数门。这个例外必须写在用户配置的仓库表中；项目配置中的同名值会被忽略：
+
+```toml
+[repositories."owner/capability-scoped-repository"]
+unlimited_diff_lines = true
+```
+
+该值不使用 `0`、负数或哨兵整数，运行时把有效行数上限表示为 `None`，同时继续记录精确的新增和
+删除行数。项目配置仍可设置一个正整数 `max_diff_lines` 来收紧该例外。文件数、活动 PR 数、禁止
+路径、敏感文件、验证、Review、发布和合并门禁完全不变；关闭行数门也不意味着应把多个无关能力
+放进同一个 PR。
+
 ## 准备 Issue 草稿
 
 RepoSteward 可以在本地生成结构化 Markdown，并只读搜索相似 Issue：

@@ -184,6 +184,7 @@ class RepositoryPolicy:
     max_active_pull_requests: int | None = None
     max_files_changed: int | None = None
     max_diff_lines: int | None = None
+    unlimited_diff_lines: bool = False
     merge_risk_paths: tuple[str, ...] = ()
     event_payload_retention_days: int | None = None
     owner_attestation: bool = False
@@ -333,6 +334,11 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
             safety = dict(safety)
             safety.pop("tracked_sensitive_paths", None)
             result["safety"] = safety
+        repositories = result.get("repositories")
+        if isinstance(repositories, dict):
+            for repository in repositories.values():
+                if isinstance(repository, dict):
+                    repository.pop("unlimited_diff_lines", None)
         return result
 
     # Runtime state and disposable clones belong to the user/machine trust layer.
@@ -431,6 +437,29 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
         trusted_paths = user_safety.get("tracked_sensitive_paths", {})
         merged_safety["tracked_sensitive_paths"] = trusted_paths
         result["safety"] = merged_safety
+
+    # Disabling the changed-line cap is a per-user trust decision. Project
+    # configuration may retain a finite max_diff_lines value, which tightens
+    # this exception, but it cannot enable the exception itself.
+    user_repositories = user.get("repositories", {})
+    merged_repositories = result.get("repositories", {})
+    if isinstance(user_repositories, dict) and isinstance(merged_repositories, dict):
+        trusted_by_name = {
+            str(name).casefold(): value for name, value in user_repositories.items()
+        }
+        for name, repository in merged_repositories.items():
+            if not isinstance(repository, dict):
+                continue
+            trusted = trusted_by_name.get(str(name).casefold(), {})
+            trusted_unlimited = (
+                _boolean(trusted.get("unlimited_diff_lines"), False)
+                if isinstance(trusted, dict)
+                else False
+            )
+            if trusted_unlimited:
+                repository["unlimited_diff_lines"] = True
+            else:
+                repository.pop("unlimited_diff_lines", None)
     return result
 
 
@@ -850,6 +879,9 @@ def load_config(
                 int(repo_value["max_diff_lines"])
                 if "max_diff_lines" in repo_value
                 else None
+            ),
+            unlimited_diff_lines=_boolean(
+                repo_value.get("unlimited_diff_lines"), False
             ),
             merge_risk_paths=_tuple(repo_value.get("merge_risk_paths")),
             event_payload_retention_days=(
