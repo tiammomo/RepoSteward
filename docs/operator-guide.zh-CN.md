@@ -869,3 +869,16 @@ Context Pack / Portable Bundle v3 把 `task_contract`、`repair_feedback` 与 `c
 分词器无关。编译器可以缩短描述或省略可取回的历史摘要，但不会裁剪必须任务契约。
 最小必须集合无法放入预算时明确失败，需要增加预算或明确审阅更短的契约。
 `coverage` 记录描述、检查点字段和列表、skills 目录的省略数量、原因、来源和摘要。
+
+## 维护者修复同仓库 PR
+
+`repair <submitted-run-id>` 支持 `mode="maintainer"` 且
+`submission_strategy="same-repository"` 的已纳管 PR。开工前重新确认认证身份与
+配置登录名一致、该身份仍有仓库推送权限，PR 作者、head 仓库与工作分支均符合
+已登记事实；默认分支、外部作者分支和 fork head 不能进入这一维护者路径。
+Issue 必须仍满足当前贡献门禁，工作区须干净，HEAD/base/policy 须与原验证一致。
+
+修复继续使用未处理反馈、隔离 Harness 和加固验证器，结果只进入本地 ready。
+检查新提交后另行 `submit --reviewed-by <login>`，仍需
+`REPOSTEWARD_ENABLE_SUBMIT=1`。提交前重新核对 head 归属和冻结事实；原提交的审阅
+记录不作为新提交的审阅。Contributor fork 修复路径保留。

@@ -80,6 +80,7 @@ from .protocol import read_context_bundle, validate_context_bundle
 from .repair_prompt import build_budgeted_repair_context_pack
 from .review import compact_command, compact_run
 from .store import QueueLease, RunLease, Store, StoreError
+from .task_contract import TaskContract
 from .usage import (
     build_usage_report,
     compact_usage_budget,
@@ -4055,15 +4056,59 @@ class Pipeline:
         ):
             return self._prepare_repair_leased(source_run_id)
 
+    @staticmethod
+    def _validate_repair_mode(policy: RepositoryPolicy) -> None:
+        if (policy.mode, policy.submission_strategy) not in {
+            ("contributor", "fork"),
+            ("maintainer", "same-repository"),
+        }:
+            raise PolicyError(
+                "repair requires contributor fork or maintainer same-repository mode"
+            )
+
+    def _validate_maintainer_repair_identity(
+        self,
+        client: GitHubClient,
+        policy: RepositoryPolicy,
+        details: dict[str, Any],
+        pull: dict[str, Any],
+    ) -> None:
+        if policy.mode != "maintainer":
+            return
+        actor = self.config.github.login.casefold()
+        if client.authenticated_login().casefold() != actor:
+            raise PolicyError(
+                "maintainer repair identity differs from configured login"
+            )
+        repository = client.repository(policy.name)
+        if not repository.can_push:
+            raise PolicyError("maintainer repair requires repository push permission")
+        identity = client.pull_request_head_identity(policy.name, int(pull["number"]))
+        if (
+            identity["author"].casefold() != actor
+            or identity["head_repository"].casefold() != policy.name.casefold()
+            or identity["head_owner"].casefold() != policy.name.split("/")[0].casefold()
+            or not details.get("branch")
+            or identity["head_branch"] != details["branch"]
+            or identity["head_branch"] == repository.default_branch
+        ):
+            raise PolicyError(
+                "maintainer repair requires the exact owned same-repository feature branch"
+            )
+        if any(
+            identity[key] != pull.get(key)
+            for key in ("number", "state", "head_sha", "base_sha", "base_branch")
+        ):
+            raise PolicyError("pull request changed while checking repair identity")
+
     def _prepare_repair_leased(self, source_run_id: str) -> dict[str, Any]:
-        """Prepare one contributor repair from newly committed PR activity."""
+        """Prepare one verified local repair from unprocessed PR feedback."""
         source_run = self.store.run(source_run_id)
         if source_run is None:
             raise KeyError(f"run not found: {source_run_id}")
         repository = str(source_run["repository"])
         policy = self.policy(repository)
-        if policy.mode != "contributor" or policy.submission_strategy != "fork":
-            raise PolicyError("repair is available only for contributor fork workflows")
+        self._validate_repair_mode(policy)
         if str(source_run.get("status")) != "submitted":
             raise PolicyError("repair requires a submitted pull-request run")
         details = source_run.get("details", {})
@@ -4073,10 +4118,20 @@ class Pipeline:
         pull_number = int(match.group(1))
 
         follow = self._follow_up(source_run_id, commit=False)
+        if policy.mode == "maintainer":
+            self._validate_maintainer_repair_identity(
+                self.github, policy, details, follow["pull_request"]
+            )
+            if not self.gate_status(repository, int(source_run["issue_number"]))[
+                "submission_ready"
+            ]:
+                raise PolicyError(
+                    "maintainer repair requires the current Issue contribution gates"
+                )
         if not follow["head_matches_verified_commit"]:
             raise PolicyError("pull request head changed; re-adopt and verify it first")
         if follow["next_action"] in {"complete", "inspect_closed_pull_request"}:
-            raise PolicyError("pull request is no longer open for a contributor repair")
+            raise PolicyError("pull request is no longer open for repair")
         if not follow.get("context_plan", {}).get("actionable") and (
             follow.get("_pending_suggestions")
             or follow.get("pending_feedback", {}).get("unknown")
@@ -4251,6 +4306,25 @@ class Pipeline:
                 event_batch_digest=str(follow["event_batch_digest"]),
                 repair_context=repair_context,
                 budget_tokens=int(context_plan["budget_tokens"]),
+                task_contract=(
+                    TaskContract(
+                        **{
+                            **source_context["context_pack"]["task_contract"],
+                            "acceptance_criteria": tuple(
+                                source_context["context_pack"]["task_contract"][
+                                    "acceptance_criteria"
+                                ]
+                            ),
+                            "scope_boundaries": tuple(
+                                source_context["context_pack"]["task_contract"][
+                                    "scope_boundaries"
+                                ]
+                            ),
+                        }
+                    )
+                    if source_context["context_pack"].get("schema_version") == 3
+                    else None
+                ),
             )
             failure_details["context_budget"] = final_prompt_budget
             selected_sequences = set(final_prompt_budget["retained_event_sequences"])
@@ -4459,8 +4533,7 @@ class Pipeline:
         guard = details.get("repair_guard")
         if not isinstance(guard, dict):
             return
-        if policy.mode != "contributor" or policy.submission_strategy != "fork":
-            raise PolicyError("prepared contributor repair has an invalid policy mode")
+        self._validate_repair_mode(policy)
         source_run_id = str(guard.get("source_run_id") or "")
         source_run = self.store.run(source_run_id)
         if source_run is None or str(source_run.get("status")) != "submitted":
@@ -4475,6 +4548,7 @@ class Pipeline:
         )
         snapshot = client.pull_request_merge_snapshot(policy.name, pull_number)
         pull = activity["pull_request"]
+        self._validate_maintainer_repair_identity(client, policy, details, pull)
         expected_sequence = int(guard.get("event_watermark") or 0)
         stale: list[str] = []
         if (
