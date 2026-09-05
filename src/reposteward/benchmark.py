@@ -24,6 +24,7 @@ from .dependencies import (
     build_dependency_plan,
     parse_dependency_declarations,
 )
+from .handoff_benchmark import OBSERVERS, observe_handoff
 from .inbox import build_maintainer_inbox, render_inbox_text
 from .store import Store, StoreError
 
@@ -723,6 +724,15 @@ _SCENARIOS: dict[str, Scenario] = {
     "scale.inbox_1000_bounded": _scenario_inbox_1000_bounded,
     "scale.dependency_chain_1000": _scenario_dependency_chain_1000,
 }
+
+
+_SCENARIOS.update(
+    {
+        f"{category}.handoff_{case}": (lambda selected=case: observe_handoff(selected))
+        for case in OBSERVERS
+        for category in ("recovery" if case == "interrupted_checkpoint" else "context",)
+    }
+)
 
 
 def _git_sha() -> str:

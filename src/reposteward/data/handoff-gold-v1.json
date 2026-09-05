@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "annotation_basis": "Reviewed Issue #104 acceptance criteria; fixed expectations before executing the scenarios",
+  "cases": {
+    "tail_acceptance": {"tail_retained": true, "description_trimmed": true, "contract_review": "source_bound"},
+    "feedback_overflow": {"pending_items": 20, "pending_unchanged": true, "context_omits_feedback": true, "bounded": true},
+    "decision_replacement": {"current_decisions": ["Keep current open work and bounded evidence pages"], "replacement_explained": true, "previous_decision_retrievable": true, "revision_advanced": true},
+    "late_bundle": {"open_work": ["Handle empty input", "Preserve legacy output"], "revision": 1},
+    "dirty_snapshot": {"same_head": true, "different_snapshot": true, "dirty": true, "old_snapshot_rejected": true},
+    "stale_evidence": {"initial_applicability": "matches", "historical_outcome": "passed", "current_applicability": "not_verified", "publication_eligible": false, "verification_backend": "injected_fixture"},
+    "interrupted_checkpoint": {"interrupted_write_rolled_back": true, "revision": 1, "retry_same_checkpoint": true, "retry_idempotent": true, "open_work": ["Handle empty input"]}
+  }
+}
