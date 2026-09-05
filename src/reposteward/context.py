@@ -11,10 +11,12 @@ from typing import Any
 
 from .config import RepositoryPolicy
 from .models import AgentResult, Candidate, VerificationResult
+from .task_contract import TaskContract, source_contract, validate_contract
+from .task_contract import issue_digest as task_issue_digest
 
-CONTEXT_SCHEMA_VERSION = 2
+CONTEXT_SCHEMA_VERSION = 3
 CHECKPOINT_SCHEMA_VERSION = 1
-BUNDLE_SCHEMA_VERSION = 2
+BUNDLE_SCHEMA_VERSION = 3
 MAX_TASK_DESCRIPTION_CHARS = 20_000
 MAX_CONTEXT_SOURCES = 64
 MAX_PROJECT_SKILLS = 24
@@ -155,6 +157,9 @@ class ContextPack:
     skill_catalog: SkillCatalog
     source_digest: str
     provenance: ContextProvenance
+    task_contract: TaskContract
+    repair_feedback: dict[str, Any] | None
+    coverage: tuple[dict[str, Any], ...]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -447,20 +452,18 @@ def build_context_pack(
     model: str,
     previous_checkpoint: dict[str, Any] | None = None,
     task_description_max_bytes: int | None = None,
+    task_contract: TaskContract | None = None,
 ) -> ContextPack:
     issue = candidate.issue
     description = issue.body[:MAX_TASK_DESCRIPTION_CHARS]
     if task_description_max_bytes is not None:
         description = _utf8_prefix(description, task_description_max_bytes)
     policy_digest = repository_policy_digest(policy)
-    issue_digest = _digest(
-        {
-            "repository": issue.repository,
-            "number": issue.number,
-            "title": issue.title,
-            "body": issue.body,
-            "updated_at": issue.updated_at,
-        }
+    issue_digest = task_issue_digest(issue)
+    contract = task_contract or source_contract(issue)
+    validate_contract(
+        contract.to_dict(),
+        {"digest": issue_digest, "locator": issue.url, "updated_at": issue.updated_at},
     )
     handoff = compact_checkpoint(previous_checkpoint)
     skill_catalog = _repository_skill_catalog(worktree)
@@ -494,7 +497,7 @@ def build_context_pack(
             ContextSource(
                 kind="reposteward_checkpoint",
                 locator=str(handoff.get("id", "")),
-                digest=_digest(handoff),
+                digest=_digest(previous_checkpoint),
                 trust="derived_review_required",
                 updated_at=str(handoff.get("created_at", "")),
             )
@@ -507,6 +510,53 @@ def build_context_pack(
         "Keep the change focused and satisfy repository contribution guidance.",
         "Return only verification commands allowed by the repository policy.",
     )
+    coverage = [
+        {
+            "field": "task.description",
+            "unit": "characters",
+            "omitted": max(0, len(issue.body) - len(description)),
+            "reason": "description_budget",
+            "locator": issue.url,
+            "digest": issue_digest,
+        }
+    ]
+    if previous_checkpoint is not None and handoff is not None:
+        checkpoint_digest = _digest(previous_checkpoint)
+        for field in (
+            "completed",
+            "implementation_notes",
+            "tests_observed",
+            "risks",
+            "remaining",
+            "next_action",
+            "blockers",
+            "decisions",
+            "evidence",
+        ):
+            before, after = previous_checkpoint.get(field), handoff.get(field)
+            omitted = max(0, len(_canonical_json(before)) - len(_canonical_json(after)))
+            if omitted:
+                coverage.append(
+                    {
+                        "field": "handoff." + field,
+                        "unit": "serialized_characters",
+                        "omitted": omitted,
+                        "reason": "checkpoint_compaction",
+                        "locator": str(previous_checkpoint.get("id", "")),
+                        "digest": checkpoint_digest,
+                    }
+                )
+    if skill_catalog.truncated_count:
+        coverage.append(
+            {
+                "field": "skill_catalog.entries",
+                "unit": "items",
+                "omitted": skill_catalog.truncated_count,
+                "reason": "catalog_limit",
+                "locator": ".agents/skills",
+                "digest": skill_catalog.digest,
+            }
+        )
     return ContextPack(
         id=uuid.uuid4().hex,
         schema_version=CONTEXT_SCHEMA_VERSION,
@@ -533,6 +583,9 @@ def build_context_pack(
             url=issue.url,
             updated_at=issue.updated_at,
         ),
+        task_contract=contract,
+        repair_feedback=None,
+        coverage=tuple(coverage),
         constraints=constraints,
         sources=sources,
         handoff=handoff,
@@ -564,20 +617,11 @@ def build_repair_context_pack(
     event_batch_digest: str,
     repair_context: dict[str, Any],
     task_description_max_bytes: int | None = None,
+    task_contract: TaskContract | None = None,
 ) -> ContextPack:
     """Build a bounded repair pack from one committed PR event batch."""
-    serialized_context = _canonical_json(repair_context)
-    chunk_chars = MAX_REPAIR_ITEM_CHARS - 32
-    chunks = tuple(
-        serialized_context[offset : offset + chunk_chars]
-        for offset in range(0, len(serialized_context), chunk_chars)
-    )
-    if not chunks or len(chunks) > MAX_REPAIR_ITEMS - 1:
-        raise ValueError("repair context exceeds context-pack record capacity")
-    bounded_items = tuple(
-        f"context_plan_part={index:04d}/{len(chunks):04d}:{chunk}"
-        for index, chunk in enumerate(chunks, start=1)
-    )
+    if len(_canonical_json(repair_context).encode()) > 1_000_000:
+        raise ValueError("repair context exceeds record capacity")
     base = build_context_pack(
         candidate,
         policy,
@@ -589,6 +633,7 @@ def build_repair_context_pack(
         model=model,
         previous_checkpoint=previous_checkpoint,
         task_description_max_bytes=task_description_max_bytes,
+        task_contract=task_contract,
     )
     batch_source = ContextSource(
         kind="github_pr_event_batch",
@@ -598,20 +643,17 @@ def build_repair_context_pack(
     )
     sources = (*base.sources[: MAX_CONTEXT_SOURCES - 1], batch_source)
     source_digest = _digest([asdict(source) for source in sources])
-    repair_header = _canonical_json(
-        {
-            "pull_request_url": pull_request_url,
-            "head_commit": head_commit,
-            "event_watermark": event_watermark,
-            "event_batch_digest": event_batch_digest,
-        }
-    )
     return replace(
         base,
-        task=replace(
-            base.task,
-            acceptance_criteria=(repair_header, *bounded_items),
-        ),
+        repair_feedback={
+            "binding": {
+                "pull_request_url": pull_request_url,
+                "head_commit": head_commit,
+                "event_watermark": event_watermark,
+                "event_batch_digest": event_batch_digest,
+            },
+            "context": repair_context,
+        },
         sources=tuple(sources),
         source_digest=source_digest,
     )
@@ -836,7 +878,9 @@ def portable_bundle(raw: dict[str, Any]) -> dict[str, Any]:
         if isinstance(context_pack, dict)
         else 0
     )
-    bundle_version = 1 if context_version == 1 else BUNDLE_SCHEMA_VERSION
+    bundle_version = (
+        context_version if context_version in {1, 2, 3} else BUNDLE_SCHEMA_VERSION
+    )
     bundle = {
         "bundle_schema_version": bundle_version,
         "work_item": raw["work_item"],

@@ -1,0 +1,425 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:reposteward:schema:context-pack:3",
+  "title": "RepoSteward Context Pack v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "schema_version",
+    "work_item_id",
+    "project",
+    "task",
+    "constraints",
+    "sources",
+    "handoff",
+    "skill_catalog",
+    "source_digest",
+    "provenance",
+    "task_contract",
+    "repair_feedback",
+    "coverage"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "schema_version": {
+      "const": 3
+    },
+    "work_item_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "project": {
+      "$ref": "urn:reposteward:schema:context-pack:1#/$defs/project"
+    },
+    "task": {
+      "$ref": "urn:reposteward:schema:context-pack:1#/$defs/task"
+    },
+    "constraints": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "string",
+        "maxLength": 2000
+      }
+    },
+    "sources": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "handoff": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "urn:reposteward:schema:context-pack:1#/$defs/handoff"
+        }
+      ]
+    },
+    "skill_catalog": {
+      "$ref": "#/$defs/skillCatalog"
+    },
+    "source_digest": {
+      "$ref": "urn:reposteward:schema:context-pack:1#/$defs/sha256"
+    },
+    "provenance": {
+      "$ref": "urn:reposteward:schema:context-pack:1#/$defs/provenance"
+    },
+    "task_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "goal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "acceptance_criteria": {
+          "type": "array",
+          "maxItems": 96,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          }
+        },
+        "scope_boundaries": {
+          "type": "array",
+          "maxItems": 96,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          }
+        },
+        "source_requirements": {
+          "type": "string",
+          "maxLength": 500000
+        },
+        "source_digest": {
+          "$ref": "urn:reposteward:schema:context-pack:1#/$defs/sha256"
+        },
+        "source_locator": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "source_updated_at": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "review_status": {
+          "enum": [
+            "source_bound",
+            "operator_reviewed"
+          ]
+        },
+        "reviewed_by": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "supersedes": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{64})?$"
+        },
+        "digest": {
+          "$ref": "urn:reposteward:schema:context-pack:1#/$defs/sha256"
+        }
+      },
+      "required": [
+        "schema_version",
+        "goal",
+        "acceptance_criteria",
+        "scope_boundaries",
+        "source_requirements",
+        "source_digest",
+        "source_locator",
+        "source_updated_at",
+        "review_status",
+        "reviewed_by",
+        "supersedes",
+        "digest"
+      ]
+    },
+    "repair_feedback": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "binding",
+            "context"
+          ],
+          "properties": {
+            "binding": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pull_request_url",
+                "head_commit",
+                "event_watermark",
+                "event_batch_digest"
+              ],
+              "properties": {
+                "pull_request_url": {
+                  "type": "string",
+                  "maxLength": 4000
+                },
+                "head_commit": {
+                  "type": "string",
+                  "maxLength": 128
+                },
+                "event_watermark": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "event_batch_digest": {
+                  "$ref": "urn:reposteward:schema:context-pack:1#/$defs/sha256"
+                }
+              }
+            },
+            "context": {
+              "type": "object",
+              "maxProperties": 24
+            }
+          }
+        }
+      ]
+    },
+    "coverage": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "omitted": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "locator": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "digest": {
+            "$ref": "urn:reposteward:schema:context-pack:1#/$defs/sha256"
+          },
+          "unit": {
+            "enum": [
+              "characters",
+              "serialized_characters",
+              "items"
+            ]
+          }
+        },
+        "required": [
+          "field",
+          "omitted",
+          "reason",
+          "locator",
+          "digest",
+          "unit"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "locator",
+        "digest",
+        "trust",
+        "updated_at"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "github_issue",
+            "repository_policy",
+            "repository_guidance",
+            "repository_skill_catalog",
+            "reposteward_checkpoint",
+            "github_pr_event_batch"
+          ]
+        },
+        "locator": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "digest": {
+          "$ref": "urn:reposteward:schema:context-pack:1#/$defs/sha256"
+        },
+        "trust": {
+          "enum": [
+            "external_untrusted",
+            "operator_trusted",
+            "repository_untrusted",
+            "derived_review_required"
+          ]
+        },
+        "updated_at": {
+          "type": "string",
+          "maxLength": 100
+        }
+      }
+    },
+    "skillCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "entries",
+        "truncated_count",
+        "invalid_count",
+        "digest"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "entries": {
+          "type": "array",
+          "maxItems": 24,
+          "items": {
+            "$ref": "#/$defs/skillEntry"
+          }
+        },
+        "truncated_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "invalid_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 24
+        },
+        "digest": {
+          "$ref": "urn:reposteward:schema:context-pack:1#/$defs/sha256"
+        }
+      }
+    },
+    "skillEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "description",
+        "locator",
+        "digest",
+        "source",
+        "trust",
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "locator": {
+          "type": "string",
+          "pattern": "^\\.agents/skills/[^/]+/SKILL\\.md$",
+          "maxLength": 1000
+        },
+        "digest": {
+          "$ref": "urn:reposteward:schema:context-pack:1#/$defs/sha256"
+        },
+        "source": {
+          "const": "repository"
+        },
+        "trust": {
+          "const": "repository_untrusted"
+        },
+        "status": {
+          "enum": [
+            "valid",
+            "invalid"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 100
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "valid"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "minLength": 1
+              },
+              "description": {
+                "minLength": 1
+              },
+              "reason": {
+                "const": ""
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "name": {
+                "const": ""
+              },
+              "description": {
+                "const": ""
+              },
+              "reason": {
+                "enum": [
+                  "outside_workspace",
+                  "unreadable",
+                  "skill_file_too_large",
+                  "invalid_utf8",
+                  "missing_frontmatter",
+                  "unterminated_frontmatter",
+                  "metadata_too_large",
+                  "unsupported_frontmatter",
+                  "duplicate_metadata",
+                  "unsupported_metadata_value",
+                  "missing_name_or_description"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

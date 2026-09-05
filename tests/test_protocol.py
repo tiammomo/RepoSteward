@@ -77,9 +77,9 @@ def _pack(root: Path):
 class ProtocolSchemaTests(unittest.TestCase):
     def test_packaged_schemas_are_draft_2020_12_documents(self) -> None:
         expected_versions = {
-            "context-pack": 2,
+            "context-pack": 3,
             "checkpoint": 1,
-            "context-bundle": 2,
+            "context-bundle": 3,
         }
         for name, version in expected_versions.items():
             schema = schema_document(name)
@@ -137,7 +137,7 @@ class ProtocolSchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolValidationError, "unexpected"):
             validate_context_pack(payload)
         payload.pop("unexpected")
-        payload["schema_version"] = 3
+        payload["schema_version"] = 99
         with self.assertRaisesRegex(ProtocolValidationError, "schema_version"):
             validate_context_pack(payload)
 
@@ -145,7 +145,8 @@ class ProtocolSchemaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             generated = _pack(Path(directory))
         legacy_pack = generated.to_dict()
-        legacy_pack.pop("skill_catalog")
+        for field in ("skill_catalog", "task_contract", "repair_feedback", "coverage"):
+            legacy_pack.pop(field)
         legacy_pack["schema_version"] = 1
         validate_context_pack(legacy_pack)
         checkpoint = running_checkpoint(
