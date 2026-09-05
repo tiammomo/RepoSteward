@@ -1058,3 +1058,5 @@ reposteward overview show --previous-digest <digest>
 每项附下一步与可用的生命周期 trace、检查点或验证引用。较长下一步文本只展示前
 一千字符并注明省略量，完整记录从检查点证据取回。开发验证成功继续表示本地开发
 证据，仍需审阅余项、形成干净提交并走 adopt；视图不自动提交、发布或合并。
+
+已有 Coding Agent 的项目关联、接续、独立验证与当前能力限制见[使用指南](coding-agent-assistance.zh-CN.md)。

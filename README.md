@@ -261,3 +261,5 @@ uv build
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a change. Report vulnerabilities
 through [SECURITY.md](SECURITY.md), not a public Issue.
+
+For using RepoSteward with existing coding agents, see the [assistance guide (中文)](docs/coding-agent-assistance.zh-CN.md) and [actual client pilot](docs/handoff-pilot-2026-09-05.zh-CN.md).
