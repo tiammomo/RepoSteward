@@ -75,6 +75,24 @@ def _parser() -> argparse.ArgumentParser:
         "--mode", choices=("contributor", "maintainer"), default="contributor"
     )
 
+    project = subparsers.add_parser("project", help="associate existing local projects")
+    project_commands = project.add_subparsers(dest="project_command", required=True)
+    project_link = project_commands.add_parser("link", help="link a clone or worktree")
+    project_link.add_argument("path", type=Path, nargs="?", default=Path.cwd())
+    project_link.add_argument("--name", default="")
+    project_inspect = project_commands.add_parser(
+        "inspect", help="inspect one linked workspace"
+    )
+    project_inspect.add_argument("path", type=Path, nargs="?", default=Path.cwd())
+    project_list = project_commands.add_parser(
+        "list", help="list local project identities"
+    )
+    project_list.add_argument("--limit", type=int, default=50)
+    project_unlink = project_commands.add_parser(
+        "unlink", help="remove a binding while keeping code"
+    )
+    project_unlink.add_argument("binding_id")
+
     issue = subparsers.add_parser("issue", help="prepare local issue drafts")
     issue_commands = issue.add_subparsers(dest="issue_command", required=True)
     issue_draft = issue_commands.add_parser(
@@ -557,6 +575,20 @@ def main(argv: list[str] | None = None) -> int:
                 f"unhandled benchmark command: {args.benchmark_command}"
             )
         config = load_config(args.config, include_user=True)
+        if args.command == "project":
+            from .projects import ProjectRegistry
+
+            registry = ProjectRegistry(config.state_dir / "projects.sqlite3")
+            if args.project_command == "link":
+                result = registry.link(args.path, name=args.name)
+            elif args.project_command == "inspect":
+                result = registry.inspect(args.path)
+            elif args.project_command == "list":
+                result = registry.list(limit=args.limit)
+            else:
+                result = registry.unlink(args.binding_id)
+            _json(result)
+            return 0
         if args.command == "trace":
             try:
                 policy = config.repositories[args.repository.casefold()]
