@@ -151,6 +151,30 @@ def _parser() -> argparse.ArgumentParser:
     task_checkpoint.add_argument("--idempotency-key", required=True)
     task_checkpoint.add_argument("--input", type=Path, required=True)
 
+    verification = subparsers.add_parser(
+        "verification", help="verify and query exact external task snapshots"
+    )
+    verification_commands = verification.add_subparsers(
+        dest="verification_command", required=True
+    )
+    for action in ("profiles", "request", "inspect", "list", "evidence"):
+        command = verification_commands.add_parser(action)
+        command.add_argument("run_id")
+        if action == "request":
+            command.add_argument("--profile", required=True)
+            command.add_argument("--expected-revision", type=int, required=True)
+            command.add_argument("--expected-snapshot", required=True)
+            command.add_argument("--idempotency-key", required=True)
+        elif action == "inspect":
+            command.add_argument("evidence_id")
+            command.add_argument("--live", action="store_true")
+        elif action == "list":
+            command.add_argument("--limit", type=int, default=20)
+        elif action == "evidence":
+            command.add_argument("evidence_id")
+            command.add_argument("--offset", type=int, default=0)
+            command.add_argument("--limit", type=int, default=8000)
+
     issue = subparsers.add_parser("issue", help="prepare local issue drafts")
     issue_commands = issue.add_subparsers(dest="issue_command", required=True)
     issue_draft = issue_commands.add_parser(
@@ -650,6 +674,40 @@ def main(argv: list[str] | None = None) -> int:
                 )
             _json(result)
             return 0
+        if args.command == "verification":
+            from .external_verification import ExternalVerification
+
+            service = ExternalVerification(config)
+            if args.verification_command == "profiles":
+                result = service.profiles(args.run_id)
+            elif args.verification_command == "request":
+                result = service.request(
+                    args.run_id,
+                    profile=args.profile,
+                    expected_revision=args.expected_revision,
+                    expected_snapshot=args.expected_snapshot,
+                    idempotency_key=args.idempotency_key,
+                )
+            elif args.verification_command == "inspect":
+                result = service.inspect(
+                    args.run_id,
+                    args.evidence_id.removeprefix("verification:"),
+                    live=args.live,
+                )
+            elif args.verification_command == "list":
+                result = service.list(args.run_id, limit=args.limit)
+            else:
+                result = service.evidence(
+                    args.run_id, args.evidence_id, offset=args.offset, limit=args.limit
+                )
+            _json(result)
+            return (
+                1
+                if isinstance(result, dict)
+                and args.verification_command == "request"
+                and result["outcome"] != "passed"
+                else 0
+            )
         if args.command == "task":
             from .external_tasks import ExternalTasks
 

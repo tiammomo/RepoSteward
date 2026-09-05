@@ -21,3 +21,15 @@ EXTERNAL_TASK_MIGRATION = (
         digest TEXT NOT NULL REFERENCES content_blobs(digest),
         PRIMARY KEY(run_id,kind))""",
 )
+
+EXTERNAL_VERIFICATION_MIGRATION = (
+    """CREATE TABLE IF NOT EXISTS external_verifications (
+        id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES external_task_runs(run_id),
+        project_id TEXT NOT NULL, revision INTEGER NOT NULL, idempotency_key TEXT NOT NULL,
+        request_digest TEXT NOT NULL, profile TEXT NOT NULL, profile_digest TEXT NOT NULL,
+        policy_digest TEXT NOT NULL, base_commit TEXT NOT NULL, snapshot TEXT NOT NULL,
+        outcome TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(run_id,idempotency_key))""",
+    """CREATE INDEX IF NOT EXISTS external_verification_runs ON external_verifications(run_id,created_at)""",
+)

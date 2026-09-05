@@ -17,16 +17,20 @@ MAX_SNAPSHOT_BYTES = 200_000_000
 
 
 def _entries(
-    root: Path, *, trusted_sensitive_paths: tuple[str, ...]
+    root: Path,
+    *,
+    trusted_sensitive_paths: tuple[str, ...],
+    names: dict[str, bool] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    tracked = local_git(root, "ls-files", "--cached", "-z").split("\0")
-    untracked = local_git(
-        root, "ls-files", "--others", "--exclude-standard", "-z"
-    ).split("\0")
-    names = {name: True for name in tracked if name}
-    for name in untracked:
-        if name:
-            names.setdefault(name, False)
+    if names is None:
+        tracked = local_git(root, "ls-files", "--cached", "-z").split("\0")
+        untracked = local_git(
+            root, "ls-files", "--others", "--exclude-standard", "-z"
+        ).split("\0")
+        names = {name: True for name in tracked if name}
+        for name in untracked:
+            if name:
+                names.setdefault(name, False)
     if len(names) > MAX_SNAPSHOT_FILES:
         raise ProjectError("workspace exceeds snapshot file limit")
     manifest, total, excluded = [], 0, 0
@@ -167,3 +171,37 @@ def snapshot_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in snapshot.items() if key != "files"} | {
         "file_count": len(snapshot["files"])
     }
+
+
+def verify_snapshot_copy(
+    root: Path,
+    snapshot: dict[str, Any],
+    *,
+    exact: bool,
+    trusted_sensitive_paths: tuple[str, ...] = (),
+) -> None:
+    """Compare the actual sandbox bytes with the frozen source manifest, without Git."""
+    expected = snapshot["files"]
+    names = {entry["path"]: entry["tracked"] for entry in expected}
+    actual, _ = _entries(
+        root, trusted_sensitive_paths=trusted_sensitive_paths, names=names
+    )
+    if actual != expected:
+        raise ProjectError("verification copy differs from the requested code snapshot")
+    if exact:
+        copied = set()
+        for directory, directories, files in os.walk(root, followlinks=False):
+            for name in tuple(directories):
+                if (Path(directory) / name).is_symlink():
+                    files.append(name)
+                    directories.remove(name)
+            for name in files:
+                relative = (Path(directory) / name).relative_to(root).as_posix()
+                if relative != ".git":
+                    copied.add(relative)
+                if len(copied) > MAX_SNAPSHOT_FILES:
+                    raise ProjectError("verification copy exceeds snapshot file limit")
+        if copied != {
+            entry["path"] for entry in expected if entry["kind"] != "deleted"
+        }:
+            raise ProjectError("verification copy contains unexpected or missing files")

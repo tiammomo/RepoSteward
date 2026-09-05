@@ -192,6 +192,14 @@ class RepositoryPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class VerificationProfile:
+    repository: str
+    name: str
+    commands: tuple[str, ...]
+    bootstrap_commands: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     config_version: int
     path: Path
@@ -208,6 +216,7 @@ class AppConfig:
     context: ContextConfig
     observability: ObservabilityConfig
     repositories: dict[str, RepositoryPolicy] = field(default_factory=dict)
+    verification_profiles: tuple[VerificationProfile, ...] = ()
 
 
 def _tuple(value: Any, default: tuple[str, ...] = ()) -> tuple[str, ...]:
@@ -1037,6 +1046,50 @@ def load_config(
                 f"{repository.name} event_payload_retention_days must be positive"
             )
 
+    profiles = []
+    # Execution requests from an Agent may only select commands owned by the user.
+    # Never merge profiles from repository-local configuration, even without a user file.
+    profile_values = user_raw.get("verification_profiles", [])
+    if not isinstance(profile_values, list) or len(profile_values) > 100:
+        raise ConfigError("verification_profiles must contain at most 100 tables")
+    profile_keys = set()
+    for value in profile_values:
+        if not isinstance(value, dict) or set(value) - {
+            "repository",
+            "name",
+            "commands",
+            "bootstrap_commands",
+        }:
+            raise ConfigError("unsupported verification profile fields")
+        repository = value.get("repository", "")
+        name = value.get("name", "")
+        if not isinstance(repository, str) or not REPOSITORY_NAME.fullmatch(repository):
+            raise ConfigError("verification profile needs owner/repository")
+        if not isinstance(name, str) or not re.fullmatch(
+            r"[a-z][a-z0-9_-]{0,63}", name
+        ):
+            raise ConfigError("invalid verification profile name")
+        commands = _tuple(value.get("commands"))
+        bootstrap = _tuple(value.get("bootstrap_commands"))
+        if (
+            not 1 <= len(commands) <= 12
+            or len(bootstrap) > 12
+            or any(
+                not command.strip()
+                or len(command) > 4000
+                or any(ord(c) < 32 for c in command)
+                for command in (*commands, *bootstrap)
+            )
+        ):
+            raise ConfigError("verification profile commands exceed limits")
+        key = (repository.casefold(), name)
+        if key in profile_keys:
+            raise ConfigError("duplicate verification profile")
+        profile_keys.add(key)
+        profiles.append(
+            VerificationProfile(repository.casefold(), name, commands, bootstrap)
+        )
+
     return AppConfig(
         config_version=version_value or CONFIG_VERSION,
         path=config_path,
@@ -1053,4 +1106,5 @@ def load_config(
         context=context,
         observability=observability,
         repositories=repositories,
+        verification_profiles=tuple(profiles),
     )
