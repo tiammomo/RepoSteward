@@ -93,6 +93,40 @@ def _parser() -> argparse.ArgumentParser:
     )
     project_unlink.add_argument("binding_id")
 
+    understand = subparsers.add_parser(
+        "understand", help="index local code and read evidence-backed project guides"
+    )
+    understanding_commands = understand.add_subparsers(
+        dest="understanding_command", required=True
+    )
+    for action in ("scan", "guide", "query", "evidence"):
+        command = understanding_commands.add_parser(action)
+        command.add_argument("path", type=Path)
+        command.add_argument(
+            "--cache-dir",
+            type=Path,
+            default=None,
+            help="user-owned cache outside the target workspace",
+        )
+        if action == "scan":
+            command.add_argument("--rebuild", action="store_true")
+        elif action in {"guide", "query"}:
+            command.add_argument(
+                "--mode", choices=("maintainer", "contributor"), default="maintainer"
+            )
+            command.add_argument("--limit", type=int, default=12)
+            command.add_argument(
+                "--format", choices=("markdown", "json"), default="markdown"
+            )
+            if action == "query":
+                command.add_argument("focus")
+            else:
+                command.add_argument("--focus", default="")
+        else:
+            command.add_argument("evidence_id")
+            command.add_argument("--start-line", type=int, default=1)
+            command.add_argument("--limit", type=int, default=80)
+
     integration = subparsers.add_parser(
         "integration", help="preview and manage coding client instruction fragments"
     )
@@ -699,6 +733,48 @@ def main(argv: list[str] | None = None) -> int:
             raise AssertionError(
                 f"unhandled benchmark command: {args.benchmark_command}"
             )
+        if args.command == "understand":
+            from .config import (
+                default_state_dir,
+                default_user_config_path,
+                discover_project_config,
+            )
+            from .understanding import Understanding, render_guide
+
+            cache_dir = args.cache_dir
+            if cache_dir is None:
+                configured = (
+                    args.config
+                    or discover_project_config()
+                    or default_user_config_path().exists()
+                )
+                state_dir = (
+                    load_config(args.config, include_user=True).state_dir
+                    if configured
+                    else default_state_dir()
+                )
+                cache_dir = state_dir / "understanding"
+            service = Understanding(cache_dir)
+            if args.understanding_command == "scan":
+                _json(service.scan(args.path, rebuild=args.rebuild))
+            elif args.understanding_command == "evidence":
+                _json(
+                    service.evidence(
+                        args.path,
+                        args.evidence_id,
+                        start_line=args.start_line,
+                        limit=args.limit,
+                    )
+                )
+            else:
+                result = service.guide(
+                    args.path, mode=args.mode, focus=args.focus, limit=args.limit
+                )
+                if args.format == "json":
+                    _json(result)
+                else:
+                    print(render_guide(result), end="")
+            return 0
         config = load_config(args.config, include_user=True)
         if args.command == "integration":
             from .integrations import AgentIntegration

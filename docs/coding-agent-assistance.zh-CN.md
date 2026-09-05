@@ -74,3 +74,9 @@ show 默认仅查看本地事实。refresh 显式拉取 GitHub，缓存有时间
 #105 hooks 的实施条件是手动检查点有明显遗漏；本轮 Codex 保存与回读成功，尚无该证据。#106/#107 托管 Runner 还需要实际委派需求、客户端能力与收益数据。本轮保留这些开放 Issue，不启用自动路径。
 
 详细试点结果见 [2026-09-05 接续记录](handoff-pilot-2026-09-05.zh-CN.md)。
+
+## 全仓理解与新人上手
+
+先用 `understand scan` 建立本地索引，再由 `understand guide/query/evidence` 或 MCP 的
+`understanding` 工具读取全貌、任务相关实现、静态使用方与测试线索。项目阅读可以先于任务关联；
+上下文按来源分段读取，改动后的旧导览会失效。参见[项目理解与上手指南](project-understanding.zh-CN.md)。
