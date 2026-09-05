@@ -113,6 +113,18 @@ def _parser() -> argparse.ArgumentParser:
         elif action in {"apply", "revert"}:
             command.add_argument("--plan-digest", required=True)
 
+    overview = subparsers.add_parser(
+        "overview", help="read local attention across linked projects"
+    )
+    overview_commands = overview.add_subparsers(dest="overview_command", required=True)
+    for action in ("show", "refresh"):
+        command = overview_commands.add_parser(action)
+        command.add_argument("--project-limit", type=int, default=10)
+        command.add_argument("--item-limit", type=int, default=10)
+        command.add_argument("--format", choices=("json", "text"), default="json")
+        if action == "show":
+            command.add_argument("--previous-digest", default="")
+
     knowledge = subparsers.add_parser(
         "knowledge", help="review and query evidence-backed project guidance"
     )
@@ -704,6 +716,25 @@ def main(argv: list[str] | None = None) -> int:
                     revert=args.integration_command == "revert",
                 )
             _json(result)
+            return 0
+        if args.command == "overview":
+            from .overview import ProjectOverview, render_overview
+
+            service = ProjectOverview(config)
+            if args.overview_command == "refresh":
+                result = service.refresh(
+                    project_limit=args.project_limit, item_limit=args.item_limit
+                )
+            else:
+                result = service.show(
+                    project_limit=args.project_limit,
+                    item_limit=args.item_limit,
+                    previous_digest=args.previous_digest,
+                )
+            if args.format == "text":
+                print(render_overview(result))
+            else:
+                _json(result)
             return 0
         if args.command == "knowledge":
             from .knowledge import ProjectKnowledge

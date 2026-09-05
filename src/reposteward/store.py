@@ -23,11 +23,13 @@ from .feedback import (
 )
 from .knowledge_ledger import KNOWLEDGE_MIGRATION
 from .models import Candidate
+from .overview_ledger import OVERVIEW_MIGRATION
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
+    22: OVERVIEW_MIGRATION,
     21: KNOWLEDGE_MIGRATION,
     20: EXTERNAL_VERIFICATION_MIGRATION,
     19: EXTERNAL_TASK_MIGRATION,
@@ -4236,7 +4238,7 @@ class Store:
         return result
 
     def latest_runs_for_repository(
-        self, repository: str, *, limit: int = 500
+        self, repository: str, *, limit: int = 500, include_external: bool = True
     ) -> list[dict[str, Any]]:
         """Return one latest run per Issue without N+1 queries."""
         limit = min(max(limit, 1), 1_000)
@@ -4249,7 +4251,7 @@ class Store:
                                PARTITION BY repository, issue_number
                                ORDER BY created_at DESC, r.rowid DESC
                            ) AS run_rank
-                    FROM runs r WHERE repository=?
+                    FROM runs r WHERE repository=? AND (? OR stage<>'external')
                 )
                 SELECT ranked.*, submissions.pr_url AS submission_pr_url
                 FROM ranked
@@ -4259,7 +4261,7 @@ class Store:
                 WHERE run_rank=1
                 ORDER BY updated_at, id LIMIT ?
                 """,
-                (repository.casefold(), limit),
+                (repository.casefold(), include_external, limit),
             ).fetchall()
         result = []
         for row in rows:
