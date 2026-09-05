@@ -954,3 +954,40 @@ Copilot 此处专指 VS Code：生成仓库指引，并提供显式 `#file:` 引
 参考 [Codex 项目指引](https://learn.chatgpt.com/docs/agent-configuration/agents-md)、
 [Claude Code memory](https://code.claude.com/docs/en/memory) 和
 [GitHub Copilot customization](https://docs.github.com/en/copilot/reference/customization-cheat-sheet)。
+
+## 验证外部开发快照和取回证据
+
+外部 Agent 只能选择用户配置中的验证方案，不能提交任意命令。将方案放在用户自己的
+`~/.config/reposteward/config.toml`；项目文件中同名配置不生效：
+
+```toml
+[[verification_profiles]]
+repository = "owner/repo"
+name = "test"
+bootstrap_commands = ["uv sync --locked"]
+commands = ["uv run python -m unittest discover -s tests -v"]
+```
+
+命令仍需满足仓库允许前缀及必须验证标记。bootstrap 使用网络安装依赖，正式验证禁用
+网络，沿用加固 Docker 容器。运行前核对实际副本的文件、内容及可执行标记；bootstrap
+和验证后再次核对原有代码与源工作区，变化会使结果成为 unknown。开发期间可以验证
+未提交快照；这份证据不会把任务改为 ready，最终仍走干净提交的 adopt 和独立审阅。
+
+```bash
+reposteward verification profiles <run-id>
+reposteward task inspect <run-id> --live
+reposteward verification request <run-id> --profile test --expected-revision 0 \
+  --expected-snapshot <current-snapshot-digest> --idempotency-key test-1
+reposteward verification list <run-id> --limit 20
+reposteward verification inspect <run-id> verification:<id> --live
+reposteward verification evidence <run-id> log:<id>:0 --offset 0 --limit 8000
+```
+
+证据绑定 run、检查点版本、HEAD、base、策略、验证方案和实际源码快照。相同 key
+只返回原请求；输入不同则冲突。已完成的历史 passed 保留，但代码、检查点或配置
+改变后 `current_applicability` 不再匹配。失败为 failed，操作人中断为 cancelled，超时
+或缺少终态记录为 unknown；中断请求不自动复用成功，也不自动再次执行。
+
+查询限制在所选任务，正文按字符分页；来源可用 `source:<digest>`、检查点可用
+`checkpoint:<run-id>:<revision>` 取回。日志摘要记录完整输出摘要及已保留日志摘要，
+截断与缺失分别报告；正文被修改或丢失时返回 unknown。查询不调用模型或 GitHub。
