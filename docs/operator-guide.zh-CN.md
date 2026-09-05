@@ -882,3 +882,44 @@ Issue 必须仍满足当前贡献门禁，工作区须干净，HEAD/base/policy 
 检查新提交后另行 `submit --reviewed-by <login>`，仍需
 `REPOSTEWARD_ENABLE_SUBMIT=1`。提交前重新核对 head 归属和冻结事实；原提交的审阅
 记录不作为新提交的审阅。Contributor fork 修复路径保留。
+
+## 在自己启动的 Agent 中开发
+
+先关联项目，在独立 feature branch 上为已审阅的开放 Issue 开工：
+
+```bash
+reposteward project link /path/to/project
+reposteward task start /path/to/project --issue 123 --reviewed-by your-login
+reposteward task context <run-id> --format markdown
+reposteward task current /path/to/project --format markdown
+reposteward task inspect <run-id> --live
+```
+
+`start` 在线核对 Issue 的贡献门禁和本地 origin 基线，保存开发前的契约、指导来源、
+HEAD/base/policy 和快照。它不启动模型，也不修改源代码。源码存在未提交改动时可以
+登记开发快照，仍需独立分支。快照包含 tracked 和非忽略 untracked 文件，排除未跟踪
+敏感文件及缓存；数量或字节超限、特殊文件和无法安全解析的子模块明确拒绝。
+
+查询已有任务不需要 GitHub 认证或 Agent 安装。默认使用本地记录，`--live` 另外检查
+当前本地绑定；`task current` 返回所选工作区最新的活跃外部任务，并核对其
+当前本地绑定、代码与策略；这不等同于刷新线上 Issue。JSON 与 Markdown 由同一任务
+事实生成。任务契约、完整开放项、决定和下一步不能因输出预算静默丢失。
+
+在阶段结束时，把 Agent 自述写入一个 JSON 文件，例如：
+
+```json
+{"completed":["已完成初步调查"],"remaining":["补齐边界验证"],"next_action":"验证空输入"}
+```
+
+用 `task inspect --live` 返回的 revision 与 current_snapshot.digest 保存检查点：
+
+```bash
+reposteward task checkpoint <run-id> --expected-revision 0 \
+  --expected-snapshot <digest> --idempotency-key investigation-1 --input checkpoint.json
+```
+
+相同 key 和输入可以重试；过期 revision、代码变化或相同 key 对应不同内容会报冲突。
+省略的字段继承上一检查点，不会清空开放项。记录仍是 `running`，完成和测试声明是
+`agent_unverified`；Agent 不能用此入口设置 ready、verified 或人工审阅状态。
+数据库写入失败会同时回滚 checkpoint 与 revision。较旧包晚导入不取代当前外部任务
+的本地检查点。开发完毕后的发布资格继续通过干净提交的 `adopt`、验证和独立审阅取得。
