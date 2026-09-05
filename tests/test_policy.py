@@ -125,6 +125,27 @@ class PolicyTests(unittest.TestCase):
         ):
             enforce_change_policy(Path("."), verification, repository, self.config)
 
+    def test_trusted_repository_can_disable_only_the_changed_line_limit(self) -> None:
+        repository = RepositoryPolicy(
+            name="owner/repo",
+            unlimited_diff_lines=True,
+        )
+        verification = VerificationResult(passed=True, commands=())
+        successful_diff_check = Mock(returncode=0, stdout="")
+        summary = DiffSummary(("file",), 100_000, 100_000)
+
+        with (
+            patch(
+                "reposteward.policy.subprocess.run", return_value=successful_diff_check
+            ),
+            patch("reposteward.policy.summarize_diff", return_value=summary),
+        ):
+            accepted = enforce_change_policy(
+                Path("."), verification, repository, self.config
+            )
+
+        self.assertEqual(accepted, summary)
+
     def test_pull_request_body_contains_review_attestation(self) -> None:
         body = Pipeline._pull_request_body(
             5112,
