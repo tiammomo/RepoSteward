@@ -132,6 +132,7 @@ class StorageConfig:
 @dataclass(frozen=True, slots=True)
 class ContextConfig:
     follow_up_max_tokens: int = 24_000
+    prepare_max_tokens: int = 64_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -734,7 +735,8 @@ def load_config(
 
     context_raw = _section(raw, "context")
     context = ContextConfig(
-        follow_up_max_tokens=int(context_raw.get("follow_up_max_tokens", 24_000))
+        follow_up_max_tokens=int(context_raw.get("follow_up_max_tokens", 24_000)),
+        prepare_max_tokens=int(context_raw.get("prepare_max_tokens", 64_000)),
     )
 
     observability_raw = _section(raw, "observability")
@@ -933,6 +935,8 @@ def load_config(
         )
     if not 1 <= storage.max_gc_items <= 10_000:
         raise ConfigError("storage.max_gc_items must be between 1 and 10000")
+    if not 512 <= context.prepare_max_tokens <= 100_000:
+        raise ConfigError("context.prepare_max_tokens must be between 512 and 100000")
     if not 512 <= context.follow_up_max_tokens <= 100_000:
         raise ConfigError("context.follow_up_max_tokens must be between 512 and 100000")
     if any(

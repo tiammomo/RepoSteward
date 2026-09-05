@@ -10,9 +10,14 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
+from .task_contract import digest as contract_digest
+from .task_contract import validate_contract
+
 MAX_CONTEXT_BUNDLE_BYTES = 2_000_000
 
 SCHEMA_RESOURCES = {
+    ("context-pack", 3): "context-pack-v3.schema.json",
+    ("context-bundle", 3): "context-bundle-v3.schema.json",
     ("context-pack", 1): "context-pack-v1.schema.json",
     ("context-pack", 2): "context-pack-v2.schema.json",
     ("checkpoint", 1): "checkpoint-v1.schema.json",
@@ -20,9 +25,9 @@ SCHEMA_RESOURCES = {
     ("context-bundle", 2): "context-bundle-v2.schema.json",
 }
 CURRENT_SCHEMA_VERSIONS = {
-    "context-pack": 2,
+    "context-pack": 3,
     "checkpoint": 1,
-    "context-bundle": 2,
+    "context-bundle": 3,
 }
 VERSION_FIELDS = {
     "context-pack": "schema_version",
@@ -123,8 +128,57 @@ def validate_context_pack(payload: object) -> None:
     validate_document("context-pack", payload)
     normalized = _json_value(payload)
     _validate_context_source_digest(normalized)
-    if normalized["schema_version"] == 2:
+    if normalized["schema_version"] >= 2:
         _validate_skill_catalog_digest(normalized)
+    if normalized["schema_version"] == 3:
+        sources = [
+            value for value in normalized["sources"] if value["kind"] == "github_issue"
+        ]
+        if len(sources) != 1:
+            raise ProtocolValidationError("task contract needs one exact Issue source")
+        try:
+            validate_contract(normalized["task_contract"], sources[0])
+        except ValueError as exc:
+            raise ProtocolValidationError(str(exc)) from exc
+        contract = normalized["task_contract"]
+        if contract["review_status"] == "source_bound":
+            task = normalized["task"]
+            expected = contract_digest(
+                {
+                    "repository": normalized["project"]["repository"],
+                    "number": int(task["external_id"]),
+                    "title": task["title"],
+                    "body": contract["source_requirements"],
+                    "updated_at": task["updated_at"],
+                }
+            )
+            if (
+                expected != contract["source_digest"]
+                or contract["goal"] != task["title"]
+            ):
+                raise ProtocolValidationError(
+                    "source-bound task requirements differ from the original Issue"
+                )
+        feedback = normalized["repair_feedback"]
+        if feedback is not None:
+            binding = feedback["binding"]
+            events = [
+                value
+                for value in normalized["sources"]
+                if value["kind"] == "github_pr_event_batch"
+            ]
+            if (
+                len(events) != 1
+                or events[0]["digest"] != binding["event_batch_digest"]
+                or events[0]["locator"] != binding["pull_request_url"]
+            ):
+                raise ProtocolValidationError(
+                    "repair feedback source binding is inconsistent"
+                )
+        if normalized["task"]["acceptance_criteria"]:
+            raise ProtocolValidationError(
+                "v3 acceptance criteria belong in the task contract"
+            )
 
 
 def _validate_context_source_digest(normalized: dict[str, Any]) -> None:

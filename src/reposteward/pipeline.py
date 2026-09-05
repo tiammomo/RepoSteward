@@ -75,6 +75,7 @@ from .merge import MergeCheck, MergeDecision, MergeSnapshot, evaluate_merge
 from .models import AgentExecution, AgentResult, Candidate
 from .policy import PolicyError, conventional_scope, enforce_change_policy
 from .portfolio import build_portfolio_snapshot
+from .prompt_budget import fit_context
 from .protocol import read_context_bundle, validate_context_bundle
 from .repair_prompt import build_budgeted_repair_context_pack
 from .review import compact_command, compact_run
@@ -2392,6 +2393,12 @@ class Pipeline:
             harness=harness,
             model=model,
             previous_checkpoint=previous_checkpoint,
+        )
+        context, _budget = fit_context(
+            context,
+            getattr(
+                getattr(self.config, "context", None), "prepare_max_tokens", 64_000
+            ),
         )
         self.store.save_context_run(
             pack_id=context.id,
