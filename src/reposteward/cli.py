@@ -93,6 +93,44 @@ def _parser() -> argparse.ArgumentParser:
     )
     project_unlink.add_argument("binding_id")
 
+    task = subparsers.add_parser(
+        "task", help="assist coding agents in linked local projects"
+    )
+    task_commands = task.add_subparsers(dest="task_command", required=True)
+    task_start = task_commands.add_parser(
+        "start", help="freeze a reviewed Issue before external development"
+    )
+    task_start.add_argument("path", type=Path, nargs="?", default=Path.cwd())
+    task_start.add_argument("--issue", type=int, required=True)
+    task_start.add_argument("--reviewed-by", required=True)
+    task_start.add_argument("--contract", type=Path)
+    task_inspect = task_commands.add_parser(
+        "inspect", help="read an external development attempt"
+    )
+    task_inspect.add_argument("run_id")
+    task_inspect.add_argument("--live", action="store_true")
+    task_context = task_commands.add_parser(
+        "context", help="compile a bounded external task handoff"
+    )
+    task_context.add_argument("run_id")
+    task_context.add_argument("--budget", type=int, default=24_000)
+    task_context.add_argument("--live", action="store_true")
+    task_context.add_argument("--format", choices=("json", "markdown"), default="json")
+    task_current = task_commands.add_parser(
+        "current", help="get the current task for a linked workspace"
+    )
+    task_current.add_argument("path", type=Path, nargs="?", default=Path.cwd())
+    task_current.add_argument("--budget", type=int, default=24_000)
+    task_current.add_argument("--format", choices=("json", "markdown"), default="json")
+    task_checkpoint = task_commands.add_parser(
+        "checkpoint", help="save unverified Agent claims with revision checks"
+    )
+    task_checkpoint.add_argument("run_id")
+    task_checkpoint.add_argument("--expected-revision", type=int, required=True)
+    task_checkpoint.add_argument("--expected-snapshot", required=True)
+    task_checkpoint.add_argument("--idempotency-key", required=True)
+    task_checkpoint.add_argument("--input", type=Path, required=True)
+
     issue = subparsers.add_parser("issue", help="prepare local issue drafts")
     issue_commands = issue.add_subparsers(dest="issue_command", required=True)
     issue_draft = issue_commands.add_parser(
@@ -575,6 +613,56 @@ def main(argv: list[str] | None = None) -> int:
                 f"unhandled benchmark command: {args.benchmark_command}"
             )
         config = load_config(args.config, include_user=True)
+        if args.command == "task":
+            from .external_tasks import ExternalTasks
+
+            service = ExternalTasks(config)
+
+            def read_task_input(path: Path) -> dict:
+                if path.stat().st_size > 100_000:
+                    raise ValueError("task input exceeds the 100000 byte limit")
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(value, dict):
+                    raise ConfigError("task input must be a JSON object")
+                return value
+
+            if args.task_command == "start":
+                result = service.start(
+                    args.path,
+                    issue_number=args.issue,
+                    reviewed_by=args.reviewed_by,
+                    contract_proposal=read_task_input(args.contract)
+                    if args.contract
+                    else None,
+                )
+            elif args.task_command == "inspect":
+                result = service.inspect(args.run_id, live=args.live)
+            elif args.task_command == "current":
+                result = service.current(args.path, budget=args.budget)
+            elif args.task_command == "context":
+                result = service.context(
+                    args.run_id, budget=args.budget, live=args.live
+                )
+            else:
+                result = service.checkpoint(
+                    args.run_id,
+                    expected_revision=args.expected_revision,
+                    expected_snapshot=args.expected_snapshot,
+                    idempotency_key=args.idempotency_key,
+                    payload=read_task_input(args.input),
+                )
+            if (
+                args.task_command in {"context", "current"}
+                and args.format == "markdown"
+            ):
+                print(
+                    "# RepoSteward task handoff\n\n```json\n"
+                    + json.dumps(result, ensure_ascii=False, indent=2)
+                    + "\n```"
+                )
+            else:
+                _json(result)
+            return 0
         if args.command == "project":
             from .projects import ProjectRegistry
 
