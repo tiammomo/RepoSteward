@@ -224,6 +224,7 @@ auto_merge_method = "squash"
 owner_attestation = false
 mode = {_toml_string(mode)}
 submission_strategy = {_toml_string("same-repository" if mode == "maintainer" else "fork")}
+min_stars = {0 if mode == "maintainer" else 1000}
 require_no_competing_work = true
 bootstrap_commands = []
 verification_prefixes = []

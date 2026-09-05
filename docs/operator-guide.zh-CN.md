@@ -807,3 +807,26 @@ apply 前会追加 `applying` 审计；每个工作区在删除前会重新扫�
 项目原名为 Starfix。由于 PyPI 已存在活跃的 `starfix` 包，且 GitHub 上已有同名开发工具，
 公开产品改名为 RepoSteward：Python distribution 和 CLI 均使用 `reposteward`，建议 GitHub
 仓库使用 `repo-steward`。旧状态目录和 `starfix.sqlite3` 数据库仍会被兼容读取。
+
+## 关联已经在本地开发的项目
+
+在项目 clone 或 worktree 中执行 `reposteward project link .`，即可登记本机
+工作区。命令返回稳定的项目 ID 和工作区 binding ID。相同 GitHub 仓库的多个
+clone/worktree 共用项目身份，各自保留工作区身份；子目录会解析到 Git 根目录。
+
+```bash
+reposteward project link /path/to/project --name 我的项目
+reposteward project inspect /path/to/project
+reposteward project list --limit 50
+reposteward project unlink <binding-id>
+```
+
+`inspect` 检查关联是否仍匹配，并显示当前 HEAD、分支和 dirty 状态。移动目录后
+可以重新关联新路径；旧路径会在列表中显示缺失。替换目录或修改 origin 指向后，
+需要明确解除旧关联再重新关联。`unlink` 只解除本地关联，不删除源码或 Git 历史。
+这些命令不连接 GitHub，不启动 coding agent，也不发布任何内容。
+
+登记保存在用户 state 目录的 `projects.sqlite3`，工作区路径不进入可移植任务包。
+关联身份与仓库执行策略分别配置：`repo add owner/repository --mode maintainer`
+生成维护者策略，其新配置的 `min_stars` 默认为 0；已有策略中的显式值保持不变。
+Contributor 模式仍默认 1000。执行验证前仍需设置命令白名单。
