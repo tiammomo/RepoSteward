@@ -19,6 +19,12 @@ Issues = "https://github.com/tiammomo/RepoSteward/issues"
 
 [project.optional-dependencies]
 codex-sdk = ["openai-codex>=0.147,<0.148"]
+mcp = [
+    "mcp>=2.1.1,<3",
+]
+
+[dependency-groups]
+dev = ["mcp>=2.1.1,<3"]
 
 [project.scripts]
 reposteward = "reposteward.cli:main"
