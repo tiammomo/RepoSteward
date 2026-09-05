@@ -944,6 +944,25 @@ class GitHubClient:
         payload, _ = self._request("GET", f"/repos/{upstream}/pulls/{number}")
         return self._parse_pull_request(payload)
 
+    def pull_request_head_identity(
+        self, repository: str, number: int
+    ) -> dict[str, Any]:
+        """Read the exact PR head owner and repository without fetching comments."""
+        value, _ = self._request("GET", f"/repos/{repository}/pulls/{number}")
+        head, base = value.get("head") or {}, value.get("base") or {}
+        head_repo = head.get("repo") or {}
+        return {
+            "number": int(value["number"]),
+            "state": str(value.get("state") or ""),
+            "author": str((value.get("user") or {}).get("login") or ""),
+            "head_owner": str((head_repo.get("owner") or {}).get("login") or ""),
+            "head_repository": str(head_repo.get("full_name") or ""),
+            "head_branch": str(head.get("ref") or ""),
+            "head_sha": str(head.get("sha") or ""),
+            "base_branch": str(base.get("ref") or ""),
+            "base_sha": str(base.get("sha") or ""),
+        }
+
     def pull_request_activity(
         self, upstream: str, number: int, *, include_body: bool = False
     ) -> dict[str, Any]:

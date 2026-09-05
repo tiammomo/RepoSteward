@@ -22,6 +22,7 @@ from reposteward.models import (
 from reposteward.pipeline import Pipeline
 from reposteward.policy import DiffSummary
 from reposteward.store import Store
+from reposteward.task_contract import issue_digest, review_contract
 
 
 class FeedbackTests(unittest.TestCase):
@@ -213,6 +214,37 @@ class FeedbackTests(unittest.TestCase):
                 for row in evidence
             )
         )
+
+    def test_repair_reuses_the_reviewed_source_contract(self) -> None:
+        issue = _candidate().issue
+        contract = review_contract(
+            issue,
+            {
+                "goal": issue.title,
+                "source_digest": issue_digest(issue),
+                "acceptance_criteria": ["Preserve the reviewed condition"],
+            },
+            reviewed_by="operator",
+        )
+        original = self.store.context_bundle
+
+        def bundle(run_id):
+            value = original(run_id)
+            if run_id == self.run_id:
+                value = {
+                    **value,
+                    "context_pack": {
+                        **value["context_pack"],
+                        "task_contract": contract.to_dict(),
+                    },
+                }
+            return value
+
+        self.store.context_bundle = bundle
+        self.pipeline.follow_up(self.run_id)
+        self.prepare()
+        request = self.pipeline.harness.run.call_args.args[0]
+        self.assertEqual(request.context.task_contract.digest, contract.digest)
 
     def test_failure_preserves_every_item_for_retry(self) -> None:
         self.pipeline.follow_up(self.run_id)
