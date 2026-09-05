@@ -145,6 +145,7 @@ RepoSteward also exposes repository-level, mostly read-only views:
 uv run reposteward inbox --repo owner/repository --format text
 uv run reposteward portfolio inspect owner/repository --format text
 uv run reposteward portfolio plan owner/repository --format text
+uv run reposteward branch-cleanup plan owner/repository --format text
 uv run reposteward batch plan owner/repository --format text
 uv run reposteward usage report owner/repository
 uv run reposteward storage stats --repo owner/repository
@@ -153,6 +154,14 @@ uv run reposteward benchmark run --output .artifacts/benchmark.json
 
 The persistent queue and batch planner store bounded control-plane intent. They do not
 turn on submit, owner-attestation, or merge permissions.
+
+For maintainer same-repository policies, `branch-cleanup plan` builds a read-only,
+digest-bound backlog from submitted runs and successful merge audits. Applying a
+reviewed plan additionally requires `branch_cleanup = true`, the
+`REPOSTEWARD_ENABLE_BRANCH_CLEANUP=1` gate, matching configured/reviewed/authenticated
+identity, and fresh exact branch/PR facts. The leased Git delete uses the host SSH
+identity; ambiguous results stay pending for read-only reconciliation and never change
+the authoritative merge result.
 
 `benchmark run` executes RepoStewardBench v0 entirely offline. Its versioned fixtures
 cover safety gates, context bounds, maintainer attention, recovery, and scale. Every

@@ -178,6 +178,7 @@ class GitHubOwnerReviewPolicyTests(unittest.TestCase):
             "license": None,
             "permissions": {"push": True, "admin": True},
             "owner": {"login": "owner"},
+            "delete_branch_on_merge": True,
         }
         with patch.object(client, "_request", return_value=(payload, None)):
             repository = client.repository("owner/repo")
@@ -185,6 +186,7 @@ class GitHubOwnerReviewPolicyTests(unittest.TestCase):
         self.assertTrue(repository.can_push)
         self.assertTrue(repository.can_admin)
         self.assertEqual(repository.owner_login, "owner")
+        self.assertTrue(repository.delete_branch_on_merge)
 
 
 class GitHubBranchHeadTests(unittest.TestCase):
@@ -220,6 +222,60 @@ class GitHubBranchHeadTests(unittest.TestCase):
             self.assertRaisesRegex(GitHubError, "valid head SHA"),
         ):
             client.branch_head_sha("owner/repo", "main")
+
+    def test_branch_cleanup_reads_normalize_complete_branch_facts(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        values = [
+            {
+                "name": "topic/z",
+                "protected": False,
+                "commit": {"sha": "b" * 40},
+            },
+            {
+                "name": "main",
+                "protected": True,
+                "commit": {"sha": "a" * 40},
+            },
+        ]
+        with patch.object(client, "_paginated_rest_values", return_value=values):
+            branches = client.repository_branches("owner/repo")
+
+        self.assertEqual([value["name"] for value in branches], ["main", "topic/z"])
+
+        with patch.object(
+            client,
+            "_request",
+            return_value=(values[0], None),
+        ) as request:
+            branch = client.repository_branch("owner/repo", "topic/z")
+
+        self.assertEqual(branch, branches[1])
+        request.assert_called_once_with("GET", "/repos/owner/repo/branches/topic%2Fz")
+
+    def test_branch_cleanup_reads_fail_closed_on_incomplete_facts(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        with (
+            patch.object(
+                client,
+                "_paginated_rest_values",
+                return_value=[
+                    {
+                        "name": "topic",
+                        "protected": "false",
+                        "commit": {"sha": "a" * 40},
+                    }
+                ],
+            ),
+            self.assertRaisesRegex(GitHubError, "snapshot was incomplete"),
+        ):
+            client.repository_branches("owner/repo")
+
+        with patch.object(
+            client,
+            "_request",
+            side_effect=GitHubError("missing", status_code=404),
+        ):
+            self.assertIsNone(client.repository_branch("owner/repo", "missing"))
 
 
 class GitHubCompetingWorkTests(unittest.TestCase):

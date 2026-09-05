@@ -72,6 +72,8 @@ enabled = true
 auto_prepare = false
 auto_merge = false
 auto_merge_method = "squash"
+# Maintainer same-repository mode only; apply also needs a reviewed digest and env gate.
+branch_cleanup = false
 mode = "contributor"
 submission_strategy = "fork"
 require_no_competing_work = true

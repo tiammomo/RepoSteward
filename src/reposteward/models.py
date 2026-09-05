@@ -18,6 +18,7 @@ class RepositoryInfo:
     can_push: bool = False
     can_admin: bool = False
     owner_login: str = ""
+    delete_branch_on_merge: bool = False
 
 
 @dataclass(frozen=True, slots=True)

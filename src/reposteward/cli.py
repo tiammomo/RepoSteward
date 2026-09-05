@@ -14,6 +14,7 @@ from .benchmark import (
     run_benchmark,
     write_benchmark_report,
 )
+from .branch_cleanup import render_branch_cleanup_text
 from .config import ConfigError, load_config
 from .dependencies import render_dependency_plan_text
 from .discovery import DiscoveryService
@@ -317,6 +318,27 @@ def _parser() -> argparse.ArgumentParser:
     dependency_list.add_argument("repository")
     dependency_list.add_argument("--pull-number", type=int, default=0)
     dependency_list.add_argument("--limit", type=int, default=100)
+
+    branch_cleanup = subparsers.add_parser(
+        "branch-cleanup", help="plan or apply terminal PR branch cleanup"
+    )
+    branch_cleanup_commands = branch_cleanup.add_subparsers(
+        dest="branch_cleanup_command", required=True
+    )
+    branch_cleanup_plan = branch_cleanup_commands.add_parser(
+        "plan", help="build a read-only managed branch cleanup backlog"
+    )
+    branch_cleanup_plan.add_argument("repository")
+    branch_cleanup_plan.add_argument("--expected-digest", default="")
+    branch_cleanup_plan.add_argument(
+        "--format", choices=("json", "text"), default="json"
+    )
+    branch_cleanup_apply = branch_cleanup_commands.add_parser(
+        "apply", help="apply one exact reviewed cleanup plan"
+    )
+    branch_cleanup_apply.add_argument("repository")
+    branch_cleanup_apply.add_argument("--expected-digest", required=True)
+    branch_cleanup_apply.add_argument("--reviewed-by", required=True)
 
     batch = subparsers.add_parser(
         "batch", help="plan and enqueue a reviewed pull request merge train"
@@ -744,6 +766,27 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             raise AssertionError(
                 f"unhandled portfolio command: {args.portfolio_command}"
+            )
+        if args.command == "branch-cleanup":
+            if args.branch_cleanup_command == "plan":
+                result = pipeline.branch_cleanup_plan(
+                    args.repository, expected_digest=args.expected_digest
+                )
+                if args.format == "text":
+                    print(render_branch_cleanup_text(result))
+                else:
+                    _json(result)
+                return 0
+            if args.branch_cleanup_command == "apply":
+                result = pipeline.apply_branch_cleanup(
+                    args.repository,
+                    expected_digest=args.expected_digest,
+                    reviewed_by=args.reviewed_by,
+                )
+                _json(result)
+                return 0 if result["complete"] else 1
+            raise AssertionError(
+                f"unhandled branch cleanup command: {args.branch_cleanup_command}"
             )
         if args.command == "batch":
             if args.batch_command == "plan":

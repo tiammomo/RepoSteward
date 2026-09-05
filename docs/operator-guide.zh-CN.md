@@ -552,29 +552,32 @@ RepoSteward 使用 `.agents/skills/<name>/SKILL.md` 保存可跨 Coding Harness 
 匹配的同仓库 head。状态机、凭据隔离、内容摘要、验证与已有 GitHub 公开写入门禁不会由 skill
 放宽。
 
-分支清理默认只输出 JSON 计划，不执行删除：
+原生分支清理默认只输出计划，不执行删除：
 
 ```bash
-uv run python .agents/skills/reposteward-branch-cleanup/scripts/branch_cleanup.py \
-  owner/repository --run-id SUBMITTED_RUN_ID
+uv run reposteward branch-cleanup plan owner/repository --format text
 ```
 
-可以重复 `--run-id`。计划只把本地 submitted run 明确绑定、当前 SHA 与已合并 PR head 精确一致，
-且该名称没有其他 PR 历史的非默认、明确未保护同仓库分支列为 `candidates`。确认候选和
-`plan_digest` 后，删除仍需要独立环境门禁、`--apply`、相同摘要和实际 GitHub 身份：
+计划从 SQLite 中读取全部有界 submitted run、成功合并审计和未完成清理意图，只把当前
+SHA 与已合并 PR head 精确一致、且该名称没有其他 PR 历史的非默认、明确未保护同仓库分支列为
+`candidates`。`pending` 会优先对账；`absent` 与 `completed` 保持幂等；活动、共享、fork、关闭未
+合并、已移动或事实不完整的分支进入 `retained`。确认候选和 `plan_digest` 后，删除仍需要仓库策略
+显式设置 `branch_cleanup = true`、独立环境门禁、相同摘要和实际 GitHub 身份：
 
 ```bash
 REPOSTEWARD_ENABLE_BRANCH_CLEANUP=1 \
-  uv run python .agents/skills/reposteward-branch-cleanup/scripts/branch_cleanup.py \
-  owner/repository --run-id SUBMITTED_RUN_ID --apply \
+  uv run reposteward branch-cleanup apply owner/repository \
   --expected-digest PLAN_DIGEST --reviewed-by GITHUB_LOGIN
 ```
 
-脚本会验证当前身份与 push 权限，并逐分支重新读取仓库、保护状态、完整 PR 历史和 head SHA。
-删除通过宿主 SSH 身份和绑定已审核 SHA 的 Git `--force-with-lease` 执行，同时禁用仓库 hooks 并
-移除 token 环境变量。结果不确定时再读取精确分支：已不存在记为 `reconciled_deleted`，仍存在则
-失败关闭，读回也失败则报告 `outcome_unknown`。该流程是 Issue #77 原生持久化清理状态机完成前
-的运维入口；运行结果需随维护记录保存，不能冒充 RepoSteward 本地追加审计。
+apply 会验证配置、审核声明与当前 GitHub 身份一致及 push 权限，并逐分支重新读取仓库、保护状态、
+完整 PR 历史和 head SHA。删除前先在 SQLite 追加绑定 Issue lease 的 `pending` 意图；删除通过宿主
+SSH 身份和绑定已审核 SHA 的 Git `--force-with-lease` 执行，同时禁用仓库 hooks 并移除 token 环境
+变量。结果不确定时再读取精确分支：已不存在记为 `reconciled_deleted`，仍存在则失败关闭，读回也
+失败则保留 `outcome_unknown` 待下次 apply 只读对账，不会盲目重复删除。每次终态结果同步到追加
+审计和 Checkpoint；分支清理失败或待对账不会回滚、覆盖已经成功的合并结果。
+
+项目仍保留旧版 Python 脚本供旧安装兼容；原生 CLI 可用后不要混用其非持久化 apply 路径。
 
 Context Pack v2 先建立最多 24 项的轻量技能目录，只保存经过清洗和长度限制的 `name`、
 `description`、仓库相对路径、状态和内容指纹，不复制完整正文。目录会显式报告无效项和被截断的
