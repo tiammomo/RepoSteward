@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .external_ledger import EXTERNAL_TASK_MIGRATION
 from .feedback import (
     FEEDBACK_MIGRATION,
     feedback_report,
@@ -23,9 +24,10 @@ from .feedback import (
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
+    19: EXTERNAL_TASK_MIGRATION,
     18: FEEDBACK_MIGRATION,
     1: (
         """
@@ -782,13 +784,27 @@ USAGE_METRIC_KEYS = frozenset(
 
 
 class Store:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
         self.path = path
+        self.read_only = read_only
+        self._atomic_connection: ContextVar[sqlite3.Connection | None] = ContextVar(
+            f"reposteward_atomic_{id(self)}", default=None
+        )
         self._run_lease_context: ContextVar[RunLease | None] = ContextVar(
             f"reposteward_run_lease_{id(self)}", default=None
         )
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
+        if read_only:
+            if not self.path.is_file():
+                raise StoreError("local task database does not exist")
+            with self._connection() as connection:
+                version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+                if version != SCHEMA_VERSION:
+                    raise StoreError(
+                        "read-only task access needs the current schema; run an explicit local write to migrate"
+                    )
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._initialize()
 
     @staticmethod
     def _begin_immediate(connection: sqlite3.Connection) -> None:
@@ -799,8 +815,17 @@ class Store:
     def _connection(
         self, *, guard_bound_lease: bool = True
     ) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path)
+        shared = self._atomic_connection.get()
+        if shared is not None:
+            yield shared
+            return
+        connection = sqlite3.connect(
+            self.path.resolve().as_uri() + "?mode=ro" if self.read_only else self.path,
+            uri=self.read_only,
+        )
         connection.row_factory = sqlite3.Row
+        if self.read_only:
+            connection.execute("PRAGMA query_only=ON")
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=5000")
         try:
@@ -818,6 +843,22 @@ class Store:
             raise
         finally:
             connection.close()
+
+    @contextmanager
+    def atomic(self) -> Iterator[None]:
+        """Group local ledger updates; never hold this across network or agent work."""
+        if self.read_only:
+            raise StoreError("read-only Store cannot start a write transaction")
+        if self._atomic_connection.get() is not None:
+            yield
+            return
+        with self._connection() as connection:
+            self._begin_immediate(connection)
+            token = self._atomic_connection.set(connection)
+            try:
+                yield
+            finally:
+                self._atomic_connection.reset(token)
 
     def _initialize(self) -> None:
         connection = sqlite3.connect(self.path)
@@ -2530,6 +2571,7 @@ class Store:
             SELECT b.digest, b.size_bytes, b.created_at,
                    e.repository, e.pull_number, e.sequence, e.ingested_at,
                    f.status AS feedback_status,
+                   EXISTS(SELECT 1 FROM external_task_sources t WHERE t.digest=b.digest) AS task_reference,
                    COALESCE(w.watermark_count, 0) AS watermark_count,
                    COALESCE(w.minimum_watermark, 0) AS minimum_watermark
             FROM content_blobs b
@@ -2560,6 +2602,8 @@ class Store:
                     "reasons": set(),
                 },
             )
+            if row["task_reference"]:
+                value["reasons"].add("external_task_source_reference")
             if row["repository"] is None:
                 value["reasons"].add("unreferenced_content_blob")
                 continue

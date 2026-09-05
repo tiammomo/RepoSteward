@@ -81,6 +81,7 @@ from .repair_prompt import build_budgeted_repair_context_pack
 from .review import compact_command, compact_run
 from .store import QueueLease, RunLease, Store, StoreError
 from .task_contract import TaskContract
+from .task_intake import contribution_gate
 from .usage import (
     build_usage_report,
     compact_usage_budget,
@@ -2268,44 +2269,9 @@ class Pipeline:
         }
 
     def gate_status(self, repository: str, issue_number: int) -> dict[str, Any]:
-        policy = self.policy(repository)
-        issue = self.github.issue(policy.name, issue_number)
-        assigned = self.config.github.login.casefold() in {
-            login.casefold() for login in issue.assignees
-        }
-        approval = True
-        if policy.maintainer_approval:
-            approval = self.github.has_maintainer_approval(
-                policy.name,
-                issue_number,
-                policy.maintainer_approval,
-                policy.allowed_approver_associations,
-            )
-        competing_work = ()
-        if policy.require_no_competing_work:
-            competing_work = self.github.competing_work(
-                policy.name,
-                issue_number,
-                own_login=self.config.github.login,
-            )
-        return {
-            "repository": policy.name,
-            "issue": issue_number,
-            "state": issue.state,
-            "assignees": list(issue.assignees),
-            "assignment_required": policy.require_assignment_before_submit,
-            "assigned_to_login": assigned,
-            "approval_command": policy.maintainer_approval,
-            "maintainer_approval": approval,
-            "competing_work_required_absent": policy.require_no_competing_work,
-            "competing_work": [asdict(value) for value in competing_work],
-            "submission_ready": (
-                issue.state == "open"
-                and (not policy.require_assignment_before_submit or assigned)
-                and approval
-                and not competing_work
-            ),
-        }
+        return contribution_gate(
+            self.config, self.github, self.policy(repository), issue_number
+        )
 
     def _ensure_no_competing_work(
         self, policy: RepositoryPolicy, issue_number: int
