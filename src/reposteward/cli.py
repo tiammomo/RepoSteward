@@ -407,7 +407,7 @@ def _parser() -> argparse.ArgumentParser:
 
     repair = subparsers.add_parser(
         "repair",
-        help="prepare and verify one contributor repair from new PR activity",
+        help="prepare and verify one repair from unprocessed PR feedback",
     )
     repair.add_argument("run_id", help="submitted run whose pull request changed")
 
