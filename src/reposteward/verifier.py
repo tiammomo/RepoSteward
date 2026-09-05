@@ -9,10 +9,11 @@ import subprocess
 import tempfile
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from itertools import chain
 from pathlib import Path
+from threading import Event
 
 from .config import AppConfig, RepositoryPolicy
 from .models import AgentResult, CommandResult, VerificationResult
@@ -63,6 +64,10 @@ class VerificationError(RuntimeError):
     """Verification could not be run safely."""
 
 
+class VerificationCancelled(VerificationError):
+    """The requesting client cancelled an isolated verification."""
+
+
 def _output_text(value: str | bytes | None) -> str:
     if value is None:
         return ""
@@ -81,6 +86,7 @@ class DockerVerifier:
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env={"PATH": os.environ.get("PATH", "")},
         )
         return result.returncode == 0
 
@@ -91,6 +97,8 @@ class DockerVerifier:
         agent_result: AgentResult,
         *,
         run_dir: Path | None = None,
+        snapshot_guard: Callable[[Path, str], None] | None = None,
+        cancel_event: Event | None = None,
     ) -> VerificationResult:
         if not self.image_available():
             raise VerificationError(
@@ -122,10 +130,15 @@ class DockerVerifier:
 
         verification_dir = run_dir / "verification" if run_dir is not None else None
         results: list[CommandResult] = []
+        cancellation = (
+            {"cancel_event": cancel_event} if cancel_event is not None else {}
+        )
         with self._verification_sandbox(
             worktree, verification_dir, policy=policy
         ) as sandbox:
             sandbox_worktree, environment_dir, git_dir = sandbox
+            if snapshot_guard is not None:
+                snapshot_guard(sandbox_worktree, "copied")
             if policy.bootstrap_commands:
                 bootstrap = " && ".join(policy.bootstrap_commands)
                 result = self._run_container(
@@ -139,12 +152,15 @@ class DockerVerifier:
                     ),
                     environment_dir=environment_dir,
                     git_dir=git_dir,
+                    **cancellation,
                 )
                 results.append(result)
                 if result.exit_code:
                     return VerificationResult(
                         False, tuple(results), "dependency bootstrap failed"
                     )
+            if snapshot_guard is not None:
+                snapshot_guard(sandbox_worktree, "bootstrapped")
             for index, command in enumerate(commands, start=1):
                 result = self._run_container(
                     sandbox_worktree,
@@ -157,8 +173,11 @@ class DockerVerifier:
                     ),
                     environment_dir=environment_dir,
                     git_dir=git_dir,
+                    **cancellation,
                 )
                 results.append(result)
+                if snapshot_guard is not None:
+                    snapshot_guard(sandbox_worktree, "command_finished")
                 if result.exit_code:
                     return VerificationResult(
                         False, tuple(results), f"verification failed: {command}"
@@ -472,14 +491,18 @@ class DockerVerifier:
         log_path: Path | None = None,
         environment_dir: Path | None = None,
         git_dir: Path | None = None,
+        cancel_event: Event | None = None,
     ) -> CommandResult:
         runner = self.config.runner
         environment_dir = environment_dir or worktree
         shell_command = f'mkdir -p "$HOME" && {command}'
+        container_name = f"reposteward-verify-{uuid.uuid4().hex}"
         docker_command = [
             "docker",
             "run",
             "--rm",
+            "--name",
+            container_name,
             "--network",
             "bridge" if network else "none",
             "--cpus",
@@ -528,19 +551,28 @@ class DockerVerifier:
         docker_command.extend([runner.image, "bash", "-lc", shell_command])
         start = time.monotonic()
         try:
-            result = subprocess.run(
-                docker_command,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=runner.timeout_seconds,
-                env={"PATH": os.environ.get("PATH", "")},
-            )
+            if cancel_event is None:
+                result = subprocess.run(
+                    docker_command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=runner.timeout_seconds,
+                    env={"PATH": os.environ.get("PATH", "")},
+                )
+            else:
+                result = self._cancellable_command(
+                    docker_command, cancel_event, runner.timeout_seconds
+                )
             full_output = result.stdout + result.stderr
             exit_code = result.returncode
         except subprocess.TimeoutExpired as exc:
+            self._remove_container(container_name)
             full_output = _output_text(exc.stdout) + _output_text(exc.stderr)
             exit_code = 124
+        except BaseException:
+            self._remove_container(container_name)
+            raise
         encoded_output = full_output.encode("utf-8", errors="replace")
         log_truncated = len(full_output) > runner.max_log_chars
         if log_path is not None:
@@ -570,3 +602,53 @@ class DockerVerifier:
             output_truncated=len(full_output) > output_limit,
             log_truncated=log_truncated,
         )
+
+    @staticmethod
+    def _cancellable_command(
+        command: list[str], cancelled: Event, timeout: int
+    ) -> subprocess.CompletedProcess:
+        if cancelled.is_set():
+            raise VerificationCancelled("verification cancelled before container start")
+        started = time.monotonic()
+        with subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={"PATH": os.environ.get("PATH", "")},
+        ) as process:
+            try:
+                while True:
+                    if cancelled.is_set():
+                        raise VerificationCancelled("verification cancelled by client")
+                    try:
+                        stdout, stderr = process.communicate(timeout=0.2)
+                        return subprocess.CompletedProcess(
+                            command, process.returncode, stdout, stderr
+                        )
+                    except subprocess.TimeoutExpired:
+                        if time.monotonic() - started >= timeout:
+                            process.kill()
+                            stdout, stderr = process.communicate()
+                            raise subprocess.TimeoutExpired(
+                                command, timeout, output=stdout, stderr=stderr
+                            ) from None
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+
+    @staticmethod
+    def _remove_container(name: str) -> None:
+        # Killing the Docker client does not reliably stop its container.
+        try:
+            subprocess.run(
+                ["docker", "rm", "--force", name],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+                env={"PATH": os.environ.get("PATH", "")},
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass  # No success evidence is emitted after interruption.

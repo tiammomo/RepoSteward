@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .external_ledger import EXTERNAL_TASK_MIGRATION
+from .external_ledger import EXTERNAL_TASK_MIGRATION, EXTERNAL_VERIFICATION_MIGRATION
 from .feedback import (
     FEEDBACK_MIGRATION,
     feedback_report,
@@ -24,9 +24,10 @@ from .feedback import (
 from .models import Candidate
 from .protocol import validate_checkpoint, validate_context_pack
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
+    20: EXTERNAL_VERIFICATION_MIGRATION,
     19: EXTERNAL_TASK_MIGRATION,
     18: FEEDBACK_MIGRATION,
     1: (

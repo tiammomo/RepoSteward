@@ -287,6 +287,14 @@ class ExternalTasks:
         run = store.run(run_id)
         if bundle is None or run is None:
             raise TaskConflict("external task context is unavailable")
+        with store._connection() as db:
+            source_evidence = [
+                {"kind": row["kind"], "evidence_id": "source:" + row["digest"]}
+                for row in db.execute(
+                    "SELECT kind,digest FROM external_task_sources WHERE run_id=? ORDER BY kind",
+                    (run_id,),
+                )
+            ]
         validity = []
         current = None
         if live:
@@ -325,6 +333,7 @@ class ExternalTasks:
             "claim_trust": "agent_unverified",
             "context_pack": bundle["context_pack"],
             "checkpoint": bundle["checkpoint"],
+            "source_evidence": source_evidence,
             "public_write": False,
         }
 
@@ -511,6 +520,29 @@ class ExternalTasks:
         if type(budget) is not int or not 512 <= budget <= 100_000:
             raise ValueError("context budget must be between 512 and 100000")
         report = self.inspect(run_id, live=live)
+        from .external_verification import ExternalVerification
+
+        verifier = ExternalVerification(self.config)
+        verification = verifier.list(run_id, limit=3)
+        verification_items = []
+        for entry in verification["evidence"]:
+            if live:
+                entry = verifier.inspect(
+                    run_id, entry["evidence_id"].split(":")[1], live=True
+                )
+            verification_items.append(
+                {
+                    key: entry[key]
+                    for key in (
+                        "evidence_id",
+                        "revision",
+                        "outcome",
+                        "current_applicability",
+                        "validity",
+                        "snapshot",
+                    )
+                }
+            )
         pack = report.pop("context_pack")
         checkpoint = report.pop("checkpoint")
         # Open work and decisions come directly from the current ledger, never from a summary of a summary.
@@ -525,6 +557,10 @@ class ExternalTasks:
             "next_action": checkpoint.get("next_action", "") if checkpoint else "",
             "blockers": checkpoint.get("blockers", []) if checkpoint else [],
             "evidence": checkpoint.get("evidence", []) if checkpoint else [],
+            "verification": {
+                "items": verification_items,
+                "omitted": verification["omitted"],
+            },
             "agent_claims": {
                 "completed": checkpoint.get("completed", []) if checkpoint else [],
                 "notes": checkpoint.get("implementation_notes", "")
