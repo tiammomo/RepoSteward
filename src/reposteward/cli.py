@@ -93,6 +93,26 @@ def _parser() -> argparse.ArgumentParser:
     )
     project_unlink.add_argument("binding_id")
 
+    integration = subparsers.add_parser(
+        "integration", help="preview and manage coding client instruction fragments"
+    )
+    integration_commands = integration.add_subparsers(
+        dest="integration_command", required=True
+    )
+    for action in ("plan", "inspect", "apply", "revert"):
+        command = integration_commands.add_parser(action)
+        command.add_argument("path", type=Path, nargs="?", default=Path.cwd())
+        if action != "inspect":
+            command.add_argument(
+                "--client",
+                choices=("codex", "claude-code", "copilot-vscode"),
+                required=True,
+            )
+        if action == "plan":
+            command.add_argument("--revert", action="store_true")
+        elif action in {"apply", "revert"}:
+            command.add_argument("--plan-digest", required=True)
+
     task = subparsers.add_parser(
         "task", help="assist coding agents in linked local projects"
     )
@@ -613,6 +633,23 @@ def main(argv: list[str] | None = None) -> int:
                 f"unhandled benchmark command: {args.benchmark_command}"
             )
         config = load_config(args.config, include_user=True)
+        if args.command == "integration":
+            from .integrations import AgentIntegration
+
+            service = AgentIntegration(config.state_dir)
+            if args.integration_command == "inspect":
+                result = service.inspect(args.path)
+            elif args.integration_command == "plan":
+                result = service.plan(args.path, client=args.client, revert=args.revert)
+            else:
+                result = service.apply(
+                    args.path,
+                    client=args.client,
+                    plan_digest=args.plan_digest,
+                    revert=args.integration_command == "revert",
+                )
+            _json(result)
+            return 0
         if args.command == "task":
             from .external_tasks import ExternalTasks
 

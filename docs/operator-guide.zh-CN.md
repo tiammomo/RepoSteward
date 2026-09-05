@@ -923,3 +923,34 @@ reposteward task checkpoint <run-id> --expected-revision 0 \
 `agent_unverified`；Agent 不能用此入口设置 ready、verified 或人工审阅状态。
 数据库写入失败会同时回滚 checkpoint 与 revision。较旧包晚导入不取代当前外部任务
 的本地检查点。开发完毕后的发布资格继续通过干净提交的 `adopt`、验证和独立审阅取得。
+
+## 为已有 Coding Agent 接入任务入口
+
+先 `project link`，再为所用客户端预览全部写入路径和片段：
+
+```bash
+reposteward integration plan /path/to/project --client codex
+reposteward integration apply /path/to/project --client codex --plan-digest <digest>
+reposteward integration inspect /path/to/project
+reposteward integration plan /path/to/project --client codex --revert
+reposteward integration revert /path/to/project --client codex --plan-digest <digest>
+```
+
+客户端选项为 `codex`、`claude-code`、`copilot-vscode`。三者共用
+`.agents/reposteward-context.md` 的通用 CLI 指引，分别在 `AGENTS.md`、`CLAUDE.md`
+和 `.github/copilot-instructions.md` 追加受管理片段。任务数据仍从当前工作区的
+`task current` 读取，指引不包含 run ID、本机数据库路径或其他项目上下文。
+
+计划列出现有规则的路径、摘要和所在目录；嵌套规则的最终适用范围由客户端决定。
+原有文本保留，受管理片段之外的用户修改可继续保留并撤销接入；片段内发生漂移则
+停止写入。预览后文件变动需要重新生成计划。多个客户端共用的文件只在最后一个
+接入撤销时删除，预先存在的相同文件保留。中断写入留下本地日志，可用原客户端、
+操作和 plan digest 恢复；恢复时遇到用户改动会保留内容并报告冲突。
+
+Codex 通过项目指引读取共享文件；Claude Code 使用其 Markdown 导入语法。
+Copilot 此处专指 VS Code：生成仓库指引，并提供显式 `#file:` 引用后备步骤。
+这些命令不启动客户端，也不声称内容已经自动进入现有会话。
+实际客户端版本和会话接续验证在试点报告中单独记录。
+参考 [Codex 项目指引](https://learn.chatgpt.com/docs/agent-configuration/agents-md)、
+[Claude Code memory](https://code.claude.com/docs/en/memory) 和
+[GitHub Copilot customization](https://docs.github.com/en/copilot/reference/customization-cheat-sheet)。
