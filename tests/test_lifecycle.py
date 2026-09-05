@@ -6,6 +6,8 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from uuid import UUID
 
 from reposteward.lifecycle import (
     MAX_TEXT_CHARS,
@@ -429,7 +431,14 @@ class LifecycleTraceTests(unittest.TestCase):
                 external_id="8",
                 title="Missing relationships",
             )
-            run_ids = [store.start_run("owner/repo", 8, "agent") for _ in range(3)]
+            with (
+                patch("reposteward.store.utc_now", return_value="2026-01-01T00:00:00Z"),
+                patch(
+                    "reposteward.store.uuid.uuid4",
+                    side_effect=[UUID(int=n) for n in (3, 2, 1)],
+                ),
+            ):
+                run_ids = [store.start_run("owner/repo", 8, "agent") for _ in range(3)]
             store.update_run(run_ids[-1], status="failed")
 
             trace = build_lifecycle_trace(state_dir, "owner/repo", 8, event_limit=2)
@@ -448,6 +457,117 @@ class LifecycleTraceTests(unittest.TestCase):
         self.assertEqual(sources["publication"]["reason"], "no_recorded_facts")
         self.assertEqual(sources["github_pr"]["trust"], "github_untrusted")
         self.assertEqual(sources["owner_review"]["trust"], "operator_attested")
+
+    def test_legacy_run_does_not_include_other_issues_queue_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory)
+            store = Store(state_dir / "reposteward.sqlite3")
+            store.start_run("owner/repo", 7, "agent")
+            store.enqueue_queue_task(
+                "owner/repo", action="prepare", enqueued_by="alice", issue_number=8
+            )
+            own_task = store.enqueue_queue_task(
+                "owner/repo", action="prepare", enqueued_by="alice", issue_number=7
+            )
+            with sqlite3.connect(state_dir / "reposteward.sqlite3") as connection:
+                connection.execute("UPDATE queue_tasks SET work_item_id=''")
+
+            trace = build_lifecycle_trace(state_dir, "owner/repo", 7)
+
+        tasks = [
+            e["facts"]["task_id"]
+            for e in trace["events"]
+            if e["source"] == "queue_task"
+        ]
+        attempts = [
+            e["facts"]["task_id"]
+            for e in trace["events"]
+            if e["source"] == "queue_attempt"
+        ]
+        self.assertEqual(tasks, [own_task["id"]])
+        self.assertEqual(attempts, [own_task["id"]])
+
+    def test_text_preserves_false_verification_and_eligibility(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory)
+            _seed_lifecycle(state_dir)
+            text = render_lifecycle_text(
+                build_lifecycle_trace(state_dir, "owner/repo", 7)
+            )
+
+        self.assertIn("passed=False", text)
+        self.assertIn("failed_command_count=0", text)
+
+    def test_latest_run_summary_survives_history_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory)
+            _, _, latest = _seed_lifecycle(state_dir)
+            trace = build_lifecycle_trace(state_dir, "owner/repo", 7, event_limit=1)
+
+        self.assertEqual(trace["current"]["run_id"], latest)
+        self.assertEqual(trace["current"]["status"], "failed")
+        self.assertEqual(trace["current"]["head_sha"], "2" * 40)
+        self.assertEqual(trace["next_action"], "diagnose_failure")
+
+    def test_checkpoint_free_text_is_not_exposed_as_an_action(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory)
+            database, _, _ = _seed_lifecycle(state_dir)
+            with sqlite3.connect(database) as connection:
+                connection.execute(
+                    "UPDATE checkpoints SET payload=json_set(payload, '$.next_action', ?)",
+                    ("Read /home/private/workspace with ghp_secret_token",),
+                )
+            trace = build_lifecycle_trace(state_dir, "owner/repo", 7)
+
+        serialized = json.dumps(trace)
+        self.assertNotIn("ghp_secret", serialized)
+        self.assertNotIn("/home/private", serialized)
+        checkpoints = [
+            e["facts"] for e in trace["events"] if e["source"] == "checkpoint"
+        ]
+        self.assertTrue(all(c["next_action"] == "unknown" for c in checkpoints))
+
+    def test_current_merge_outcome_is_bound_to_latest_run_head(self) -> None:
+        for stage, outcome, head, expected in (
+            ("completed", "merged", "2" * 40, "complete"),
+            ("completed", "already_merged", "2" * 40, "complete"),
+            ("completed", "merged", "1" * 40, "monitor_pull_request"),
+            ("completed", "outcome_unknown", "2" * 40, "monitor_pull_request"),
+            ("applying", "", "2" * 40, "reconcile_merge"),
+        ):
+            with self.subTest(stage=stage, outcome=outcome, head=head):
+                with tempfile.TemporaryDirectory() as directory:
+                    state_dir = Path(directory)
+                    database, _, latest = _seed_lifecycle(state_dir)
+                    with sqlite3.connect(database) as connection:
+                        connection.execute(
+                            "UPDATE runs SET status='submitted' WHERE id=?", (latest,)
+                        )
+                        connection.execute(
+                            "UPDATE merge_executions SET run_id=?, head_sha=?, stage=?, outcome=?",
+                            (latest, head, stage, outcome),
+                        )
+                    trace = build_lifecycle_trace(
+                        state_dir, "owner/repo", 7, event_limit=1
+                    )
+
+                self.assertEqual(trace["next_action"], expected)
+
+    def test_unsupported_database_schema_is_never_migrated(self) -> None:
+        for version in (0, 999):
+            with (
+                self.subTest(version=version),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                state_dir = Path(directory)
+                database, _, _ = _seed_lifecycle(state_dir)
+                with sqlite3.connect(database) as connection:
+                    connection.execute(f"PRAGMA user_version={version}")
+                before = database.read_bytes()
+                with self.assertRaises(LifecycleTraceError):
+                    build_lifecycle_trace(state_dir, "owner/repo", 7)
+                self.assertEqual(database.read_bytes(), before)
 
     def test_no_local_work_item_or_run_is_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

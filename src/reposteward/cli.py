@@ -136,6 +136,8 @@ def _parser() -> argparse.ArgumentParser:
     listing.add_argument(
         "--all", action="store_true", help="include blocked candidates"
     )
+    listing.add_argument("--status", default="candidate")
+    listing.add_argument("--limit", type=int, default=30)
 
     lifecycle = subparsers.add_parser(
         "trace", help="read one bounded work-item lifecycle trace"
@@ -144,8 +146,6 @@ def _parser() -> argparse.ArgumentParser:
     lifecycle.add_argument("issue", type=int)
     lifecycle.add_argument("--limit", type=int, default=DEFAULT_EVENT_LIMIT)
     lifecycle.add_argument("--format", choices=("json", "text"), default="json")
-    listing.add_argument("--status", default="candidate")
-    listing.add_argument("--limit", type=int, default=30)
 
     gate = subparsers.add_parser("gate", help="check contribution gates for one issue")
     gate.add_argument("repository")

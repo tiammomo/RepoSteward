@@ -48,11 +48,37 @@ SOURCE_ORDER = {
 }
 SOURCE_TRUST = {
     **{name: "local_control_plane" for name in SOURCE_ORDER},
+    "checkpoint": "derived_review_required",
+    "context_import": "imported_untrusted",
     "github_pr": "github_untrusted",
     "owner_review": "operator_attested",
     "merge_decision": "local_deterministic",
     "dependency": "operator_attested",
 }
+CHECKPOINT_ACTIONS = frozenset(
+    {
+        "human_review",
+        "diagnose_failure",
+        "run_coding_harness",
+        "verify_adopted_change",
+        "run_repair_harness",
+        "monitor_pull_request",
+        "reverify_changed_head",
+        "complete",
+        "inspect_closed_pull_request",
+        "diagnose_failed_checks",
+        "review_new_activity",
+        "wait_for_checks",
+        "wait_for_activity",
+        "review_suggestions",
+    }
+)
+
+
+def _checkpoint_action(value: object) -> str:
+    return (
+        value if isinstance(value, str) and value in CHECKPOINT_ACTIONS else "unknown"
+    )
 
 
 class LifecycleTraceError(StoreError):
@@ -202,7 +228,7 @@ def build_lifecycle_trace(
                 SELECT id, repository, issue_number, stage, status, details,
                        created_at, updated_at
                 FROM runs WHERE repository=? AND issue_number=?
-                ORDER BY created_at, id
+                ORDER BY created_at, rowid
             """,
             count="SELECT COUNT(*) FROM runs WHERE repository=? AND issue_number=?",
             parameters=(normalized_repository, issue_number),
@@ -210,13 +236,54 @@ def build_lifecycle_trace(
         )
         latest_run_row = connection.execute(
             """
-            SELECT id, stage, status, created_at
+            SELECT id, stage, status, details, created_at
             FROM runs WHERE repository=? AND issue_number=?
-            ORDER BY created_at DESC, id DESC LIMIT 1
+            ORDER BY created_at DESC, rowid DESC LIMIT 1
             """,
             (normalized_repository, issue_number),
         ).fetchone()
         latest_runs = [dict(latest_run_row)] if latest_run_row is not None else []
+        current_details: dict[str, Any] = {}
+        current_checkpoint: dict[str, Any] | None = None
+        current_context: dict[str, Any] | None = None
+        current_merge: dict[str, Any] | None = None
+        if latest_runs:
+            current_run_id = str(latest_runs[0]["id"])
+            current_details = _read_object(
+                latest_runs[0]["details"], source="run", record_id=current_run_id
+            )
+            for table, columns, order, label in (
+                ("checkpoints", "id, payload", "sequence DESC", "checkpoint"),
+                (
+                    "context_packs",
+                    "id, base_commit, payload",
+                    "created_at DESC, rowid DESC",
+                    "context",
+                ),
+                (
+                    "merge_executions",
+                    "id, stage, outcome, head_sha",
+                    "created_at DESC, rowid DESC",
+                    "merge",
+                ),
+            ):
+                row = connection.execute(
+                    f"SELECT {columns} FROM {table} WHERE run_id=? ORDER BY {order} LIMIT 1",
+                    (current_run_id,),
+                ).fetchone()
+                if row is None:
+                    continue
+                material = dict(row)
+                if "payload" in material:
+                    material["payload"] = _read_object(
+                        material["payload"], source=table, record_id=str(material["id"])
+                    )
+                if label == "checkpoint":
+                    current_checkpoint = material
+                elif label == "context":
+                    current_context = material
+                else:
+                    current_merge = material
         if work_item is None and run_total == 0:
             raise KeyError(
                 f"no local lifecycle facts for {normalized_repository}#{issue_number}"
@@ -390,20 +457,18 @@ def build_lifecycle_trace(
             limit=event_limit,
         )
 
-        run_predicate = ""
-        run_parameters: tuple[object, ...] = ()
-        if run_ids:
-            run_predicate = f" OR run_id IN ({_placeholders(run_ids)})"
-            run_parameters = tuple(run_ids)
-        queue_parameters = (
+        run_scope = "SELECT id FROM runs WHERE repository=? AND issue_number=?"
+        queue_predicates = ["t.issue_number=?", f"t.run_id IN ({run_scope})"]
+        queue_parameters: tuple[object, ...] = (
             normalized_repository,
             issue_number,
-            work_item_id,
-            *run_parameters,
+            normalized_repository,
+            issue_number,
         )
-        queue_where = (
-            "repository=? AND (issue_number=? OR work_item_id=?" + run_predicate + ")"
-        )
+        if work_item_id:
+            queue_predicates.append("t.work_item_id=?")
+            queue_parameters = (*queue_parameters, work_item_id)
+        queue_where = "t.repository=? AND (" + " OR ".join(queue_predicates) + ")"
         queue_tasks, queue_task_total = _bounded_rows(
             connection,
             select=f"""
@@ -411,10 +476,10 @@ def build_lifecycle_trace(
                        pull_number, parameters_digest, idempotency_digest, priority,
                        state, max_attempts, attempt_count, manual_required,
                        last_error_code, created_at, updated_at
-                FROM queue_tasks WHERE {queue_where}
+                FROM queue_tasks t WHERE {queue_where}
                 ORDER BY sequence, id
             """,
-            count=f"SELECT COUNT(*) FROM queue_tasks WHERE {queue_where}",
+            count=f"SELECT COUNT(*) FROM queue_tasks t WHERE {queue_where}",
             parameters=queue_parameters,
             limit=event_limit,
         )
@@ -425,13 +490,13 @@ def build_lifecycle_trace(
                        a.event, a.outcome, a.payload_digest, a.created_at
                 FROM queue_attempts a
                 JOIN queue_tasks t ON t.id=a.task_id
-                WHERE t.{queue_where}
+                WHERE {queue_where}
                 ORDER BY a.sequence, a.id
             """,
             count=f"""
                 SELECT COUNT(*) FROM queue_attempts a
                 JOIN queue_tasks t ON t.id=a.task_id
-                WHERE t.{queue_where}
+                WHERE {queue_where}
             """,
             parameters=queue_parameters,
             limit=event_limit,
@@ -459,19 +524,18 @@ def build_lifecycle_trace(
                 pull_numbers.add(number)
         watermarks: list[dict[str, Any]] = []
         watermark_total = 0
-        if run_ids:
-            marks = _placeholders(run_ids)
-            parameters = tuple(run_ids)
+        if run_total:
+            parameters = (normalized_repository, issue_number)
             watermarks, watermark_total = _bounded_rows(
                 connection,
                 select=f"""
                     SELECT run_id, pull_number, sequence, batch_digest, updated_at
-                    FROM github_pr_watermarks WHERE run_id IN ({marks})
+                    FROM github_pr_watermarks WHERE run_id IN ({run_scope})
                     ORDER BY updated_at, run_id
                 """,
                 count=f"""
                     SELECT COUNT(*) FROM github_pr_watermarks
-                    WHERE run_id IN ({marks})
+                    WHERE run_id IN ({run_scope})
                 """,
                 parameters=parameters,
                 limit=event_limit,
@@ -686,7 +750,7 @@ def build_lifecycle_trace(
             "checkpoint_id": clip(row["id"], 200),
             "status": clip(row["status"], 80),
             "head_sha": clip(payload.get("head_commit"), 100),
-            "next_action": clip(payload.get("next_action"), 120),
+            "next_action": _checkpoint_action(payload.get("next_action")),
             "completed_count": len(payload.get("completed", ()))
             if isinstance(payload.get("completed"), list)
             else 0,
@@ -1132,6 +1196,8 @@ def build_lifecycle_trace(
         run_total > len(runs)
         or publication_total > len(publications)
         or queue_task_total > len(queue_tasks)
+        or submission_total > len(submissions)
+        or watermark_total > len(watermarks)
     ):
         for source in (
             "github_pr",
@@ -1164,6 +1230,49 @@ def build_lifecycle_trace(
         if work_item is not None
         else None
     )
+    current: dict[str, Any] | None = None
+    next_action = _next_action(latest_runs, work_item)
+    if latest_runs:
+        latest = latest_runs[0]
+        checkpoint = current_checkpoint["payload"] if current_checkpoint else {}
+        context = current_context["payload"] if current_context else {}
+        project = context.get("project")
+        project = project if isinstance(project, dict) else {}
+        verification = current_details.get("verification")
+        verification = verification if isinstance(verification, dict) else {}
+        head_sha = str(
+            current_details.get("commit_sha") or checkpoint.get("head_commit") or ""
+        )
+        current = {
+            "run_id": clip(latest["id"], 200),
+            "status": clip(latest["status"], 80),
+            "stage": clip(latest["stage"], 80),
+            "head_sha": clip(head_sha, 100),
+            "base_sha": clip(
+                current_details.get("base_commit")
+                or (current_context or {}).get("base_commit"),
+                100,
+            ),
+            "policy_digest": clip(project.get("policy_digest"), 100),
+            "checkpoint_id": clip((current_checkpoint or {}).get("id"), 200),
+            "verification_passed": verification.get("passed")
+            if isinstance(verification.get("passed"), bool)
+            else None,
+            "merge_outcome": clip((current_merge or {}).get("outcome"), 80),
+        }
+        if (
+            str(latest["status"]) == "submitted"
+            and current_merge
+            and head_sha
+            and current_merge["head_sha"] == head_sha
+        ):
+            if current_merge["stage"] == "applying":
+                next_action = "reconcile_merge"
+            elif current_merge["stage"] == "completed" and current_merge["outcome"] in {
+                "merged",
+                "already_merged",
+            }:
+                next_action = "complete"
     trace = {
         "schema_version": LIFECYCLE_SCHEMA_VERSION,
         "database_schema_version": database_schema_version,
@@ -1171,7 +1280,8 @@ def build_lifecycle_trace(
         "issue_number": issue_number,
         "work_item": work_item_summary,
         "complete": all(value["status"] == "complete" for value in sources),
-        "next_action": _next_action(latest_runs, work_item),
+        "next_action": next_action,
+        "current": current,
         "sources": sources,
         "events": events,
         "stats": {
@@ -1212,8 +1322,16 @@ def render_lifecycle_text(trace: dict[str, Any]) -> str:
             f"Events: {stats['events']}/{stats['available_events']} "
             f"(omitted {stats['events_omitted']})"
         ),
-        "Sources:",
     ]
+    current = trace.get("current")
+    if isinstance(current, dict):
+        lines.append(
+            f"Current: run={current['run_id']} status={current['status']} stage={current['stage']}"
+        )
+        lines.append(
+            f"HEAD: {current['head_sha'] or 'unknown'}; base={current['base_sha'] or 'unknown'}"
+        )
+    lines.append("Sources:")
     for source in trace["sources"]:
         lines.append(
             f"- {source['name']}: {source['status']} "
@@ -1226,7 +1344,7 @@ def render_lifecycle_text(trace: dict[str, Any]) -> str:
         scalar_facts = [
             f"{key}={fact}"
             for key, fact in value["facts"].items()
-            if fact not in ("", None, False, 0) and not isinstance(fact, (dict, list))
+            if fact is not None and fact != "" and not isinstance(fact, (dict, list))
         ][:6]
         suffix = f" {' '.join(scalar_facts)}" if scalar_facts else ""
         lines.append(
