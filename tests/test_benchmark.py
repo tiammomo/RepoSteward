@@ -8,6 +8,7 @@ from contextlib import redirect_stdout
 from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from reposteward.benchmark import (
     BENCHMARK_CATEGORIES,
@@ -16,6 +17,7 @@ from reposteward.benchmark import (
     validate_benchmark_report,
 )
 from reposteward.cli import main
+from reposteward.handoff_benchmark import handoff_gold, observe_handoff
 
 
 class RepoStewardBenchTests(unittest.TestCase):
@@ -23,8 +25,12 @@ class RepoStewardBenchTests(unittest.TestCase):
         report = run_benchmark()
 
         validate_benchmark_report(report)
-        self.assertEqual(report["summary"]["scenario_count"], 13)
-        self.assertEqual(report["summary"]["failed"], 0)
+        self.assertEqual(report["summary"]["scenario_count"], 20)
+        self.assertEqual(
+            report["summary"]["failed"],
+            0,
+            [row for row in report["scenarios"] if not row["passed"]],
+        )
         self.assertTrue(report["summary"]["hard_gate_pass"])
         self.assertTrue(report["summary"]["deterministic"])
         self.assertEqual(
@@ -110,6 +116,20 @@ class RepoStewardBenchTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "public_write"):
             validate_benchmark_report(report)
+
+    def test_handoff_gold_rejects_lost_work_even_if_observer_claims_success(
+        self,
+    ) -> None:
+        wrong = deepcopy(handoff_gold()["cases"]["late_bundle"])
+        wrong["open_work"] = []
+        with (
+            patch.dict(
+                "reposteward.handoff_benchmark.OBSERVERS",
+                {"late_bundle": lambda: wrong},
+            ),
+            self.assertRaisesRegex(AssertionError, "open_work"),
+        ):
+            observe_handoff("late_bundle")
 
 
 if __name__ == "__main__":
