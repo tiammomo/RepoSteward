@@ -700,6 +700,41 @@ submission_strategy = "same-repository"
         self.assertTrue(config.repositories["owner/repo"].auto_merge)
         self.assertEqual(config.repositories["owner/repo"].auto_merge_method, "squash")
 
+    def test_branch_cleanup_requires_explicit_maintainer_same_repository_mode(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+branch_cleanup = true
+mode = "contributor"
+submission_strategy = "fork"
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "branch_cleanup only"):
+                load_config(path)
+
+            path.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+branch_cleanup = true
+mode = "maintainer"
+submission_strategy = "same-repository"
+""",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+
+        self.assertTrue(config.repositories["owner/repo"].branch_cleanup)
+
     def test_auto_merge_method_is_restricted(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"

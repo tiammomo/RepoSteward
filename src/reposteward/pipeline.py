@@ -16,6 +16,11 @@ from pathlib import Path
 from typing import Any
 
 from .batch import build_batch_plan
+from .branch_cleanup import (
+    SUCCESSFUL_CLEANUP_OUTCOMES,
+    build_branch_cleanup_plan,
+    fresh_candidate_blockers,
+)
 from .capacity import effective_capacity_limit, pull_request_capacity
 from .ci import (
     FAILED_CONCLUSIONS,
@@ -236,6 +241,542 @@ class Pipeline:
         return self._portfolio_snapshot_from_pulls(
             policy, pulls, expected_digest=expected_digest
         )
+
+    def branch_cleanup_plan(
+        self, repository: str, *, expected_digest: str = ""
+    ) -> dict[str, Any]:
+        """Build a fresh read-only backlog of managed terminal PR branches."""
+        policy = self.policy(repository)
+        if expected_digest and not re.fullmatch(r"[a-f0-9]{64}", expected_digest):
+            raise ValueError("expected cleanup digest must be 64 lowercase hex chars")
+        repository_info = self.github.repository(policy.name)
+        if repository_info.full_name.casefold() != policy.name.casefold():
+            raise GitHubError("GitHub repository identity changed during cleanup")
+        plan = build_branch_cleanup_plan(
+            repository_info,
+            self.github.repository_branches(policy.name),
+            self.github.all_pull_requests(policy.name),
+            self.store.branch_cleanup_runs(policy.name),
+            self.store.incomplete_branch_cleanup_attempts(policy.name),
+            repository_policy_digest(policy),
+        )
+        return {
+            **plan,
+            "expected_digest": expected_digest,
+            "matches_expected_digest": (
+                plan["plan_digest"] == expected_digest if expected_digest else None
+            ),
+        }
+
+    def _save_branch_cleanup_checkpoint(
+        self,
+        candidate: dict[str, Any],
+        *,
+        outcome: str,
+        plan_digest: str,
+        reasons: tuple[str, ...] = (),
+    ) -> str:
+        """Append cleanup state without changing the authoritative merge result."""
+        try:
+            context = self.store.context_bundle(str(candidate["run_id"]))
+            if context is None:
+                return "context_unavailable"
+            previous = context.get("checkpoint")
+            previous = previous if isinstance(previous, dict) else {}
+            successful = outcome in SUCCESSFUL_CLEANUP_OUTCOMES
+            completed = list(previous.get("completed", ()))[-127:]
+            if successful:
+                completed.append("Reconciled the terminal remote work branch.")
+            evidence = list(previous.get("evidence", ()))[-127:]
+            evidence.append(
+                {
+                    "kind": "branch_cleanup",
+                    "locator": str(candidate["branch"]),
+                    "status": outcome,
+                    "digest": plan_digest,
+                    "summary": "terminal branch cleanup audit",
+                }
+            )
+            blockers = tuple(str(value)[:2_000] for value in reasons[:16])
+            payload: dict[str, Any] = {
+                "schema_version": CHECKPOINT_SCHEMA_VERSION,
+                "work_item_id": str(context["work_item"]["id"]),
+                "run_id": str(candidate["run_id"]),
+                "context_pack_id": str(context["context_metadata"]["id"]),
+                "status": "submitted",
+                "head_commit": str(candidate["head_sha"]),
+                "completed": tuple(completed),
+                "remaining": (
+                    ()
+                    if successful
+                    else ("Reconcile or retry terminal branch cleanup.",)
+                ),
+                "next_action": (
+                    "none" if successful else "review a fresh branch-cleanup plan"
+                ),
+                "blockers": blockers,
+                "decisions": tuple(previous.get("decisions", ()))[-64:],
+                "evidence": tuple(evidence),
+            }
+            for name in ("implementation_notes", "tests_observed", "risks"):
+                if name in previous:
+                    payload[name] = previous[name]
+            self.store.save_checkpoint(
+                work_item_id=str(context["work_item"]["id"]),
+                run_id=str(candidate["run_id"]),
+                context_pack_id=str(context["context_metadata"]["id"]),
+                status="submitted",
+                payload=payload,
+            )
+        except (KeyError, TypeError, ValueError, sqlite3.Error, StoreError):
+            return "checkpoint_update_failed"
+        return ""
+
+    def _save_branch_cleanup_pending_checkpoint(
+        self,
+        *,
+        run_id: str,
+        repository: str,
+        branch: str,
+        head_sha: str,
+    ) -> str:
+        """Persist a non-authoritative cleanup handoff after a successful merge."""
+        try:
+            context = self.store.context_bundle(run_id)
+            if context is None:
+                return "context_unavailable"
+            previous = context.get("checkpoint")
+            previous = previous if isinstance(previous, dict) else {}
+            next_action = f"reposteward branch-cleanup plan {repository}"
+            remaining = [
+                str(value)
+                for value in previous.get("remaining", ())
+                if str(value) != next_action
+            ][-127:]
+            remaining.append(next_action)
+            evidence = list(previous.get("evidence", ()))[-128:]
+            already_recorded = any(
+                isinstance(value, dict)
+                and value.get("kind") == "branch_cleanup"
+                and value.get("locator") == branch
+                and value.get("status") == "pending"
+                and value.get("digest") == head_sha
+                for value in evidence
+            )
+            if not already_recorded:
+                evidence = evidence[-127:]
+                evidence.append(
+                    {
+                        "kind": "branch_cleanup",
+                        "locator": branch,
+                        "status": "pending",
+                        "digest": head_sha,
+                        "summary": (
+                            "successful merge requires terminal branch reconciliation"
+                        ),
+                    }
+                )
+            payload: dict[str, Any] = {
+                "schema_version": CHECKPOINT_SCHEMA_VERSION,
+                "work_item_id": str(context["work_item"]["id"]),
+                "run_id": run_id,
+                "context_pack_id": str(context["context_metadata"]["id"]),
+                "status": "submitted",
+                "head_commit": head_sha,
+                "completed": tuple(previous.get("completed", ()))[-128:],
+                "remaining": tuple(remaining),
+                "next_action": next_action,
+                "blockers": tuple(previous.get("blockers", ()))[-128:],
+                "decisions": tuple(previous.get("decisions", ()))[-64:],
+                "evidence": tuple(evidence),
+            }
+            for name in ("implementation_notes", "tests_observed", "risks"):
+                if name in previous:
+                    payload[name] = previous[name]
+            if not already_recorded or previous.get("next_action") != next_action:
+                self.store.save_checkpoint(
+                    work_item_id=str(context["work_item"]["id"]),
+                    run_id=run_id,
+                    context_pack_id=str(context["context_metadata"]["id"]),
+                    status="submitted",
+                    payload=payload,
+                )
+        except (KeyError, TypeError, ValueError, sqlite3.Error, StoreError):
+            return "checkpoint_update_failed"
+        return ""
+
+    def apply_branch_cleanup(
+        self,
+        repository: str,
+        *,
+        expected_digest: str,
+        reviewed_by: str,
+    ) -> dict[str, Any]:
+        """Reconcile pending attempts and apply freshly reviewed leased deletes."""
+        policy = self.policy(repository)
+        plan = self.branch_cleanup_plan(policy.name, expected_digest=expected_digest)
+        if plan["matches_expected_digest"] is not True:
+            raise PolicyError("--expected-digest does not match the fresh cleanup plan")
+        if os.environ.get("REPOSTEWARD_ENABLE_BRANCH_CLEANUP") != "1":
+            raise PolicyError(
+                "branch cleanup is disabled; set "
+                "REPOSTEWARD_ENABLE_BRANCH_CLEANUP=1 for this command"
+            )
+        if not policy.branch_cleanup:
+            raise PolicyError("repository branch_cleanup is not explicitly enabled")
+        if (
+            policy.mode != "maintainer"
+            or policy.submission_strategy != "same-repository"
+        ):
+            raise PolicyError("branch cleanup requires maintainer same-repository mode")
+        actor = reviewed_by.strip()
+        if not actor or actor.casefold() != self.config.github.login.casefold():
+            raise PolicyError("--reviewed-by must match the configured GitHub login")
+        authenticated = self.github.authenticated_login()
+        repository_info = self.github.repository(policy.name)
+        if authenticated.casefold() != actor.casefold():
+            raise PolicyError(
+                "authenticated GitHub login differs from the reviewed identity"
+            )
+        if not repository_info.can_push:
+            raise PolicyError("authenticated GitHub login cannot maintain repository")
+
+        actions: list[dict[str, Any]] = []
+        public_write = False
+
+        def audit(
+            candidate: dict[str, Any],
+            *,
+            attempt_id: str,
+            stage: str,
+            outcome: str,
+            lease: RunLease,
+            plan_digest: str,
+            reasons: tuple[str, ...] = (),
+            write: bool = False,
+            reconciliation: str = "",
+            attempt_actor: str = "",
+        ) -> dict[str, Any]:
+            return self.store.append_branch_cleanup_attempt(
+                attempt_id=attempt_id,
+                run_id=str(candidate["run_id"]),
+                repository=policy.name,
+                issue_number=int(candidate["issue_number"]),
+                pull_number=int(candidate["pull_number"]),
+                actor=attempt_actor or actor,
+                branch=str(candidate["branch"]),
+                head_sha=str(candidate["head_sha"]),
+                plan_digest=plan_digest,
+                stage=stage,
+                outcome=outcome,
+                reasons=reasons,
+                lease=lease,
+                payload={
+                    "public_write": write,
+                    "reconciliation": reconciliation,
+                    "observed_by": actor,
+                },
+            )
+
+        def fresh_facts(candidate: dict[str, Any]) -> tuple[list[str], bool]:
+            current_repository = self.github.repository(policy.name)
+            if current_repository.full_name.casefold() != policy.name.casefold():
+                raise GitHubError("GitHub repository identity changed during cleanup")
+            current_branch = self.github.repository_branch(
+                policy.name, str(candidate["branch"])
+            )
+            history = self.github.pull_requests_for_head(
+                policy.name,
+                owner=current_repository.owner_login,
+                branch=str(candidate["branch"]),
+            )
+            pull = self.github.pull_request(policy.name, int(candidate["pull_number"]))
+            blockers, absent_now = fresh_candidate_blockers(
+                current_repository,
+                current_branch,
+                pull,
+                history,
+                candidate,
+            )
+            if not current_repository.can_push:
+                blockers.append("push_permission_changed")
+            return sorted(set(blockers)), absent_now
+
+        for pending in plan["pending"]:
+            with self._mutation_lease(
+                policy.name, int(pending["issue_number"])
+            ) as lease:
+                try:
+                    current = self.github.repository_branch(
+                        policy.name, str(pending["branch"])
+                    )
+                except GitHubError:
+                    actions.append(
+                        {
+                            **pending,
+                            "outcome": "outcome_unknown",
+                            "reasons": ["pending_reconciliation_failed"],
+                            "public_write": False,
+                        }
+                    )
+                    continue
+                if current is None:
+                    outcome = "reconciled_deleted"
+                    reasons: tuple[str, ...] = ()
+                    reconciliation = "pending_delete_absence_confirmed"
+                else:
+                    outcome = "failed"
+                    reasons = (
+                        "head_changed_after_pending_delete"
+                        if str(current["head_sha"]) != str(pending["head_sha"])
+                        else "pending_delete_not_applied",
+                    )
+                    reconciliation = "pending_delete_branch_present"
+                audit(
+                    pending,
+                    attempt_id=str(pending["attempt_id"]),
+                    stage="completed",
+                    outcome=outcome,
+                    lease=lease,
+                    plan_digest=str(pending["plan_digest"]),
+                    reasons=reasons,
+                    reconciliation=reconciliation,
+                    attempt_actor=str(pending["actor"]),
+                )
+                warning = self._save_branch_cleanup_checkpoint(
+                    pending,
+                    outcome=outcome,
+                    plan_digest=str(pending["plan_digest"]),
+                    reasons=reasons,
+                )
+                action = {
+                    **pending,
+                    "outcome": outcome,
+                    "reasons": list(reasons),
+                    "public_write": False,
+                }
+                if warning:
+                    action["warning"] = warning
+                actions.append(action)
+
+        for absent in plan["absent"]:
+            with self._mutation_lease(
+                policy.name, int(absent["issue_number"])
+            ) as lease:
+                attempt_id = uuid.uuid4().hex
+                freshness_failed = False
+                try:
+                    blockers, absent_now = fresh_facts(absent)
+                except (GitHubError, KeyError, TypeError, ValueError):
+                    blockers, absent_now = ["freshness_read_failed"], False
+                    freshness_failed = True
+                if not absent_now and not freshness_failed:
+                    blockers.append("branch_reappeared_after_plan")
+                blockers = sorted(set(blockers))
+                outcome = "already_absent" if absent_now and not blockers else "blocked"
+                audit(
+                    absent,
+                    attempt_id=attempt_id,
+                    stage="completed",
+                    outcome=outcome,
+                    lease=lease,
+                    plan_digest=str(plan["plan_digest"]),
+                    reasons=tuple(blockers),
+                    reconciliation=(
+                        "fresh_apply_confirmed_absence"
+                        if outcome == "already_absent"
+                        else "freshness_blocked_absence_completion"
+                    ),
+                )
+                warning = self._save_branch_cleanup_checkpoint(
+                    absent,
+                    outcome=outcome,
+                    plan_digest=str(plan["plan_digest"]),
+                    reasons=tuple(blockers),
+                )
+                action = {
+                    **absent,
+                    "attempt_id": attempt_id,
+                    "outcome": outcome,
+                    "reasons": blockers,
+                    "public_write": False,
+                }
+                if warning:
+                    action["warning"] = warning
+                actions.append(action)
+
+        for candidate in plan["candidates"]:
+            with self._mutation_lease(
+                policy.name, int(candidate["issue_number"])
+            ) as lease:
+                attempt_id = uuid.uuid4().hex
+                try:
+                    blockers, absent_now = fresh_facts(candidate)
+                except (GitHubError, KeyError, TypeError, ValueError):
+                    actions.append(
+                        {
+                            **candidate,
+                            "attempt_id": attempt_id,
+                            "outcome": "failed",
+                            "reasons": ["freshness_read_failed"],
+                            "public_write": False,
+                        }
+                    )
+                    continue
+                if absent_now or blockers:
+                    outcome = "blocked" if blockers else "already_absent"
+                    reasons = tuple(blockers)
+                    audit(
+                        candidate,
+                        attempt_id=attempt_id,
+                        stage="completed",
+                        outcome=outcome,
+                        lease=lease,
+                        plan_digest=str(plan["plan_digest"]),
+                        reasons=reasons,
+                        reconciliation=(
+                            "branch_absent_before_delete"
+                            if absent_now
+                            else "freshness_blocked_delete"
+                        ),
+                    )
+                    warning = self._save_branch_cleanup_checkpoint(
+                        candidate,
+                        outcome=outcome,
+                        plan_digest=str(plan["plan_digest"]),
+                        reasons=reasons,
+                    )
+                    action = {
+                        **candidate,
+                        "attempt_id": attempt_id,
+                        "outcome": outcome,
+                        "reasons": list(reasons),
+                        "public_write": False,
+                    }
+                    if warning:
+                        action["warning"] = warning
+                    actions.append(action)
+                    continue
+
+                audit(
+                    candidate,
+                    attempt_id=attempt_id,
+                    stage="applying",
+                    outcome="pending",
+                    lease=lease,
+                    plan_digest=str(plan["plan_digest"]),
+                    reconciliation="fresh_candidate_accepted",
+                )
+                delete_error = ""
+                try:
+                    self.store.validate_run_lease(lease)
+                    public_write = True
+                    self.workspaces.delete_remote_branch(
+                        policy.name,
+                        str(candidate["branch"]),
+                        expected_sha=str(candidate["head_sha"]),
+                    )
+                except (WorkspaceError, OSError) as exc:
+                    delete_error = str(exc)
+                try:
+                    remaining = self.github.repository_branch(
+                        policy.name, str(candidate["branch"])
+                    )
+                except GitHubError:
+                    remaining = "unknown"
+                if remaining == "unknown":
+                    actions.append(
+                        {
+                            **candidate,
+                            "attempt_id": attempt_id,
+                            "outcome": "outcome_unknown",
+                            "reasons": ["delete_confirmation_failed"],
+                            "public_write": True,
+                        }
+                    )
+                    self._save_branch_cleanup_checkpoint(
+                        candidate,
+                        outcome="outcome_unknown",
+                        plan_digest=str(plan["plan_digest"]),
+                        reasons=("delete_confirmation_failed",),
+                    )
+                    continue
+                if remaining is None:
+                    outcome = "reconciled_deleted" if delete_error else "deleted"
+                    reasons = ()
+                    reconciliation = (
+                        "absence_confirmed_after_delete_error"
+                        if delete_error
+                        else "absence_confirmed_after_delete"
+                    )
+                else:
+                    outcome = "failed"
+                    reasons = (
+                        "head_changed_during_delete"
+                        if str(remaining["head_sha"]) != str(candidate["head_sha"])
+                        else "leased_delete_failed_branch_present",
+                    )
+                    reconciliation = "branch_present_after_delete"
+                audit(
+                    candidate,
+                    attempt_id=attempt_id,
+                    stage="completed",
+                    outcome=outcome,
+                    lease=lease,
+                    plan_digest=str(plan["plan_digest"]),
+                    reasons=reasons,
+                    write=True,
+                    reconciliation=reconciliation,
+                )
+                warning = self._save_branch_cleanup_checkpoint(
+                    candidate,
+                    outcome=outcome,
+                    plan_digest=str(plan["plan_digest"]),
+                    reasons=reasons,
+                )
+                action = {
+                    **candidate,
+                    "attempt_id": attempt_id,
+                    "outcome": outcome,
+                    "reasons": list(reasons),
+                    "public_write": True,
+                }
+                if warning:
+                    action["warning"] = warning
+                actions.append(action)
+
+        refresh_error = ""
+        try:
+            remaining_plan = self.branch_cleanup_plan(policy.name)
+        except (GitHubError, StoreError, TypeError, ValueError) as exc:
+            remaining_plan = None
+            refresh_error = str(exc)[:500]
+        complete = (
+            all(
+                str(action["outcome"]) in SUCCESSFUL_CLEANUP_OUTCOMES
+                for action in actions
+            )
+            and remaining_plan is not None
+        )
+        if remaining_plan is not None and (
+            remaining_plan["counts"]["candidates"]
+            or remaining_plan["counts"]["pending"]
+        ):
+            complete = False
+        result = {
+            "schema_version": 1,
+            "repository": policy.name.casefold(),
+            "plan_digest": str(plan["plan_digest"]),
+            "complete": complete,
+            "actions": actions,
+            "remaining_plan": remaining_plan,
+            "harness_invoked": False,
+            "workspace_modified": False,
+            "public_write": public_write,
+        }
+        if refresh_error:
+            result["refresh_error"] = refresh_error
+        return result
 
     def maintainer_inbox(self, repository: str, *, limit: int = 50) -> dict[str, Any]:
         """Aggregate bounded local and online facts without invoking a Harness."""
@@ -4362,6 +4903,27 @@ class Pipeline:
                 }
             return {"status": "available", **report["summary"]}
 
+        def cleanup_handoff() -> dict[str, Any]:
+            pending = bool(policy.branch_cleanup)
+            handoff = {
+                "cleanup_pending": pending,
+                "next_action": (
+                    f"reposteward branch-cleanup plan {repository}"
+                    if pending
+                    else "none"
+                ),
+            }
+            if pending:
+                warning = self._save_branch_cleanup_pending_checkpoint(
+                    run_id=run_id,
+                    repository=repository,
+                    branch=str(details.get("branch") or ""),
+                    head_sha=expected_head,
+                )
+                if warning:
+                    handoff["warning"] = warning
+            return handoff
+
         if os.environ.get("REPOSTEWARD_ENABLE_MERGE") != "1":
             block(
                 "merge execution is disabled; set REPOSTEWARD_ENABLE_MERGE=1 "
@@ -4460,6 +5022,7 @@ class Pipeline:
                 "attempt_id": attempt_id,
                 "audit": audits,
                 "usage_summary": successful_usage_summary(),
+                **cleanup_handoff(),
                 "public_write": False,
             }
         if (
@@ -4509,6 +5072,7 @@ class Pipeline:
                 "attempt_id": attempt_id,
                 "audit": audits,
                 "usage_summary": successful_usage_summary(),
+                **cleanup_handoff(),
                 "public_write": False,
             }
         if (
@@ -4603,6 +5167,7 @@ class Pipeline:
             "attempt_id": attempt_id,
             "audit": audits,
             "usage_summary": successful_usage_summary(),
+            **cleanup_handoff(),
             "public_write": public_write,
         }
 

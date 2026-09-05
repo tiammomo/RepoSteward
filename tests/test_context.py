@@ -58,6 +58,7 @@ class RepositoryPolicyDigestTests(unittest.TestCase):
         legacy = asdict(policy)
         legacy.pop("owner_attestation")
         legacy.pop("max_active_pull_requests")
+        legacy.pop("branch_cleanup")
         encoded = json.dumps(
             legacy, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode()
@@ -71,6 +72,10 @@ class RepositoryPolicyDigestTests(unittest.TestCase):
         )
         self.assertNotEqual(
             repository_policy_digest(replace(policy, max_active_pull_requests=3)),
+            repository_policy_digest(policy),
+        )
+        self.assertNotEqual(
+            repository_policy_digest(replace(policy, branch_cleanup=True)),
             repository_policy_digest(policy),
         )
 

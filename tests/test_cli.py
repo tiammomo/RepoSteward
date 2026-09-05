@@ -262,6 +262,73 @@ class CliSetupTests(unittest.TestCase):
             "owner/repo", pull_number=2, limit=100
         )
 
+    def test_branch_cleanup_separates_read_only_plan_from_reviewed_apply(self) -> None:
+        plan = {
+            "repository": "owner/repo",
+            "plan_digest": "a" * 64,
+            "delete_branch_on_merge": True,
+            "counts": {
+                "candidates": 1,
+                "pending": 0,
+                "already_absent": 0,
+                "completed": 0,
+                "retained": 0,
+            },
+            "candidates": [
+                {
+                    "branch": "topic",
+                    "head_sha": "b" * 40,
+                    "pull_number": 7,
+                }
+            ],
+            "pending": [],
+            "absent": [],
+            "completed": [],
+            "retained": [],
+            "public_write": False,
+        }
+        pipeline = MagicMock()
+        pipeline.branch_cleanup_plan.return_value = plan
+        pipeline.apply_branch_cleanup.return_value = {
+            "complete": True,
+            "public_write": True,
+        }
+        text_output = io.StringIO()
+        apply_output = io.StringIO()
+        with (
+            patch("reposteward.cli.load_config", return_value=object()),
+            patch("reposteward.cli.Pipeline", return_value=pipeline),
+        ):
+            with redirect_stdout(text_output):
+                plan_code = main(
+                    ["branch-cleanup", "plan", "owner/repo", "--format", "text"]
+                )
+            with redirect_stdout(apply_output):
+                apply_code = main(
+                    [
+                        "branch-cleanup",
+                        "apply",
+                        "owner/repo",
+                        "--expected-digest",
+                        "a" * 64,
+                        "--reviewed-by",
+                        "alice",
+                    ]
+                )
+
+        self.assertEqual(plan_code, 0)
+        self.assertEqual(apply_code, 0)
+        self.assertIn("Branch cleanup: owner/repo", text_output.getvalue())
+        self.assertTrue(json.loads(apply_output.getvalue())["public_write"])
+        pipeline.branch_cleanup_plan.assert_called_once_with(
+            "owner/repo", expected_digest=""
+        )
+        pipeline.apply_branch_cleanup.assert_called_once_with(
+            "owner/repo",
+            expected_digest="a" * 64,
+            reviewed_by="alice",
+        )
+
     def test_ci_diagnose_is_routed_as_a_read_only_command(self) -> None:
         pipeline = MagicMock()
         pipeline.ci_failure_analysis.return_value = {

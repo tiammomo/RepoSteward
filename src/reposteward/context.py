@@ -54,6 +54,8 @@ def repository_policy_digest(policy: RepositoryPolicy) -> str:
     # Enabling either field remains material and receives a different digest.
     if not policy.owner_attestation:
         value.pop("owner_attestation")
+    if not policy.branch_cleanup:
+        value.pop("branch_cleanup")
     if policy.max_active_pull_requests is None:
         value.pop("max_active_pull_requests")
     return _digest(value)

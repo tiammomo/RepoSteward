@@ -368,6 +368,35 @@ class StoreTests(unittest.TestCase):
             self.assertIsNotNone(table)
             self.assertIsNotNone(unique_stage)
 
+    def test_version_sixteen_database_receives_branch_cleanup_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute("DROP TABLE branch_cleanup_attempts")
+                connection.execute("PRAGMA user_version=16")
+
+            migrated = Store(path)
+            with closing(sqlite3.connect(path)) as connection, connection:
+                table = connection.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name='branch_cleanup_attempts'"
+                ).fetchone()
+                indexes = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type='index' "
+                        "AND tbl_name='branch_cleanup_attempts'"
+                    )
+                }
+
+            self.assertEqual(migrated.schema_version(), SCHEMA_VERSION)
+            self.assertIsNotNone(table)
+            self.assertIn("branch_cleanup_attempts_for_repository", indexes)
+            self.assertIn("branch_cleanup_attempts_for_run", indexes)
+            self.assertIn("branch_cleanup_attempts_stage_once", indexes)
+
     def test_version_ten_database_receives_portfolio_dependency_audit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"
@@ -1315,6 +1344,7 @@ class StoreTests(unittest.TestCase):
                     pushed_at="2026-01-01T00:00:00Z",
                     archived=False,
                     is_fork=False,
+                    delete_branch_on_merge=True,
                 ),
                 score=42,
             )
@@ -1329,6 +1359,7 @@ class StoreTests(unittest.TestCase):
         if restored is None:
             self.fail("candidate was not restored")
         self.assertEqual(restored.issue.labels, ("bug",))
+        self.assertTrue(restored.repository.delete_branch_on_merge)
         self.assertEqual(len(ready), 1)
 
     def test_issue_draft_round_trip(self) -> None:
