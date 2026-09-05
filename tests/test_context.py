@@ -16,8 +16,6 @@ from reposteward.config import AgentConfig, ConfigError, RepositoryPolicy, load_
 from reposteward.context import (
     MAX_HANDOFF_ITEM_CHARS,
     MAX_PROJECT_SKILLS,
-    MAX_REPAIR_ITEM_CHARS,
-    MAX_REPAIR_ITEMS,
     MAX_SKILL_FILE_BYTES,
     MAX_SKILL_METADATA_BYTES,
     MAX_TASK_DESCRIPTION_CHARS,
@@ -46,6 +44,7 @@ from reposteward.pipeline import Pipeline
 from reposteward.policy import DiffSummary
 from reposteward.protocol import validate_context_pack
 from reposteward.repair_prompt import build_budgeted_repair_context_pack
+from reposteward.task_contract import issue_digest, review_contract
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -118,10 +117,7 @@ def _candidate(body: str = "Reproduce the bug") -> Candidate:
 class ContextPackTests(unittest.TestCase):
     @staticmethod
     def _repair_plan(pack) -> dict:
-        encoded = "".join(
-            value.split(":", 1)[1] for value in pack.task.acceptance_criteria[1:]
-        )
-        return json.loads(encoded)
+        return pack.repair_feedback["context"]
 
     def test_complete_repair_prompt_honors_one_multilingual_budget(self) -> None:
         budget = 24_000
@@ -211,6 +207,15 @@ class ContextPackTests(unittest.TestCase):
                     event_watermark=200,
                     event_batch_digest="c" * 64,
                     repair_context=repair_context,
+                    task_contract=review_contract(
+                        candidate.issue,
+                        {
+                            "goal": candidate.issue.title,
+                            "source_digest": issue_digest(candidate.issue),
+                            "acceptance_criteria": ["Preserve compatibility"],
+                        },
+                        reviewed_by="test-operator",
+                    ),
                     budget_tokens=budget,
                 )
 
@@ -351,7 +356,7 @@ class ContextPackTests(unittest.TestCase):
 
         transported = {
             "handoff": pack.handoff,
-            "current_follow_up": pack.task.acceptance_criteria,
+            "current_follow_up": pack.repair_feedback,
         }
         self.assertLessEqual(estimate_tokens(transported), plan["budget_tokens"])
 
@@ -391,15 +396,11 @@ class ContextPackTests(unittest.TestCase):
                 repair_context=repair_context,
             )
 
-        self.assertGreater(len(pack.task.acceptance_criteria), 2)
-        self.assertLessEqual(len(pack.task.acceptance_criteria), MAX_REPAIR_ITEMS)
-        self.assertLessEqual(
-            len(pack.task.acceptance_criteria[-1]), MAX_REPAIR_ITEM_CHARS
+        self.assertEqual(pack.task.acceptance_criteria, ())
+        self.assertEqual(pack.repair_feedback["context"], repair_context)
+        self.assertEqual(
+            pack.task_contract.source_requirements, _candidate().issue.body
         )
-        encoded = "".join(
-            value.split(":", 1)[1] for value in pack.task.acceptance_criteria[1:]
-        )
-        self.assertEqual(json.loads(encoded), repair_context)
         self.assertEqual(pack.sources[-1].kind, "github_pr_event_batch")
         self.assertEqual(pack.sources[-1].digest, "c" * 64)
         self.assertIn("current_follow_up", build_harness_prompt(pack))
@@ -456,7 +457,7 @@ class ContextPackTests(unittest.TestCase):
                 model="gpt-example",
             )
 
-        self.assertEqual(pack.schema_version, 2)
+        self.assertEqual(pack.schema_version, 3)
         self.assertEqual(len(pack.task.description), MAX_TASK_DESCRIPTION_CHARS)
         self.assertEqual(pack.task.description_omitted_chars, 120)
         self.assertEqual(pack.project.instruction_sources, ("AGENTS.md",))

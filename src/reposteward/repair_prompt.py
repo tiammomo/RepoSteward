@@ -9,6 +9,7 @@ from .config import RepositoryPolicy
 from .context import ContextPack, build_repair_context_pack
 from .context_budget import ContextBudgetError, estimate_tokens
 from .models import Candidate
+from .task_contract import TaskContract
 
 MAX_PROMPT_FIT_PASSES = 16
 EVENT_PRIORITIES = {"review_comment": 40, "review": 30, "issue_comment": 20}
@@ -31,6 +32,7 @@ def _prompt_material(
     event_batch_digest: str,
     repair_context: dict[str, Any],
     description_max_bytes: int | None,
+    task_contract: TaskContract | None,
 ) -> tuple[ContextPack, int]:
     """Render until the prompt estimate recorded in its own plan is stable."""
     context: ContextPack | None = None
@@ -52,6 +54,7 @@ def _prompt_material(
             event_batch_digest=event_batch_digest,
             repair_context=repair_context,
             task_description_max_bytes=description_max_bytes,
+            task_contract=task_contract,
         )
         prompt_tokens = estimate_tokens(build_harness_prompt(context))
         payload_tokens = estimate_tokens(repair_context)
@@ -83,6 +86,7 @@ def build_budgeted_repair_context_pack(
     event_batch_digest: str,
     repair_context: dict[str, Any],
     budget_tokens: int,
+    task_contract: TaskContract | None = None,
 ) -> tuple[ContextPack, dict[str, Any]]:
     """Fit the complete rendered repair prompt into one conservative budget."""
     if budget_tokens < 1:
@@ -147,6 +151,7 @@ def build_budgeted_repair_context_pack(
             event_batch_digest=event_batch_digest,
             repair_context=plan,
             description_max_bytes=description_max_bytes,
+            task_contract=task_contract,
         )
 
     update_stats()
