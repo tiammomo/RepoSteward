@@ -991,3 +991,46 @@ reposteward verification evidence <run-id> log:<id>:0 --offset 0 --limit 8000
 查询限制在所选任务，正文按字符分页；来源可用 `source:<digest>`、检查点可用
 `checkpoint:<run-id>:<revision>` 取回。日志摘要记录完整输出摘要及已保留日志摘要，
 截断与缺失分别报告；正文被修改或丢失时返回 unknown。查询不调用模型或 GitHub。
+
+## 保存可以重验的项目经验
+
+经验先作为 `candidate` 保存，须指明适用路径、直接来源证据和可选条件。条件目前
+支持 `branch` 和 `verification_profile`，不执行模型提供的判断代码。候选不进入任务
+提示，MCP 也不提供晋升或修改规则文件的工具。
+
+```json
+{"statement":"修改此模块时应覆盖空输入", "scope_paths":["src/parser.py"],
+ "evidence_ids":["checkpoint:<run-id>:0"], "conditions":{"verification_profile":"test"}}
+```
+
+```bash
+reposteward knowledge propose <run-id> --input knowledge.json
+reposteward knowledge promote <run-id> <knowledge-id> --reviewed-by your-login \
+  --basis verification_evidence --verification-id verification:<id> --rationale "说明哪些测试支持这条经验"
+reposteward knowledge list <run-id> --scope-path src --limit 5
+reposteward knowledge inspect <run-id> <knowledge-id> --live
+reposteward task context <run-id> --scope-path src --format markdown
+```
+
+审阅后状态为 `reviewed`，依据始终明确区分 `human_confirmation` 和
+`verification_evidence`。前者是人工确认，后者要求当前快照的测试证据通过，另由审阅人
+说明证据与结论的关系；测试通过本身不会自动证明模型的任意总结。
+
+依赖摘要覆盖所声明路径中的文件。路径内代码或引用来源变化、条件不符、验证配置
+变化后，条目显示 `stale` 并从默认提示中移除；路径之外的编辑不自动使其失效。
+声明路径也承担重验范围，需要审阅人确认依赖范围完整。查询只核对本地证据，线上
+来源是否更新仍需明确刷新。`--all` 可查看候选、过期与被替代条目。
+
+更新经验时在新提案中设置 `supersedes`，新提案审阅通过后才原子替代旧条目，保留
+历史关系。重复提案和相同审阅幂等。跨项目查询隔离，不自动把业务经验升级为通用
+偏好，不复制原生聊天或改写项目的 AGENTS/CLAUDE/skills 文件。
+
+任务仅在显式提供 `--scope-path` 时选择最多五条有效经验。
+预算不足先省略可取回的经验，并记录数量、来源与摘要；需求、
+开放项与决定继续保留。正文可通过 `verification evidence <run-id> knowledge:<id>`
+有界取回。此流程沿用 #82/PR #84 的证据回顾思路，规则文件的最终变更仍需目标项目审阅。
+
+通用偏好单独放在用户配置的顶层 `guidance_preferences = ["偏好简短说明"]` 中，
+最多十条、每条一千字符；仓库文件里的同名字段不生效。上下文将其标为
+`user_preference`，不与项目经验或测试事实混合；预算不足时记录省略数量。
+项目经验不会自动写入此用户配置。
