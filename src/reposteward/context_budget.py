@@ -65,7 +65,9 @@ def _content_identity(event_type: str, payload: dict[str, Any]) -> str:
     return _digest({"event_type": event_type, "content": material})
 
 
-def _event_item(event: dict[str, Any], reasons: Counter[str]) -> dict[str, Any]:
+def _event_item(
+    event: dict[str, Any], reasons: Counter[str], *, full_body: bool = False
+) -> dict[str, Any]:
     payload = event["payload"]
     event_type = str(event["event_type"])
     item: dict[str, Any] = {
@@ -86,7 +88,11 @@ def _event_item(event: dict[str, Any], reasons: Counter[str]) -> dict[str, Any]:
             reasons["field_clipped"] += int(clipped)
     if payload.get("line") is not None:
         item["line"] = payload["line"]
-    body, clipped = _clip(payload.get("body"), MAX_EVENT_TEXT_CHARS)
+    body, clipped = (
+        (str(payload.get("body") or ""), False)
+        if full_body
+        else _clip(payload.get("body"), MAX_EVENT_TEXT_CHARS)
+    )
     if body:
         item["body"] = body
     reasons["event_body_clipped"] += int(clipped)
@@ -182,6 +188,7 @@ def build_follow_up_context(
     safety_blockers: tuple[str, ...] = (),
     diff_snippets: dict[str, str] | None = None,
     checkpoint: dict[str, Any] | None = None,
+    full_event_bodies: bool = False,
 ) -> dict[str, Any]:
     """Build a bounded incremental context without model or session assumptions."""
     if not MIN_FOLLOW_UP_TOKENS <= budget_tokens <= MAX_FOLLOW_UP_TOKENS:
@@ -335,7 +342,7 @@ def build_follow_up_context(
         if event_type == "issue_comment" and not body:
             reasons["non_actionable_comment"] += 1
             continue
-        item = _event_item(event, reasons)
+        item = _event_item(event, reasons, full_body=full_event_bodies)
         path = str(item.get("path") or "")
         if path:
             relevant_paths.add(path)

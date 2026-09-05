@@ -18,7 +18,7 @@ from reposteward.github import GitHubError, PullRequest
 from reposteward.models import RepositoryInfo
 from reposteward.pipeline import Pipeline
 from reposteward.policy import PolicyError
-from reposteward.store import Store
+from reposteward.store import SCHEMA_VERSION, Store
 from reposteward.workspace import WorkspaceError, WorkspaceManager
 
 ROOT = Path(__file__).parents[1]
@@ -591,7 +591,7 @@ class BranchCleanupMigrationTests(unittest.TestCase):
                         "PRAGMA table_info(branch_cleanup_attempts)"
                     )
                 }
-            self.assertEqual(migrated.schema_version(), 17)
+            self.assertEqual(migrated.schema_version(), SCHEMA_VERSION)
             self.assertIn("attempt_id", columns)
             self.assertIn("lease_generation", columns)
 
