@@ -217,6 +217,7 @@ class AppConfig:
     observability: ObservabilityConfig
     repositories: dict[str, RepositoryPolicy] = field(default_factory=dict)
     verification_profiles: tuple[VerificationProfile, ...] = ()
+    guidance_preferences: tuple[str, ...] = ()
 
 
 def _tuple(value: Any, default: tuple[str, ...] = ()) -> tuple[str, ...]:
@@ -1090,6 +1091,14 @@ def load_config(
             VerificationProfile(repository.casefold(), name, commands, bootstrap)
         )
 
+    preferences = _tuple(user_raw.get("guidance_preferences"))
+    if len(preferences) > 10 or any(
+        not value.strip() or len(value) > 1000 for value in preferences
+    ):
+        raise ConfigError(
+            "guidance_preferences supports at most 10 nonempty values of 1000 characters"
+        )
+
     return AppConfig(
         config_version=version_value or CONFIG_VERSION,
         path=config_path,
@@ -1107,4 +1116,5 @@ def load_config(
         observability=observability,
         repositories=repositories,
         verification_profiles=tuple(profiles),
+        guidance_preferences=preferences,
     )
