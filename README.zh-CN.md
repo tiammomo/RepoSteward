@@ -18,6 +18,13 @@ RepoSteward 是位于 GitHub、Coding Harness 和隔离验证环境之间的本�
 
 <p align="center"><sub>流程图提供可编辑的 <a href="docs/assets/reposteward-lifecycle.excalidraw">Excalidraw 源文件</a>。</sub></p>
 
+## 先理解项目，再进入迭代
+
+对本地 clone 或 worktree 执行 `reposteward understand scan PATH`，再用
+`reposteward understand guide PATH` 阅读全貌，或用 `understand query PATH "符号或问题"`
+定位相关实现与测试。导览区分文档声明、Python 静态关系和阅读建议，并提供带版本的代码来源。
+首次阅读无需关联任务或 GitHub 登录。详见[项目理解与上手指南](docs/project-understanding.zh-CN.md)。
+
 ## 为什么需要 RepoSteward
 
 Coding Harness 擅长理解代码和修改工作区，但模型会话不适合持有长期仓库策略、GitHub 凭据、

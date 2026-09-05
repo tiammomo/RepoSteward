@@ -20,6 +20,14 @@ the current release.
 
 <p align="center"><sub>The diagram has an editable <a href="docs/assets/reposteward-lifecycle.excalidraw">Excalidraw source</a>.</sub></p>
 
+## Understand a project before changing it
+
+Read a local clone or worktree with `reposteward understand scan PATH`, then
+`reposteward understand guide PATH` or `reposteward understand query PATH "symbol or problem"`.
+The guide links project declarations, Python static relationships and a suggested reading
+route to versioned source evidence. Reading does not require a linked task or GitHub login.
+See the [project understanding guide](docs/project-understanding.zh-CN.md) for limits and MCP access.
+
 ## Why RepoSteward exists
 
 Coding harnesses are good at understanding code and editing a workspace. A model
