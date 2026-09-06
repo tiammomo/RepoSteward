@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import tomllib
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -12,6 +13,15 @@ from urllib.parse import urlparse
 
 CONFIG_VERSION = 1
 PROJECT_CONFIG_NAMES = (".reposteward.toml", "reposteward.toml", "starfix.toml")
+DIAGNOSTIC_SETTINGS = (
+    "project.state_dir",
+    "project.workspace_dir",
+    "project.namespace_state",
+    "github.login",
+    "github.api_url",
+    "agent.harness",
+    "runner.image",
+)
 REPOSITORY_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 SENSITIVE_PATH_NAMES = frozenset({"credentials", "secrets"})
 
@@ -218,6 +228,8 @@ class AppConfig:
     repositories: dict[str, RepositoryPolicy] = field(default_factory=dict)
     verification_profiles: tuple[VerificationProfile, ...] = ()
     guidance_preferences: tuple[str, ...] = ()
+    config_files: tuple[tuple[str, str], ...] = ()
+    setting_sources: tuple[tuple[str, str], ...] = ()
 
 
 def _tuple(value: Any, default: tuple[str, ...] = ()) -> tuple[str, ...]:
@@ -544,6 +556,30 @@ def _tracked_sensitive_paths(
                 paths.append(canonical)
         configured[normalized_repository] = tuple(paths)
     return tuple(sorted(configured.items()))
+
+
+def _setting_sources(user: dict, project: dict) -> tuple[tuple[str, str], ...]:
+    """Trace a small allowlist through the same trust merge without retaining values."""
+    marked_user, marked_project = deepcopy(user), deepcopy(project)
+    markers: list[tuple[object, str]] = []
+    for source, data in (("user", marked_user), ("project", marked_project)):
+        for setting in DIAGNOSTIC_SETTINGS:
+            section, key = setting.split(".")
+            values = data.get(section)
+            if isinstance(values, dict) and key in values:
+                marker = object()
+                values[key] = marker
+                markers.append((marker, source))
+    merged = _merge_layers(marked_user, marked_project)
+    result = []
+    for setting in DIAGNOSTIC_SETTINGS:
+        section, key = setting.split(".")
+        value = _section(merged, section).get(key)
+        source = next(
+            (source for marker, source in markers if value is marker), "default"
+        )
+        result.append((setting, source))
+    return tuple(result)
 
 
 def load_config(
@@ -1117,4 +1153,13 @@ def load_config(
         repositories=repositories,
         verification_profiles=tuple(profiles),
         guidance_preferences=preferences,
+        config_files=tuple(
+            (source, str(file))
+            for source, file, data in (
+                ("user", resolved_user_path, user_raw),
+                ("project", project_path, project_raw),
+            )
+            if file is not None and data
+        ),
+        setting_sources=_setting_sources(user_raw, project_raw),
     )

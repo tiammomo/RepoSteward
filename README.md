@@ -67,8 +67,14 @@ the model-governed repository direction.
 
 ## Install
 
-RepoSteward requires Python 3.12 or newer, uv, Git, Docker, GitHub CLI, and a logged-in
-Codex CLI.
+For an isolated installation used outside this source checkout, see the
+[local installation and offline diagnostics guide](docs/local-installation.zh-CN.md).
+`reposteward version` reports installation metadata; `reposteward doctor --local`
+checks configuration sources and database compatibility without authentication or migration.
+
+The full Issue-to-PR workflow requires Python 3.12 or newer, uv, Git, Docker,
+GitHub authentication, and the configured coding harness. Local code reading and
+offline diagnostics can be used before configuring those execution services.
 
 ```bash
 git clone https://github.com/tiammomo/RepoSteward.git
