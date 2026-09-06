@@ -51,6 +51,23 @@ def _parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("version", help="show offline installation metadata as JSON")
+    state = subparsers.add_parser(
+        "state", help="plan and explicitly back up local database upgrades"
+    )
+    state_commands = state.add_subparsers(dest="state_command", required=True)
+    state_plan = state_commands.add_parser(
+        "plan", help="read an upgrade plan without migrating"
+    )
+    state_plan.add_argument("--expect-state-dir", type=Path)
+    state_upgrade = state_commands.add_parser(
+        "upgrade", help="back up and apply an exact local upgrade plan"
+    )
+    state_upgrade.add_argument("--expect-state-dir", type=Path, required=True)
+    state_upgrade.add_argument("--plan-digest", required=True)
+    state_backup = state_commands.add_parser(
+        "inspect-backup", help="verify a backup without restoring it"
+    )
+    state_backup.add_argument("directory", type=Path)
 
     initialize = subparsers.add_parser("init", help="create per-user configuration")
     initialize.add_argument("--path", type=Path, default=None)
@@ -724,6 +741,28 @@ def main(argv: list[str] | None = None) -> int:
             from .runtime import installation_info
 
             _json(installation_info())
+            return 0
+        if args.command == "state":
+            from .state_upgrade import inspect_backup, upgrade_plan, upgrade_state
+
+            if args.state_command == "inspect-backup":
+                _json(inspect_backup(args.directory))
+            else:
+                state_config = load_config(args.config, include_user=True)
+                if args.state_command == "plan":
+                    _json(
+                        upgrade_plan(
+                            state_config, expected_state_dir=args.expect_state_dir
+                        )
+                    )
+                else:
+                    _json(
+                        upgrade_state(
+                            state_config,
+                            expected_state_dir=args.expect_state_dir,
+                            plan_digest=args.plan_digest,
+                        )
+                    )
             return 0
         if args.command == "doctor" and args.local:
             from .runtime import local_diagnostics

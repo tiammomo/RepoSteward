@@ -639,6 +639,28 @@ class StoreError(RuntimeError):
     """The local state database cannot be opened or migrated safely."""
 
 
+def apply_migration(connection: sqlite3.Connection, version: int) -> None:
+    """Apply one existing migration inside the caller's transaction."""
+    if not connection.in_transaction:
+        raise StoreError("database migration requires a transaction")
+    statements = MIGRATIONS.get(version)
+    if statements is None:
+        raise StoreError(f"missing database migration {version}")
+    for statement in statements:
+        if version == 7 and statement.startswith(
+            "ALTER TABLE github_pr_events ADD COLUMN"
+        ):
+            column = statement.split("ADD COLUMN", 1)[1].split()[0]
+            existing = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(github_pr_events)")
+            }
+            if column in existing:
+                continue
+        connection.execute(statement)
+    connection.execute(f"PRAGMA user_version={version}")
+
+
 @dataclass(frozen=True, slots=True)
 class RunLease:
     scope: str
@@ -882,21 +904,7 @@ class Store:
                     raise StoreError(f"missing database migration {version}")
                 self._begin_immediate(connection)
                 try:
-                    for statement in statements:
-                        if version == 7 and statement.startswith(
-                            "ALTER TABLE github_pr_events ADD COLUMN"
-                        ):
-                            column = statement.split("ADD COLUMN", 1)[1].split()[0]
-                            existing = {
-                                str(row[1])
-                                for row in connection.execute(
-                                    "PRAGMA table_info(github_pr_events)"
-                                )
-                            }
-                            if column in existing:
-                                continue
-                        connection.execute(statement)
-                    connection.execute(f"PRAGMA user_version={version}")
+                    apply_migration(connection, version)
                     connection.commit()
                 except Exception:
                     connection.rollback()
