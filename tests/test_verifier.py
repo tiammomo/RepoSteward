@@ -549,6 +549,9 @@ class VerificationSandboxTests(unittest.TestCase):
         self.assertIn(f"{environment.resolve()}:/reposteward-env:rw", command)
         self.assertIn(f"{git_dir.resolve()}:/reposteward-git:ro", command)
         self.assertIn("none", command)
+        # JVM user.home 固定到持久卷，避免无 passwd 条目时解析为 "?" 导致缓存丢失
+        env_index = command.index("JAVA_TOOL_OPTIONS=-Duser.home=/reposteward-env/home")
+        self.assertEqual(command[env_index - 1], "-e")
 
 
 if __name__ == "__main__":
