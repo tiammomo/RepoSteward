@@ -18,26 +18,28 @@ ARG HELM_SHA256=0093eb572e3d2380f094df162ddb525e219249de88957afe24cfbb19632acd36
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         aspell aspell-en build-essential ca-certificates curl git git-lfs unzip \
+        openjdk-17-jdk-headless \
         libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 \
         libgbm1 libgtk-3-0 libnspr4 libnss3 libxcomposite1 libxdamage1 \
         libxfixes3 libxkbcommon0 libxrandr2 \
-    && curl --fail --location --silent --show-error "$TEMURIN_8_URL" --output /tmp/temurin.tar.gz \
+    && curl --fail --location --silent --show-error --retry 5 --retry-all-errors --retry-delay 2 "$TEMURIN_8_URL" --output /tmp/temurin.tar.gz \
     && echo "$TEMURIN_8_SHA256  /tmp/temurin.tar.gz" | sha256sum --check - \
-    && curl --fail --location --silent --show-error \
-        "https://dlcdn.apache.org/maven/maven-3/$MAVEN_VERSION/binaries/apache-maven-$MAVEN_VERSION-bin.tar.gz" \
+    && curl --fail --location --silent --show-error --retry 5 --retry-all-errors --retry-delay 2 \
+        "https://mirrors.tuna.tsinghua.edu.cn/apache/maven/maven-3/$MAVEN_VERSION/binaries/apache-maven-$MAVEN_VERSION-bin.tar.gz" \
         --output /tmp/maven.tar.gz \
     && echo "$MAVEN_SHA512  /tmp/maven.tar.gz" | sha512sum --check - \
-    && curl --fail --location --silent --show-error \
+    && curl --fail --location --silent --show-error --retry 5 --retry-all-errors --retry-delay 2 \
         "https://github.com/protocolbuffers/protobuf/releases/download/v$PROTOC_VERSION/protoc-$PROTOC_VERSION-linux-x86_64.zip" \
         --output /tmp/protoc.zip \
     && echo "$PROTOC_SHA256  /tmp/protoc.zip" | sha256sum --check - \
-    && curl --fail --location --silent --show-error \
+    && curl --fail --location --silent --show-error --retry 5 --retry-all-errors --retry-delay 2 \
         "https://get.helm.sh/helm-v$HELM_VERSION-linux-amd64.tar.gz" \
         --output /tmp/helm.tar.gz \
     && echo "$HELM_SHA256  /tmp/helm.tar.gz" | sha256sum --check - \
     && mkdir -p /opt/java/temurin-8u502-b07 /opt/maven/apache-maven-$MAVEN_VERSION \
         /opt/protobuf/protoc-$PROTOC_VERSION \
     && tar -xzf /tmp/temurin.tar.gz --strip-components=1 -C /opt/java/temurin-8u502-b07 \
+    && ln -s /usr/lib/jvm/java-17-openjdk-amd64 /opt/java/temurin-17 \
     && tar -xzf /tmp/maven.tar.gz --strip-components=1 -C /opt/maven/apache-maven-$MAVEN_VERSION \
     && unzip -q /tmp/protoc.zip -d /opt/protobuf/protoc-$PROTOC_VERSION \
     && tar -xzf /tmp/helm.tar.gz -C /tmp \
