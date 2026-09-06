@@ -13,6 +13,7 @@ from reposteward.cli import main
 from reposteward.config import load_config
 from reposteward.external_tasks import TaskConflict
 from reposteward.knowledge import ProjectKnowledge
+from reposteward.mcp_bridge import ScopedBridge
 from reposteward.policy import PolicyError
 
 
@@ -217,6 +218,15 @@ class KnowledgeTests(unittest.TestCase):
             self.run_id, full["knowledge"]["entries"][0]["evidence_id"], limit=25
         )
         self.assertEqual(evidence["returned"], 25)
+        bridge = ScopedBridge(self.config, self.repo)
+        self.assertEqual(
+            len(
+                bridge.call(
+                    "context", {"run_id": self.run_id, "scope_paths": ["source.txt"]}
+                )["knowledge"]["entries"]
+            ),
+            5,
+        )
 
     def test_cli_does_not_launch_pipeline_and_scope_limits_are_explicit(self) -> None:
         entry = self.propose()

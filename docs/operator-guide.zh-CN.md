@@ -992,6 +992,39 @@ reposteward verification evidence <run-id> log:<id>:0 --offset 0 --limit 8000
 `checkpoint:<run-id>:<revision>` 取回。日志摘要记录完整输出摘要及已保留日志摘要，
 截断与缺失分别报告；正文被修改或丢失时返回 unknown。查询不调用模型或 GitHub。
 
+## 本地 MCP 辅助服务
+
+MCP 是已有 Coding Agent 会话的辅助入口。安装可选依赖后，在本机客户端中注册
+STDIO 服务；它只服务启动时绑定的一个工作区：
+
+```bash
+uv sync --extra mcp
+reposteward mcp config /path/to/project --client codex
+reposteward mcp serve /path/to/project
+```
+
+`config` 为 Codex、Claude Code 或 Copilot VS Code 输出各自的配置片段，不写客户端
+文件。输出包含当前 Python 和项目的本机路径，应放入用户自己的本地设置。
+客户端与服务必须在能访问该工作区的同一台机器上；云端托管 Agent 不因此获得本机访问。
+缺少 MCP 扩展或客户端能力时，继续使用 `integration` 生成的文件和 CLI 指引。
+
+工具固定为 `project`、`context`、`evidence`、`checkpoint`、`verification`。
+任务必须属于所绑定工作区；同一仓库的其他 clone/worktree 也不自动授权。
+解绑后访问失效。工具不提供任意路径、shell、GitHub 写入或 Agent 启动入口。
+输入按 JSON Schema 严格核验，单帧最多 120000 字节，结果最多 300000 字节；超过
+结果限制时需减少预算或条数，超大输入帧关闭连接。最多同时运行四个工具调用。
+
+MCP 与 CLI 调用相同的任务和验证服务，检查点同样要求 revision、snapshot 和幂等键。
+取消验证会通知执行线程、清理具体容器并保存 cancelled；进程突然退出且无终态记录
+时，可按原证据 ID 查询 unknown。STDIO 的 stdout 只用于协议，诊断进入 stderr。
+
+实现锁定官方 Python SDK 2.1.1，测试分别覆盖 2025-11-25 初始化握手和
+2026-07-28 每请求版本声明。客户端实机结果在接续试点中单独记录，协议测试通过
+不代表任意版本客户端均已验证。
+参考 [SDK v2](https://py.sdk.modelcontextprotocol.io/get-started/installation/)、
+[协议版本](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning)
+和 [STDIO](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio)。
+
 ## 保存可以重验的项目经验
 
 经验先作为 `candidate` 保存，须指明适用路径、直接来源证据和可选条件。条件目前
@@ -1025,8 +1058,8 @@ reposteward task context <run-id> --scope-path src --format markdown
 历史关系。重复提案和相同审阅幂等。跨项目查询隔离，不自动把业务经验升级为通用
 偏好，不复制原生聊天或改写项目的 AGENTS/CLAUDE/skills 文件。
 
-任务仅在显式提供 `--scope-path` 时选择最多五条有效经验。
-预算不足先省略可取回的经验，并记录数量、来源与摘要；需求、
+任务仅在显式提供 `--scope-path` 时选择最多五条有效经验；MCP 的 `context` 对应
+参数为 `scope_paths`。预算不足先省略可取回的经验，并记录数量、来源与摘要；需求、
 开放项与决定继续保留。正文可通过 `verification evidence <run-id> knowledge:<id>`
 有界取回。此流程沿用 #82/PR #84 的证据回顾思路，规则文件的最终变更仍需目标项目审阅。
 

@@ -26,8 +26,6 @@ reposteward task context RUN_ID --budget 24000 --scope-path src/module.py
 
 ## 文件与 MCP 接入
 
-文件与 CLI 接续可独立使用。MCP 入口需要安装包含该扩展的 RepoSteward 版本；若当前版本未提供 `mcp` 命令，请先使用文件/CLI 方式。下方的 MCP 实机记录来自已验证的完整集成版本。
-
 `integration plan` 先生成可审阅 diff 和摘要，`apply` 必须使用该摘要。接入保留原有 AGENTS.md、CLAUDE.md 与 Copilot 指令；撤销只移除自己管理的片段。普通文件不会保存机器路径或认证信息。
 
 MCP 是可选依赖：在运行 RepoSteward 的 Python 环境安装 `reposteward[mcp]`。`mcp config PATH --client codex|claude-code|copilot-vscode` 输出本机配置预览，不自动写客户端配置。服务每次只绑定一个具体工作区，提供 project、context、evidence、checkpoint、verification 五类工具。MCP 服务启动后持有当时的用户配置；修改策略或验证 profile 后应重启服务。

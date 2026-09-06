@@ -188,6 +188,20 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--limit", type=int, default=5)
             command.add_argument("--all", action="store_true")
 
+    mcp = subparsers.add_parser(
+        "mcp", help="serve scoped local task assistance to existing clients"
+    )
+    mcp_commands = mcp.add_subparsers(dest="mcp_command", required=True)
+    mcp_serve = mcp_commands.add_parser("serve", help="run the local STDIO server")
+    mcp_serve.add_argument("path", type=Path)
+    mcp_config = mcp_commands.add_parser(
+        "config", help="preview local client configuration"
+    )
+    mcp_config.add_argument("path", type=Path)
+    mcp_config.add_argument(
+        "--client", choices=("codex", "claude-code", "copilot-vscode"), required=True
+    )
+
     task = subparsers.add_parser(
         "task", help="assist coding agents in linked local projects"
     )
@@ -841,6 +855,16 @@ def main(argv: list[str] | None = None) -> int:
                     include_inactive=args.all,
                 )
             _json(result)
+            return 0
+        if args.command == "mcp":
+            if args.mcp_command == "serve":
+                from .mcp_bridge import serve
+
+                serve(config, args.path)
+            else:
+                from .mcp_config import client_config
+
+                _json(client_config(config, args.path, client=args.client))
             return 0
         if args.command == "verification":
             from .external_verification import ExternalVerification
