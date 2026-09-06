@@ -350,6 +350,190 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "ImportApplyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "import_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Import Id",
+            "type": "string"
+          },
+          "preview_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Preview Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "import_id",
+          "preview_id",
+          "expected_digest"
+        ],
+        "title": "ImportApplyRequest",
+        "type": "object"
+      },
+      "ImportPlanRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "import_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Import Id",
+            "type": "string"
+          },
+          "inspection_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Inspection Id",
+            "type": "string"
+          },
+          "method": {
+            "enum": [
+              "link",
+              "clone",
+              "watch"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "purpose": {
+            "enum": [
+              "maintain",
+              "contribute",
+              "watch"
+            ],
+            "title": "Purpose",
+            "type": "string"
+          },
+          "target": {
+            "default": "",
+            "maxLength": 4096,
+            "title": "Target",
+            "type": "string"
+          }
+        },
+        "required": [
+          "import_id",
+          "inspection_id",
+          "method",
+          "purpose"
+        ],
+        "title": "ImportPlanRequest",
+        "type": "object"
+      },
+      "ImportPreview": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/Record"
+          }
+        },
+        "required": [
+          "id",
+          "digest",
+          "plan"
+        ],
+        "title": "ImportPreview",
+        "type": "object"
+      },
+      "ImportSource": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "github_url",
+              "local_path"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "value": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "value"
+        ],
+        "title": "ImportSource",
+        "type": "object"
+      },
+      "ImportView": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inspection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Record"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inspection_id": {
+            "title": "Inspection Id",
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/Operation"
+            },
+            "title": "Operations",
+            "type": "array"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Record"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "preview_id": {
+            "title": "Preview Id",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ImportSource"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "inspection",
+          "inspection_id",
+          "preview",
+          "preview_id",
+          "operations"
+        ],
+        "title": "ImportView",
+        "type": "object"
+      },
       "JsonValue": {},
       "Meta": {
         "properties": {
@@ -416,6 +600,11 @@
           },
           "id": {
             "title": "Id",
+            "type": "string"
+          },
+          "import_id": {
+            "default": "",
+            "title": "Import Id",
             "type": "string"
           },
           "last_error_code": {
@@ -621,6 +810,13 @@
           "$ref": "#/components/schemas/JsonValue"
         },
         "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
           "created_at": {
             "title": "Created At",
             "type": "string"
@@ -648,6 +844,11 @@
           },
           "policy": {
             "$ref": "#/components/schemas/Policy"
+          },
+          "purpose": {
+            "default": "unspecified",
+            "title": "Purpose",
+            "type": "string"
           },
           "repository": {
             "title": "Repository",
@@ -753,6 +954,14 @@
         "title": "ReadingStep",
         "type": "object"
       },
+      "Record": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {},
+        "title": "Record",
+        "type": "object"
+      },
       "Response_Code_": {
         "properties": {
           "data": {
@@ -783,6 +992,38 @@
           "meta"
         ],
         "title": "Response[GitHubView]",
+        "type": "object"
+      },
+      "Response_ImportPreview_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ImportPreview"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[ImportPreview]",
+        "type": "object"
+      },
+      "Response_ImportView_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ImportView"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[ImportView]",
         "type": "object"
       },
       "Response_OperationList_": {
@@ -1649,6 +1890,156 @@
         "summary": "Retry"
       }
     },
+    "/api/v1/commands/projects/apply": {
+      "post": {
+        "operationId": "applyProject",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Operation_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply"
+      }
+    },
+    "/api/v1/commands/projects/inspect": {
+      "post": {
+        "operationId": "inspectProject",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportSource"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Operation_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inspect"
+      }
+    },
+    "/api/v1/commands/projects/plan": {
+      "post": {
+        "operationId": "planProject",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportPlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_ImportPreview_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Plan"
+      }
+    },
     "/api/v1/github": {
       "get": {
         "operationId": "github",
@@ -1725,6 +2116,46 @@
           }
         },
         "summary": "Github"
+      }
+    },
+    "/api/v1/import": {
+      "get": {
+        "operationId": "projectImport",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Import Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_ImportView_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Show"
       }
     },
     "/api/v1/operation": {

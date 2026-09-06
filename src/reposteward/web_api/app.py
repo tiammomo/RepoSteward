@@ -27,9 +27,13 @@ from ..projects import ProjectError
 from ..workbench import Workbench
 from . import schemas as dto
 from .assets import load_assets
+from .imports import routes as import_routes
 from .operations import routes
 
 COMMAND_PATHS = {
+    "/api/v1/commands/projects/inspect",
+    "/api/v1/commands/projects/plan",
+    "/api/v1/commands/projects/apply",
     "/api/v1/commands/github/sync",
     "/api/v1/commands/operations/cancel",
     "/api/v1/commands/operations/retry",
@@ -59,7 +63,7 @@ LEGACY = {
     "/api/settings": ("settings", (), ()),
 }
 UI_ROUTE = re.compile(
-    r"/(?:projects(?:/[0-9a-f]{32}(?:/(?:workspaces/[0-9a-f]{32}|"
+    r"/(?:imports(?:/[0-9a-f]{32})?|projects(?:/[0-9a-f]{32}(?:/(?:workspaces/[0-9a-f]{32}|"
     r"github|tasks(?:/[0-9a-f]{32}(?:/review)?)?))?)?|operations(?:/[0-9a-f]{32})?|settings|tasks|review)?"
 )
 
@@ -273,6 +277,14 @@ def create_app(
             return error(exc.status, exc.code, str(exc))
         if isinstance(exc, TaskConflict):
             return error(409, "changed", "配置或工作区已变化，请核对后重新打开工作台。")
+        if isinstance(exc, (ProjectError, OSError)) and (
+            request.url.path.startswith("/api/v1/commands/projects/")
+            or request.url.path == "/api/v1/import"
+        ):
+            from ..project_import import import_problem
+
+            code, message = import_problem(exc)
+            return error(409, code, message)
         if isinstance(exc, ProjectError):
             return error(
                 409, "binding_or_policy", "项目绑定或策略不可用，请检查关联与配置。"
@@ -410,6 +422,7 @@ def create_app(
         return app.openapi()
 
     app.include_router(routes(service, manage_local=manage_local))
+    app.include_router(import_routes(service, manage_local=manage_local))
 
     @app.get("/{path:path}", include_in_schema=False)
     async def fallback(request: Request, path: str):
@@ -448,6 +461,7 @@ def create_app(
                     "/api/v1/github": ("project_id", "kind", "cursor", "number"),
                     "/api/v1/operations": ("project_id", "before"),
                     "/api/v1/operation": ("operation_id",),
+                    "/api/v1/import": ("import_id",),
                 }.get(path, ())
             )
             pairs = list(request.query_params.multi_items())

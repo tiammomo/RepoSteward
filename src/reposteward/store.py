@@ -27,11 +27,12 @@ from .local_queue import hex_id
 from .models import Candidate
 from .overview_ledger import OVERVIEW_MIGRATION
 from .protocol import validate_checkpoint, validate_context_pack
-from .workbench_ledger import WORKBENCH_MIGRATION
+from .workbench_ledger import IMPORT_MIGRATION, WORKBENCH_MIGRATION
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
+    24: IMPORT_MIGRATION,
     23: WORKBENCH_MIGRATION,
     22: OVERVIEW_MIGRATION,
     21: KNOWLEDGE_MIGRATION,

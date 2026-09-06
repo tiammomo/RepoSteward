@@ -294,6 +294,18 @@ export function GitHubPage() {
   );
 }
 
+function actionName(action: string) {
+  return (
+    (
+      {
+        "github.sync": "GitHub 同步",
+        "project.inspect": "识别项目",
+        "project.apply": "导入项目",
+      } as Record<string, string>
+    )[action] || action
+  );
+}
+
 function OperationDetail({ id }: { id: string }) {
   const query = useRead("operation", { operation_id: id });
   const session = useRead("session");
@@ -319,7 +331,7 @@ function OperationDetail({ id }: { id: string }) {
       {data && (
         <>
           <header className="page-heading">
-            <h1>GitHub 同步操作</h1>
+            <h1>{actionName(data.action)}</h1>
             <p>{data.repository}</p>
           </header>
           <div className="row">
@@ -327,9 +339,13 @@ function OperationDetail({ id }: { id: string }) {
             <span>
               尝试 {data.attempt_count} / {data.max_attempts}
             </span>
-            <Link to={`/projects/${data.project_id}/github`}>
-              查看 GitHub 观测
-            </Link>
+            {data.import_id ? (
+              <Link to={`/imports/${data.import_id}`}>查看导入与恢复</Link>
+            ) : (
+              <Link to={`/projects/${data.project_id}/github`}>
+                查看 GitHub 观测
+              </Link>
+            )}
           </div>
           <p>
             登记于 {when(data.created_at)} · 更新于 {when(data.updated_at)}
@@ -363,7 +379,7 @@ function OperationDetail({ id }: { id: string }) {
                 }
                 onClick={() => mutation.mutate("retry")}
               >
-                重试同步
+                重试操作
               </button>
             )}
           </div>
@@ -379,15 +395,22 @@ function OperationDetail({ id }: { id: string }) {
                   {when(stage.created_at)}
                   {Boolean(result.error_code) &&
                     ` · ${errorText(result.error_code)}`}
-                  {stage.stage === "summary" && (
-                    <span>
-                      {" "}
-                      · 成功 {str(result.sources_ok)} 项，失败{" "}
-                      {str(result.sources_failed)} 项，已知 PR 未覆盖{" "}
-                      {str(result.known_omitted)} 项，CI / 评审未覆盖{" "}
-                      {str(result.checks_omitted)} 项
-                    </span>
+                  {Boolean(result.message) && <p>{str(result.message)}</p>}
+                  {Boolean(result.project_id) && (
+                    <Link to={`/projects/${str(result.project_id)}`}>
+                      查看已登记项目
+                    </Link>
                   )}
+                  {stage.stage === "summary" &&
+                    data.action === "github.sync" && (
+                      <span>
+                        {" "}
+                        · 成功 {str(result.sources_ok)} 项，失败{" "}
+                        {str(result.sources_failed)} 项，已知 PR 未覆盖{" "}
+                        {str(result.known_omitted)} 项，CI / 评审未覆盖{" "}
+                        {str(result.checks_omitted)} 项
+                      </span>
+                    )}
                 </li>
               );
             })}
@@ -424,7 +447,7 @@ export function OperationsPage() {
     <>
       <header className="page-heading">
         <h1>本地操作</h1>
-        <p>显式发起的同步记录，刷新页面后可以继续查看。</p>
+        <p>显式发起的同步与项目导入记录，刷新页面后可以继续查看。</p>
       </header>
       <ReadState query={query} />
       <div className="github-items">
@@ -432,7 +455,7 @@ export function OperationsPage() {
           <article className="card" key={item.id}>
             <Badge value={item.state} />{" "}
             <Link to={`/operations/${item.id}`}>
-              {item.repository} · GitHub 同步
+              {item.repository || "新项目"} · {actionName(item.action)}
             </Link>
             <p>{when(item.created_at)}</p>
           </article>

@@ -17,6 +17,7 @@ export type ReadModels = {
   github: Schemas["GitHubView"];
   operations: Schemas["OperationList"];
   operation: Schemas["Operation"];
+  import: Schemas["ImportView"];
 };
 
 const storageKey = "reposteward-local-session";
@@ -105,16 +106,26 @@ export function useRead<K extends keyof ReadModels>(
     staleTime: name === "code" ? 0 : 15_000,
     refetchOnWindowFocus: false,
     refetchInterval:
-      name === "operation" || name === "operations" ? 2000 : false,
+      name === "operation" || name === "operations" || name === "import"
+        ? 2000
+        : false,
     retry: false,
   });
 }
 
 const commandKeys = new Map<string, string>();
-export async function command(
-  action: "github/sync" | "operations/cancel" | "operations/retry",
-  body: Schemas["SyncRequest"] | Schemas["ControlRequest"],
-): Promise<Schemas["Operation"]> {
+type Commands = {
+  "github/sync": [Schemas["SyncRequest"], Schemas["Operation"]];
+  "operations/cancel": [Schemas["ControlRequest"], Schemas["Operation"]];
+  "operations/retry": [Schemas["ControlRequest"], Schemas["Operation"]];
+  "projects/inspect": [Schemas["ImportSource"], Schemas["Operation"]];
+  "projects/plan": [Schemas["ImportPlanRequest"], Schemas["ImportPreview"]];
+  "projects/apply": [Schemas["ImportApplyRequest"], Schemas["Operation"]];
+};
+export async function command<K extends keyof Commands>(
+  action: K,
+  body: Commands[K][0],
+): Promise<Commands[K][1]> {
   const identity = "reposteward-command:" + action + ":" + JSON.stringify(body);
   let key = commandKeys.get(identity);
   try {

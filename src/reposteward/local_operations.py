@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import stat
 import uuid
 from contextlib import closing
 from threading import Event, Thread
@@ -14,6 +17,7 @@ from urllib.parse import urlsplit
 from .github import GitHubClient, GitHubReadError
 from .github_sync import GitHubSync, account_key, observations
 from .local_queue import digest, enqueue, hex_id, plan_for
+from .project_import import ProjectImports, import_problem
 from .store import SCHEMA_VERSION, Store, StoreError, utc_now
 from .workbench import Workbench
 
@@ -48,8 +52,35 @@ class LocalOperations:
         self.worker = "web-" + uuid.uuid4().hex
         self.stopping, self.wake = Event(), Event()
         self.thread: Thread | None = None
+        self.imports = ProjectImports(self)
 
     def store(self, *, write: bool = False) -> Store | None:
+        self.workbench.check_configuration()
+        if not write:
+            return self._open_store()
+        # Serialize first-use initialization across tabs/processes. A second
+        # explicit command must not mistake the first writer's schema 0 for an
+        # old daily database. GET never creates this lock or initializes state.
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(
+            self.path.parent / ".local-state-init",
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+            0o600,
+        )
+        with os.fdopen(fd, "r+") as lock:
+            info = os.fstat(lock.fileno())
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or info.st_mode & 0o022
+            ):
+                raise OperationError(
+                    "unsafe_state_lock", "状态目录锁不可用，请核对目录权限。"
+                )
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return self._open_store(write=True)
+
+    def _open_store(self, *, write: bool = False) -> Store | None:
         self.workbench.check_configuration()
         if self.path.exists():
             with closing(
@@ -101,7 +132,10 @@ class LocalOperations:
         task = rows[0]
         with store._connection() as db:
             plan_for(db, task)
-        self.project(task["scope_key"])
+        if task["scope_kind"] == "project":
+            self.project(task["scope_key"])
+        else:
+            self.imports.draft(task["scope_key"])
         return task
 
     def operation(self, task_id: str, *, history: bool = True) -> dict:
@@ -132,6 +166,25 @@ class LocalOperations:
                     "result": body,
                 }
             )
+        if history and task["scope_kind"] == "import":
+            with store._connection() as db:
+                import_steps = db.execute(
+                    "SELECT * FROM project_import_steps WHERE plan_id=? ORDER BY created_at LIMIT 30",
+                    (task["plan_id"],),
+                ).fetchall()
+            for row in import_steps:
+                body = json.loads(row["body"])
+                if digest(body) != row["body_digest"]:
+                    raise ValueError("import result changed")
+                stages.append(
+                    {
+                        "stage": row["stage"],
+                        "generation": 0,
+                        "created_at": row["created_at"],
+                        "result": {"status": "completed", **body},
+                    }
+                )
+            stages.sort(key=lambda stage: stage["created_at"])
         return {
             key: task[key]
             for key in (
@@ -149,7 +202,8 @@ class LocalOperations:
                 "manual_required",
             )
         } | {
-            "project_id": task["scope_key"],
+            "project_id": task["scope_key"] if task["scope_kind"] == "project" else "",
+            "import_id": task["scope_key"] if task["scope_kind"] == "import" else "",
             "revision": revision(task),
             "can_cancel": task["state"] == "pending",
             "can_retry": task["state"] in {"failed", "cancelled"},
@@ -194,7 +248,7 @@ class LocalOperations:
             scope = (
                 self.account,
                 action + ":" + task_id,
-                "project",
+                task["scope_kind"],
                 task["scope_key"],
                 hashlib.sha256(key.encode()).hexdigest(),
             )
@@ -388,7 +442,7 @@ class LocalOperations:
         with store._connection() as db:
             ready = db.execute(
                 """SELECT 1 FROM queue_tasks WHERE operation_family='local' AND account_digest=?
-                AND action='github.sync' AND manual_required=0 AND ((state IN ('pending','failed') AND available_at<=?)
+                AND action IN ('github.sync','project.inspect','project.apply') AND manual_required=0 AND ((state IN ('pending','failed') AND available_at<=?)
                 OR (state='running' AND lease_expires_at<=?)) LIMIT 1""",
                 (self.account, utc_now(), utc_now()),
             ).fetchone()
@@ -418,13 +472,6 @@ class LocalOperations:
             task = claimed[0]
             with store._connection() as db:
                 plan = plan_for(db, task)
-            project = self.project(task["scope_key"])
-            if (
-                plan["payload"]
-                != {"project_identity": project["identity"], "sync_version": 1}
-                or project["repository"] != plan["repository"]
-            ):
-                raise OperationError("plan_changed", "项目身份与同步计划不一致。")
 
             def guard():
                 nonlocal account_lease
@@ -436,14 +483,28 @@ class LocalOperations:
                     task["lease"], lease_seconds=120
                 )
 
-            result = GitHubSync(
-                store,
-                self.client_factory(self.config.github),
-                account=self.account,
-                project=project,
-                operation=task,
-                guard=guard,
-            ).execute()
+            if task["action"] == "github.sync":
+                project = self.project(task["scope_key"])
+                if (
+                    plan["payload"]
+                    != {"project_identity": project["identity"], "sync_version": 1}
+                    or project["repository"] != plan["repository"]
+                ):
+                    raise OperationError("plan_changed", "项目身份与同步计划不一致。")
+                result = GitHubSync(
+                    store,
+                    self.client_factory(self.config.github),
+                    account=self.account,
+                    project=project,
+                    operation=task,
+                    guard=guard,
+                ).execute()
+            elif task["action"] in {"project.inspect", "project.apply"}:
+                result = self.imports.execute(
+                    store, task, plan, self.client_factory(self.config.github), guard
+                )
+            else:
+                raise OperationError("unsupported_action", "不支持此操作。")
             with store.atomic(), store._connection() as db:
                 guard()
                 from .local_queue import encoded
@@ -481,11 +542,35 @@ class LocalOperations:
                 code = (
                     exc.code
                     if isinstance(exc, (GitHubReadError, OperationError))
+                    else "project_import_failed"
+                    if task["scope_kind"] == "import"
                     else "local_sync_failed"
                 )
                 try:
                     with store.atomic(), store._connection() as db:
                         store.validate_run_lease(account_lease)
+                        if task["scope_kind"] == "import" and not isinstance(
+                            exc, GitHubReadError
+                        ):
+                            code, message = import_problem(exc)
+                            from .local_queue import encoded
+
+                            detail = {
+                                "status": "failed",
+                                "error_code": code,
+                                "message": message,
+                            }
+                            db.execute(
+                                "INSERT OR IGNORE INTO local_operation_results VALUES (?,?,?,?,?,?)",
+                                (
+                                    task["id"],
+                                    task["lease_generation"],
+                                    "failure",
+                                    encoded(detail),
+                                    digest(detail),
+                                    utc_now(),
+                                ),
+                            )
                         store.fail_queue_task(
                             task["lease"],
                             error_code=code,

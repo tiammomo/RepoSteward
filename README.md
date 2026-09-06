@@ -285,3 +285,5 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a change. Report vulnerab
 through [SECURITY.md](SECURITY.md), not a public Issue.
 
 For using RepoSteward with existing coding agents, see the [assistance guide (中文)](docs/coding-agent-assistance.zh-CN.md) and [actual client pilot](docs/handoff-pilot-2026-09-05.zh-CN.md).
+
+The local workbench supports [project import](docs/project-import.md): identify a GitHub URL or local path, review a plan, then link an existing workspace, clone a new directory, or follow GitHub without a local checkout.

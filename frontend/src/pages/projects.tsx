@@ -53,6 +53,9 @@ export function ProjectsPage() {
       <header className="page-heading">
         <h1>项目</h1>
         <p>已登记的仓库与本地工作区。</p>
+        <Link className="button" to="/imports">
+          导入项目
+        </Link>
       </header>
       <ReadState query={query} />
       <input
@@ -86,7 +89,27 @@ export function ProjectsPage() {
                     <small>{p.repository}</small>
                   </td>
                   <td>
-                    <Badge value={p.policy.mode} />
+                    <Badge
+                      value={
+                        (
+                          {
+                            maintain: "长期维护",
+                            contribute: "参与贡献",
+                            watch: "关注学习",
+                          } as Record<string, string>
+                        )[p.purpose] || "未指定"
+                      }
+                    />
+                    <small>
+                      执行策略：
+                      {(
+                        {
+                          unconfigured: "未配置",
+                          maintainer: "维护者",
+                          contributor: "贡献者",
+                        } as Record<string, string>
+                      )[p.policy.mode] || p.policy.mode}
+                    </small>
                   </td>
                   <td>
                     {p.workspace_count} 个
@@ -106,7 +129,7 @@ export function ProjectsPage() {
       </div>
       {query.data && !query.data.projects.length && (
         <Empty title="从一个项目开始">
-          目前可通过终端关联已有目录。
+          <Link to="/imports">贴 GitHub 链接或输入本地目录开始导入。</Link>
           <Command value="reposteward project link /absolute/path/to/project" />
         </Empty>
       )}
@@ -208,7 +231,8 @@ export function ProjectPage() {
       </div>
       {project && !binding && (
         <Empty title="尚未关联工作区">
-          使用 project link 关联本地目录后，即可阅读代码导览。
+          <Link to="/imports">关联已有目录或克隆仓库</Link>
+          后，即可阅读代码导览。
         </Empty>
       )}
       {binding && (

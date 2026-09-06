@@ -72,6 +72,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/commands/projects/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply */
+        post: operations["applyProject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/commands/projects/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Inspect */
+        post: operations["inspectProject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/commands/projects/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Plan */
+        post: operations["planProject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/github": {
         parameters: {
             query?: never;
@@ -81,6 +132,23 @@ export interface paths {
         };
         /** Github */
         get: operations["github"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Show */
+        get: operations["projectImport"];
         put?: never;
         post?: never;
         delete?: never;
@@ -416,6 +484,73 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** ImportApplyRequest */
+        ImportApplyRequest: {
+            /** Expected Digest */
+            expected_digest: string;
+            /** Import Id */
+            import_id: string;
+            /** Preview Id */
+            preview_id: string;
+        };
+        /** ImportPlanRequest */
+        ImportPlanRequest: {
+            /** Import Id */
+            import_id: string;
+            /** Inspection Id */
+            inspection_id: string;
+            /**
+             * Method
+             * @enum {string}
+             */
+            method: "link" | "clone" | "watch";
+            /**
+             * Purpose
+             * @enum {string}
+             */
+            purpose: "maintain" | "contribute" | "watch";
+            /**
+             * Target
+             * @default
+             */
+            target: string;
+        };
+        /** ImportPreview */
+        ImportPreview: {
+            /** Digest */
+            digest: string;
+            /** Id */
+            id: string;
+            plan: components["schemas"]["Record"];
+        } & {
+            [key: string]: components["schemas"]["JsonValue"];
+        };
+        /** ImportSource */
+        ImportSource: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "github_url" | "local_path";
+            /** Value */
+            value: string;
+        };
+        /** ImportView */
+        ImportView: {
+            /** Id */
+            id: string;
+            inspection: components["schemas"]["Record"] | null;
+            /** Inspection Id */
+            inspection_id: string;
+            /** Operations */
+            operations: components["schemas"]["Operation"][];
+            preview: components["schemas"]["Record"] | null;
+            /** Preview Id */
+            preview_id: string;
+            source: components["schemas"]["ImportSource"];
+        } & {
+            [key: string]: components["schemas"]["JsonValue"];
+        };
         JsonValue: unknown;
         /** Meta */
         Meta: {
@@ -450,6 +585,11 @@ export interface components {
             created_at: string;
             /** Id */
             id: string;
+            /**
+             * Import Id
+             * @default
+             */
+            import_id: string;
             /** Last Error Code */
             last_error_code: string;
             /** Max Attempts */
@@ -525,6 +665,8 @@ export interface components {
         };
         /** Project */
         Project: {
+            /** Aliases */
+            aliases?: string[];
             /** Created At */
             created_at: string;
             /** Host */
@@ -541,6 +683,11 @@ export interface components {
             /** Name */
             name: string;
             policy: components["schemas"]["Policy"];
+            /**
+             * Purpose
+             * @default unspecified
+             */
+            purpose: string;
             /** Repository */
             repository: string;
             /**
@@ -592,6 +739,10 @@ export interface components {
         } & {
             [key: string]: components["schemas"]["JsonValue"];
         };
+        /** Record */
+        Record: {
+            [key: string]: components["schemas"]["JsonValue"];
+        };
         /** Response[Code] */
         Response_Code_: {
             data: components["schemas"]["Code"];
@@ -600,6 +751,16 @@ export interface components {
         /** Response[GitHubView] */
         Response_GitHubView_: {
             data: components["schemas"]["GitHubView"];
+            meta: components["schemas"]["Meta"];
+        };
+        /** Response[ImportPreview] */
+        Response_ImportPreview_: {
+            data: components["schemas"]["ImportPreview"];
+            meta: components["schemas"]["Meta"];
+        };
+        /** Response[ImportView] */
+        Response_ImportView_: {
+            data: components["schemas"]["ImportView"];
             meta: components["schemas"]["Meta"];
         };
         /** Response[OperationList] */
@@ -999,6 +1160,111 @@ export interface operations {
             };
         };
     };
+    applyProject: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_Operation_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    inspectProject: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportSource"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_Operation_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    planProject: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportPlanRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_ImportPreview_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     github: {
         parameters: {
             query: {
@@ -1020,6 +1286,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Response_GitHubView_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    projectImport: {
+        parameters: {
+            query: {
+                import_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_ImportView_"];
                 };
             };
             /** @description Validation Error */

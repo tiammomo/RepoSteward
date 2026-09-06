@@ -19,6 +19,7 @@ import { OverviewPage } from "./pages/overview";
 import { ProjectPage, ProjectsPage } from "./pages/projects";
 import { TasksPage } from "./pages/tasks";
 import { GitHubPage, OperationsPage } from "./pages/github";
+import { ImportPage } from "./pages/imports";
 import { SettingsPage } from "./pages/settings";
 import "./style.css";
 
@@ -120,6 +121,8 @@ function App({ connected }: { connected: boolean }) {
               <Routes>
                 <Route path="/" element={<OverviewPage />} />
                 <Route path="/projects" element={<ProjectsPage />} />
+                <Route path="/imports" element={<ImportPage />} />
+                <Route path="/imports/:importId" element={<ImportPage />} />
                 <Route path="/projects/:projectId" element={<ProjectPage />} />
                 <Route
                   path="/projects/:projectId/workspaces/:workspaceId"
