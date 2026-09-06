@@ -61,6 +61,10 @@ PR 为目标。
 
 ## 安装
 
+日常从源码目录之外使用时，参见[独立安装与离线诊断指南](docs/local-installation.zh-CN.md)。
+`reposteward version` 显示安装信息；`reposteward doctor --local` 可检查配置来源与数据库
+兼容性，无需认证，也不会触发迁移。
+
 RepoSteward 要求 Python 3.12+、uv、Git、Docker、GitHub CLI，以及已登录的 Codex CLI。
 
 ```bash

@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import __version__
 from .batch import render_batch_plan_text
 from .benchmark import (
     BENCHMARK_CATEGORIES,
@@ -45,7 +46,11 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="project TOML config (default: discover and layer over user config)",
     )
+    parser.add_argument(
+        "--version", action="version", version=f"reposteward {__version__}"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("version", help="show offline installation metadata as JSON")
 
     initialize = subparsers.add_parser("init", help="create per-user configuration")
     initialize.add_argument("--path", type=Path, default=None)
@@ -316,7 +321,19 @@ def _parser() -> argparse.ArgumentParser:
         "--duplicates-reviewed", action="store_true", required=True
     )
 
-    subparsers.add_parser("doctor", help="check local tools and authentication")
+    doctor = subparsers.add_parser(
+        "doctor", help="check local tools and authentication"
+    )
+    doctor.add_argument(
+        "--local",
+        action="store_true",
+        help="inspect installation and state without authentication or writes",
+    )
+    doctor.add_argument(
+        "--expect-state-dir",
+        type=Path,
+        help="require this effective state directory in local mode",
+    )
     image = subparsers.add_parser("image", help="manage the isolated verifier image")
     image.add_argument("action", choices=("build",))
 
@@ -703,6 +720,29 @@ def _runner_dockerfile() -> Path:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command == "version":
+            from .runtime import installation_info
+
+            _json(installation_info())
+            return 0
+        if args.command == "doctor" and args.local:
+            from .runtime import local_diagnostics
+
+            try:
+                local_config = load_config(args.config, include_user=True)
+            except ConfigError:
+                local_config = None
+            report, ok = local_diagnostics(
+                local_config, expected_state_dir=args.expect_state_dir
+            )
+            if local_config is None and args.config:
+                report["configuration"]["selected_path"] = str(
+                    Path(args.config).expanduser().resolve()
+                )
+            _json(report)
+            return 0 if ok else 1
+        if args.command == "doctor" and args.expect_state_dir:
+            raise ConfigError("--expect-state-dir requires doctor --local")
         if args.command == "init":
             _json(
                 initialize_user_config(
