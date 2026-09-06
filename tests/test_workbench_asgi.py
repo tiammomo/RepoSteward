@@ -3,17 +3,22 @@ from __future__ import annotations
 import json
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import test_workbench
 from fastapi.testclient import TestClient
 
+from reposteward.config import GitHubConfig
 from reposteward.web_api.app import LocalSession, create_app
 
 
 class WorkbenchASGITests(unittest.TestCase):
     def setUp(self):
         self.service = Mock()
+        self.service.config = SimpleNamespace(
+            github=GitHubConfig(login="owner"), state_dir=Path("/uncreated-test-state")
+        )
         self.service.projects.return_value = {
             "schema_version": 1,
             "projects": [],

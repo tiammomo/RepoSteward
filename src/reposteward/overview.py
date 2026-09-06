@@ -13,6 +13,7 @@ from .config import AppConfig
 from .external_tasks import ExternalTasks
 from .external_verification import ExternalVerification
 from .github import GitHubClient
+from .github_sync import account_key, observations
 from .inbox import build_maintainer_inbox
 from .portfolio_fetch import portfolio_from_pulls
 from .projects import ProjectRegistry, canonical_digest
@@ -55,13 +56,7 @@ class ProjectOverview:
         host = "github.com" if api_host == "api.github.com" else api_host
         enabled, excluded = [], 0
         for project in registry["projects"]:
-            policy = self.config.repositories.get(project["repository"].casefold())
-            if (
-                policy is None
-                or not policy.enabled
-                or not project["workspace_count"]
-                or project["host"] != host
-            ):
+            if project["host"] != host:
                 excluded += 1
                 continue
             enabled.append(project)
@@ -80,6 +75,9 @@ class ProjectOverview:
         store = self.tasks._store(write=True)
         github = self.github
         for project in selected["projects"]:
+            policy = self.config.repositories.get(project["repository"].casefold())
+            if not policy or not policy.enabled:
+                continue
             attempted = utc_now()
             try:
                 github = github or GitHubClient(self.config.github)
@@ -270,6 +268,91 @@ class ProjectOverview:
             limit=500,
         )
         items = list(native["items"])
+        observed = observations(store, account_key(self.config), project["id"])
+        remote = {}
+        cached_open = {
+            int(row["number"])
+            for row in (portfolio or {}).get("snapshot", {}).get("pull_requests", [])
+        }
+        for source in sorted(
+            observed.values(), key=lambda value: value["fetched_at"] or ""
+        ):
+            body = source["body"]
+            if not body:
+                continue
+            newer = (source["fetched_at"] or "") >= cache.get("fetched_at", "")
+            if source["source"] == "pulls" and newer:
+                for pull in body["items"]:
+                    remote[pull["number"]] = {
+                        **pull,
+                        "observed_at": source["fetched_at"],
+                    }
+            elif source["source"].startswith("pull:") and (
+                newer
+                or (
+                    body["state"] in {"closed", "merged"}
+                    and body["number"] not in cached_open
+                )
+            ):
+                remote[body["number"]] = {**body, "observed_at": source["fetched_at"]}
+        replaceable = {
+            "refresh_required",
+            "merge_check_required",
+            "untracked_pull_request",
+            "required_ci_failed",
+            "review_feedback_required",
+        }
+        items = [
+            item
+            for item in items
+            if not (
+                item["pull_number"] in remote and item["reason_code"] in replaceable
+            )
+        ]
+        for number, pull in remote.items():
+            if pull["state"] != "open":
+                continue
+            check_source = observed.get(f"checks:{number}", {})
+            checks = check_source.get("body") or {}
+            current = checks.get("head_sha") == pull["head_sha"]
+            failed = current and any(
+                row["conclusion"] in {"failure", "timed_out", "action_required"}
+                for row in checks.get("checks", [])
+            )
+            latest_reviews = {
+                row["author"]: row
+                for row in sorted(
+                    checks.get("reviews", []), key=lambda row: row["submitted_at"]
+                )
+                if row["state"] != "COMMENTED"
+            }
+            requested = current and any(
+                row["state"] == "CHANGES_REQUESTED"
+                and row["commit_id"] == pull["head_sha"]
+                for row in latest_reviews.values()
+            )
+            code, priority, summary = (
+                ("ci_failed", 100, "CI 存在失败检查")
+                if failed
+                else ("review_requested", 90, "当前提交有修改建议，需核对最新评审")
+                if requested
+                else ("pull_in_progress", 40, "PR 仍开放，查看 CI 和评审观测")
+            )
+            items.append(
+                {
+                    "id": f"github:{project['id']}:{number}",
+                    "repository": project["repository"],
+                    "run_id": "",
+                    "issue_number": 0,
+                    "pull_number": number,
+                    "priority": priority,
+                    "reason_code": code,
+                    "summary": f"PR #{number} {summary}",
+                    "category": "in_progress",
+                    "source_updated_at": pull["observed_at"],
+                    "next_command": "",
+                }
+            )
         for item in items:
             if item["run_id"]:
                 item["trace_command"] = (
@@ -286,6 +369,10 @@ class ProjectOverview:
                 (project["repository"],),
             ).fetchall()
         for row in pending[:500]:
+            terminal = remote.get(row["pull_number"], {}).get("state") in {
+                "merged",
+                "closed",
+            }
             items.append(
                 {
                     "id": f"feedback:{project['id']}:{row['pull_number']}",
@@ -293,9 +380,15 @@ class ProjectOverview:
                     "run_id": "",
                     "issue_number": 0,
                     "pull_number": row["pull_number"],
-                    "priority": 105 if row["missing"] else 90,
+                    "priority": 105 if row["missing"] else 25 if terminal else 90,
+                    "category": "post_completion" if terminal else "attention",
+                    "remote_state": remote.get(row["pull_number"], {}).get(
+                        "state", "unknown"
+                    ),
                     "reason_code": "feedback_evidence_missing"
                     if row["missing"]
+                    else "post_completion_feedback"
+                    if terminal
                     else "review_feedback_required",
                     "summary": f"PR #{row['pull_number']} 仍有 {row['count']} 条本地未处理反馈",
                     "pending_feedback": row["count"],
@@ -330,6 +423,10 @@ class ProjectOverview:
         )
         for item in ordered:
             item["source_age_seconds"] = _age(item["source_updated_at"], now)
+            item.setdefault(
+                "category",
+                "unknown" if "unknown" in item["reason_code"] else "attention",
+            )
         incomplete = (
             native["omitted_count"]
             or len(runs) == 500
@@ -337,7 +434,12 @@ class ProjectOverview:
             or len(pending) > 500
             or external_omitted
         )
+        latest = max((row["last_success"] for row in observed.values()), default="")
+        errors = [row["error_code"] for row in observed.values() if row["error_code"]]
         return {
+            "terminal_observed": sum(
+                pull["state"] in {"merged", "closed"} for pull in remote.values()
+            ),
             "project_id": project["id"],
             "repository": project["repository"],
             "items": ordered[:limit],
@@ -347,18 +449,24 @@ class ProjectOverview:
             "scan_incomplete": bool(incomplete),
             "duplicates_collapsed": collapsed,
             "complete": native["complete"]
+            and not errors
             and not incomplete
             and all(item.get("complete", True) for item in ordered),
             "sources": {
                 "kind": "local_cache",
-                "fetched_at": cache.get("fetched_at", ""),
-                "attempted_at": cache.get("attempted_at", ""),
-                "source_age_seconds": _age(cache.get("fetched_at", ""), now),
-                "error": cache.get("error", ""),
+                "fetched_at": latest or cache.get("fetched_at", ""),
+                "attempted_at": max(
+                    (row["last_attempt"] for row in observed.values()),
+                    default=cache.get("attempted_at", ""),
+                ),
+                "source_age_seconds": _age(latest or cache.get("fetched_at", ""), now),
+                "error": ", ".join(sorted(set(errors)))
+                if observed
+                else cache.get("error", ""),
                 "status": "refresh_failed"
-                if cache.get("error")
+                if errors or (not observed and cache.get("error"))
                 else "cached"
-                if portfolio is not None
+                if observed or portfolio is not None
                 else "not_refreshed",
             },
         }

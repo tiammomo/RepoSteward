@@ -14,19 +14,26 @@ export type ReadModels = {
   review: Schemas["Review"];
   settings: Schemas["Settings"];
   session: Schemas["Session"];
+  github: Schemas["GitHubView"];
+  operations: Schemas["OperationList"];
+  operation: Schemas["Operation"];
 };
 
 const storageKey = "reposteward-local-session";
 let token = "";
 
 export function legacyRoute(hash: string): string | undefined {
-  const match = /^(today|projects|tasks|review|settings)(?:\/([0-9a-f]{32})(?:\/([0-9a-f]{32}))?)?$/.exec(hash.slice(1));
+  const match =
+    /^(today|projects|tasks|review|settings)(?:\/([0-9a-f]{32})(?:\/([0-9a-f]{32}))?)?$/.exec(
+      hash.slice(1),
+    );
   if (!match) return;
   const [, view, project, item] = match;
   if (view === "today") return "/";
   if (view === "settings") return "/settings";
   if (!project) return view === "projects" ? "/projects" : "/tasks";
-  if (view === "projects") return `/projects/${project}${item ? `/workspaces/${item}` : ""}`;
+  if (view === "projects")
+    return `/projects/${project}${item ? `/workspaces/${item}` : ""}`;
   return `/projects/${project}/tasks${item ? `/${item}${view === "review" ? "/review" : ""}` : ""}`;
 }
 
@@ -97,6 +104,54 @@ export function useRead<K extends keyof ReadModels>(
     enabled,
     staleTime: name === "code" ? 0 : 15_000,
     refetchOnWindowFocus: false,
+    refetchInterval:
+      name === "operation" || name === "operations" ? 2000 : false,
     retry: false,
   });
+}
+
+const commandKeys = new Map<string, string>();
+export async function command(
+  action: "github/sync" | "operations/cancel" | "operations/retry",
+  body: Schemas["SyncRequest"] | Schemas["ControlRequest"],
+): Promise<Schemas["Operation"]> {
+  const identity = "reposteward-command:" + action + ":" + JSON.stringify(body);
+  let key = commandKeys.get(identity);
+  try {
+    key = key || sessionStorage.getItem(identity) || undefined;
+  } catch {
+    /* memory fallback */
+  }
+  key = key || crypto.randomUUID();
+  commandKeys.set(identity, key);
+  try {
+    sessionStorage.setItem(identity, key);
+  } catch {
+    /* memory fallback */
+  }
+  const response = await fetch(`/api/v1/commands/${action}`, {
+    method: "POST",
+    credentials: "omit",
+    cache: "no-store",
+    headers: {
+      Authorization: "Bearer " + token,
+      "Content-Type": "application/json",
+      "Idempotency-Key": key,
+    },
+    body: JSON.stringify(body),
+  });
+  const value = await response.json();
+  if (!response.ok)
+    throw new ApiError(
+      response.status,
+      value.error?.code || "unavailable",
+      value.error?.message || "操作请求失败；重试会复用请求编号。",
+    );
+  commandKeys.delete(identity);
+  try {
+    sessionStorage.removeItem(identity);
+  } catch {
+    /* memory fallback */
+  }
+  return value.data;
 }

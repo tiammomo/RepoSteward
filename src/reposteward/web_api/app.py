@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import re
@@ -9,6 +10,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from threading import BoundedSemaphore
@@ -20,11 +22,18 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from ..external_tasks import TaskConflict
+from ..local_operations import LocalOperations, OperationError
 from ..projects import ProjectError
 from ..workbench import Workbench
 from . import schemas as dto
 from .assets import load_assets
+from .operations import routes
 
+COMMAND_PATHS = {
+    "/api/v1/commands/github/sync",
+    "/api/v1/commands/operations/cancel",
+    "/api/v1/commands/operations/retry",
+}
 MAX_RESPONSE_BYTES = 400_000
 SESSION_SECONDS = 12 * 60 * 60
 ID = Annotated[str, Query(pattern=r"^[0-9a-f]{32}$")]
@@ -51,7 +60,7 @@ LEGACY = {
 }
 UI_ROUTE = re.compile(
     r"/(?:projects(?:/[0-9a-f]{32}(?:/(?:workspaces/[0-9a-f]{32}|"
-    r"tasks(?:/[0-9a-f]{32}(?:/review)?)?))?)?|settings|tasks|review)?"
+    r"github|tasks(?:/[0-9a-f]{32}(?:/review)?)?))?)?|operations(?:/[0-9a-f]{32})?|settings|tasks|review)?"
 )
 
 
@@ -77,8 +86,9 @@ def error(status: int, code: str, message: str, request_id: str = "") -> JSONRes
 
 
 class Boundary:
-    def __init__(self, app, *, session: LocalSession):
+    def __init__(self, app, *, session: LocalSession, manage_local: bool = False):
         self.app, self.session = app, session
+        self.manage_local = manage_local
         self.slots = BoundedSemaphore(4)
 
     async def __call__(self, scope, receive, send):
@@ -112,13 +122,14 @@ class Boundary:
             or raw.startswith(b"//")
         ):
             return await reject(400, "invalid_request", "请求超出读取边界。")
-        if scope["method"] != "GET":
+        command = scope["method"] == "POST" and scope["path"] in COMMAND_PATHS
+        if scope["method"] != "GET" and not (command and self.manage_local):
             return await reject(
                 405, "read_only", "此版本提供读取，请使用已有 CLI 执行操作。"
             )
-        if values(b"transfer-encoding") or values(b"content-length") not in (
-            [],
-            [b"0"],
+        if not command and (
+            values(b"transfer-encoding")
+            or values(b"content-length") not in ([], [b"0"])
         ):
             return await reject(400, "invalid_request", "读取请求不能包含请求体。")
         if scope["path"].startswith("/api/"):
@@ -133,6 +144,18 @@ class Boundary:
                 return await reject(
                     401, "session", "请使用终端打印的本地会话链接重新连接。"
                 )
+        if command:
+            if values(b"origin") != [self.session.origin.encode()]:
+                return await reject(403, "origin", "操作必须来自当前本地工作台。")
+            content_type = values(b"content-type")
+            if (
+                len(content_type) != 1
+                or content_type[0].split(b";")[0].strip().lower() != b"application/json"
+            ):
+                return await reject(415, "content_type", "操作请求需要 JSON。")
+            keys = values(b"idempotency-key")
+            if len(keys) != 1 or not re.fullmatch(rb"[A-Za-z0-9._:-]{1,128}", keys[0]):
+                return await reject(400, "idempotency_key", "操作缺少有效的请求编号。")
         if not self.slots.acquire(blocking=False):
             return await reject(429, "busy", "本地读取繁忙，请稍后重试。")
         start = None
@@ -176,18 +199,67 @@ class Boundary:
                         await send({"type": "http.response.body", "body": bytes(body)})
 
         try:
+            if command:
+                incoming = bytearray()
+                try:
+                    async with asyncio.timeout(5):
+                        while True:
+                            message = await receive()
+                            if message["type"] == "http.disconnect":
+                                return
+                            incoming.extend(message.get("body", b""))
+                            if len(incoming) > 64_000:
+                                return await reject(
+                                    413, "request_limit", "操作请求超出大小限制。"
+                                )
+                            if not message.get("more_body", False):
+                                break
+                except TimeoutError:
+                    return await reject(408, "request_timeout", "操作请求未及时完成。")
+                original_receive = receive
+                delivered = False
+
+                async def receive_body():
+                    nonlocal delivered
+                    if delivered:
+                        return await original_receive()
+                    delivered = True
+                    return {
+                        "type": "http.request",
+                        "body": bytes(incoming),
+                        "more_body": False,
+                    }
+
+                receive = receive_body
             await self.app(scope, receive, bounded_send)
         finally:
             self.slots.release()
 
 
 def create_app(
-    workbench: Workbench | None = None, *, session: LocalSession | None = None
+    workbench: Workbench | None = None,
+    *,
+    session: LocalSession | None = None,
+    manage_local: bool = False,
+    operations: LocalOperations | None = None,
 ) -> FastAPI:
     """Construct routes without authentication, database initialization or network."""
     session = session or LocalSession("127.0.0.1:0")
+    service = operations or (LocalOperations(workbench) if workbench else None)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        if manage_local and service:
+            service.start()
+        try:
+            yield
+        finally:
+            if manage_local and service:
+                await run_in_threadpool(service.stop)
+
     app = FastAPI(
         title="RepoSteward local workbench",
+        lifespan=lifespan,
         version="1",
         docs_url=None,
         redoc_url=None,
@@ -197,6 +269,8 @@ def create_app(
     app.state.session = session
 
     async def failed(request: Request, exc: Exception):
+        if isinstance(exc, OperationError):
+            return error(exc.status, exc.code, str(exc))
         if isinstance(exc, TaskConflict):
             return error(409, "changed", "配置或工作区已变化，请核对后重新打开工作台。")
         if isinstance(exc, ProjectError):
@@ -212,6 +286,7 @@ def create_app(
         return error(503, "unavailable", "本地数据暂不可读，请检查设置诊断。")
 
     for cls in (
+        OperationError,
         TaskConflict,
         ProjectError,
         KeyError,
@@ -249,7 +324,9 @@ def create_app(
         _, digest = load_assets()
         return {
             "data": {
-                "capabilities": ["read_local"],
+                "capabilities": ["read_local", "manage_local"]
+                if manage_local
+                else ["read_local"],
                 "expires_in_seconds": max(0, int(session.expires - time.monotonic())),
                 "frontend_digest": digest,
             },
@@ -332,6 +409,8 @@ def create_app(
     def schema():
         return app.openapi()
 
+    app.include_router(routes(service, manage_local=manage_local))
+
     @app.get("/{path:path}", include_in_schema=False)
     async def fallback(request: Request, path: str):
         route = "/" + path
@@ -362,7 +441,15 @@ def create_app(
         path = request.url.path
         if path.startswith("/api/v1/"):
             legacy = LEGACY.get(path.replace("/api/v1/", "/api/", 1))
-            allowed = (*legacy[1], *legacy[2]) if legacy else ()
+            allowed = (
+                (*legacy[1], *legacy[2])
+                if legacy
+                else {
+                    "/api/v1/github": ("project_id", "kind", "cursor", "number"),
+                    "/api/v1/operations": ("project_id", "before"),
+                    "/api/v1/operation": ("operation_id",),
+                }.get(path, ())
+            )
             pairs = list(request.query_params.multi_items())
             if len(dict(pairs)) != len(pairs) or any(
                 k not in allowed for k, _ in pairs
@@ -370,7 +457,7 @@ def create_app(
                 return error(400, "invalid_request", "请求包含未知或重复参数。")
         return await call_next(request)
 
-    app.add_middleware(Boundary, session=session)
+    app.add_middleware(Boundary, session=session, manage_local=manage_local)
     return app
 
 

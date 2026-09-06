@@ -11,8 +11,10 @@ import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
 from threading import Thread
+from types import SimpleNamespace
 from unittest.mock import Mock
 
+from reposteward.config import GitHubConfig
 from reposteward.external_tasks import TaskConflict
 from reposteward.web_server import LocalServer
 
@@ -20,6 +22,9 @@ from reposteward.web_server import LocalServer
 class WorkbenchHTTPTests(unittest.TestCase):
     def setUp(self):
         self.app = Mock()
+        self.app.config = SimpleNamespace(
+            github=GitHubConfig(login="owner"), state_dir=Path("/uncreated-test-state")
+        )
         self.app.settings.return_value = {"status": "local", "public_write": False}
         self.server = LocalServer(self.app)
         self.thread_errors = []

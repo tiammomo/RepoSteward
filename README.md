@@ -70,8 +70,11 @@ the model-governed repository direction.
 For an isolated installation used outside this source checkout, see the
 [local installation and offline diagnostics guide](docs/local-installation.zh-CN.md).
 
-Run `reposteward web` for the [read-only local workbench](docs/local-workbench.zh-CN.md):
+Run `reposteward web` for the [local workbench](docs/local-workbench.zh-CN.md):
 project guides, task continuity, review evidence and diagnostics in one browser window.
+Projects also offer [explicit GitHub synchronization](docs/workbench-sync.md) with durable
+operation history and separate open, closed and merged observations. Use `web --read-only`
+to disable local commands and operation recovery.
 The FastAPI backend serves a bundled TypeScript/React frontend. Source development
 requires Node 22.12+ and npm; installed release wheels do not require Node.
 `reposteward version` reports installation metadata; `reposteward doctor --local`

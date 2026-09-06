@@ -18,6 +18,7 @@ import { Badge, Command, Empty, Notice } from "./components";
 import { OverviewPage } from "./pages/overview";
 import { ProjectPage, ProjectsPage } from "./pages/projects";
 import { TasksPage } from "./pages/tasks";
+import { GitHubPage, OperationsPage } from "./pages/github";
 import { SettingsPage } from "./pages/settings";
 import "./style.css";
 
@@ -61,6 +62,7 @@ function App({ connected }: { connected: boolean }) {
           </NavLink>
           <NavLink to="/projects">项目空间</NavLink>
           <NavLink to="/tasks">开发任务</NavLink>
+          <NavLink to="/operations">本地操作</NavLink>
           <NavLink to="/settings">设置与诊断</NavLink>
         </nav>
         <div className="sidebar-projects">
@@ -134,6 +136,15 @@ function App({ connected }: { connected: boolean }) {
                 <Route
                   path="/projects/:projectId/tasks/:runId/review"
                   element={<TasksPage review />}
+                />
+                <Route
+                  path="/projects/:projectId/github"
+                  element={<GitHubPage />}
+                />
+                <Route path="/operations" element={<OperationsPage />} />
+                <Route
+                  path="/operations/:operationId"
+                  element={<OperationsPage />}
                 />
                 <Route path="/tasks" element={<TasksPage />} />
                 <Route path="/review" element={<TasksPage review />} />

@@ -51,9 +51,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("version", help="show offline installation metadata as JSON")
-    web = subparsers.add_parser(
-        "web", help="open the read-only local maintainer workbench"
-    )
+    web = subparsers.add_parser("web", help="open the local maintainer workbench")
     web.add_argument(
         "--port",
         type=int,
@@ -61,6 +59,11 @@ def _parser() -> argparse.ArgumentParser:
         help="local port (default: choose an available port)",
     )
     web.add_argument("--expect-state-dir", type=Path)
+    web.add_argument(
+        "--read-only",
+        action="store_true",
+        help="disable local workbench commands and worker",
+    )
     state = subparsers.add_parser(
         "state", help="plan and explicitly back up local database upgrades"
     )
@@ -763,7 +766,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(
                     "effective state directory differs from the expected directory"
                 )
-            serve(web_config, port=args.port)
+            serve(web_config, port=args.port, read_only=args.read_only)
             return 0
         if args.command == "state":
             from .state_upgrade import inspect_backup, upgrade_plan, upgrade_state

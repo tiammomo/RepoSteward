@@ -21,6 +21,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/commands/github/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync */
+        post: operations["syncGitHub"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/commands/operations/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel */
+        post: operations["cancelOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/commands/operations/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry */
+        post: operations["retryOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/github": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Github */
+        get: operations["github"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Operation */
+        get: operations["operation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Operations */
+        get: operations["operations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/overview": {
         parameters: {
             query?: never;
@@ -225,6 +327,72 @@ export interface components {
             /** Scan */
             scan: string;
         };
+        /** ControlRequest */
+        ControlRequest: {
+            /** Expected Revision */
+            expected_revision: string;
+            /** Operation Id */
+            operation_id: string;
+        };
+        /** GitHubItem */
+        GitHubItem: {
+            /** Author */
+            author: string;
+            /** Checks */
+            checks?: {
+                [key: string]: components["schemas"]["JsonValue"];
+            } | null;
+            /** Head Sha */
+            head_sha: string;
+            /** Number */
+            number: number;
+            /** Observed At */
+            observed_at: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "open" | "closed" | "merged";
+            /** Title */
+            title: string;
+            /** Updated At */
+            updated_at: string;
+            /** Url */
+            url: string;
+        } & {
+            [key: string]: components["schemas"]["JsonValue"];
+        };
+        /** GitHubView */
+        GitHubView: {
+            /** Coverage */
+            coverage: string;
+            /** Has More Remote */
+            has_more_remote: boolean;
+            /** Items */
+            items: components["schemas"]["GitHubItem"][];
+            /** Kind */
+            kind: string;
+            /** Never Synced */
+            never_synced: boolean;
+            /** Next Cursor */
+            next_cursor: string;
+            /** Observed Count */
+            observed_count: number;
+            /** Project Id */
+            project_id: string;
+            /** Repository */
+            repository: string;
+            /** Snapshot */
+            snapshot: string;
+            /** Sources */
+            sources: {
+                [key: string]: components["schemas"]["JsonValue"];
+            }[];
+            /** Total */
+            total: number | null;
+        } & {
+            [key: string]: components["schemas"]["JsonValue"];
+        };
         /** Guide */
         Guide: {
             /** Limitations */
@@ -261,6 +429,57 @@ export interface components {
             generated_at: string;
             /** Request Id */
             request_id: string;
+        };
+        /** Operation */
+        Operation: {
+            /** Action */
+            action: string;
+            /** Attempt Count */
+            attempt_count: number;
+            /** Attempts */
+            attempts: {
+                [key: string]: components["schemas"]["JsonValue"];
+            }[];
+            /** Available At */
+            available_at: string;
+            /** Can Cancel */
+            can_cancel: boolean;
+            /** Can Retry */
+            can_retry: boolean;
+            /** Created At */
+            created_at: string;
+            /** Id */
+            id: string;
+            /** Last Error Code */
+            last_error_code: string;
+            /** Max Attempts */
+            max_attempts: number;
+            /** Project Id */
+            project_id: string;
+            /** Repository */
+            repository: string;
+            /** Revision */
+            revision: string;
+            /** Stages */
+            stages: {
+                [key: string]: components["schemas"]["JsonValue"];
+            }[];
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pending" | "running" | "completed" | "failed" | "cancelled";
+            /** Updated At */
+            updated_at: string;
+        } & {
+            [key: string]: components["schemas"]["JsonValue"];
+        };
+        /** OperationList */
+        OperationList: {
+            /** Items */
+            items: components["schemas"]["Operation"][];
+            /** Next Before */
+            next_before: number;
         };
         /** Overview */
         Overview: {
@@ -378,6 +597,21 @@ export interface components {
             data: components["schemas"]["Code"];
             meta: components["schemas"]["Meta"];
         };
+        /** Response[GitHubView] */
+        Response_GitHubView_: {
+            data: components["schemas"]["GitHubView"];
+            meta: components["schemas"]["Meta"];
+        };
+        /** Response[OperationList] */
+        Response_OperationList_: {
+            data: components["schemas"]["OperationList"];
+            meta: components["schemas"]["Meta"];
+        };
+        /** Response[Operation] */
+        Response_Operation_: {
+            data: components["schemas"]["Operation"];
+            meta: components["schemas"]["Meta"];
+        };
         /** Response[Overview] */
         Response_Overview_: {
             data: components["schemas"]["Overview"];
@@ -452,7 +686,7 @@ export interface components {
              */
             api_version: "1";
             /** Capabilities */
-            capabilities: "read_local"[];
+            capabilities: ("read_local" | "manage_local")[];
             /** Expires In Seconds */
             expires_in_seconds: number;
             /** Frontend Digest */
@@ -515,6 +749,11 @@ export interface components {
             status: string;
         } & {
             [key: string]: components["schemas"]["JsonValue"];
+        };
+        /** SyncRequest */
+        SyncRequest: {
+            /** Project Id */
+            project_id: string;
         };
         /** Task */
         Task: {
@@ -642,6 +881,208 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Response_Code_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    syncGitHub: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_Operation_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancelOperation: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControlRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_Operation_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retryOperation: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControlRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_Operation_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    github: {
+        parameters: {
+            query: {
+                project_id: string;
+                kind?: "pulls" | "issues" | "activity";
+                cursor?: string;
+                number?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_GitHubView_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    operation: {
+        parameters: {
+            query: {
+                operation_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_Operation_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    operations: {
+        parameters: {
+            query?: {
+                project_id?: string;
+                before?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_OperationList_"];
                 };
             };
             /** @description Validation Error */

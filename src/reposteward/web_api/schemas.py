@@ -199,7 +199,7 @@ class Settings(Record):
 
 
 class Session(BaseModel):
-    capabilities: list[Literal["read_local"]]
+    capabilities: list[Literal["read_local", "manage_local"]]
     expires_in_seconds: int
     api_version: Literal["1"] = "1"
     frontend_digest: str

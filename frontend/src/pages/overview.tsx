@@ -41,7 +41,7 @@ export function OverviewPage() {
           </div>
           {!result.projects.length && (
             <Empty title="从一个项目开始">
-              关联本地目录并配置仓库策略后，它会出现在维护总览。
+              登记项目后，它会出现在维护总览。
               <Command value="reposteward project link /absolute/path/to/project" />
             </Empty>
           )}
@@ -53,7 +53,12 @@ export function OverviewPage() {
                     {project.repository}
                   </Link>
                 </h2>
-                <Badge value={project.sources.status} />
+                <div className="row">
+                  <Badge value={project.sources.status} />
+                  <Link to={`/projects/${project.project_id}/github`}>
+                    GitHub 维护
+                  </Link>
+                </div>
               </header>
               <p className="muted">
                 最近 GitHub 缓存 · {when(project.sources.fetched_at)}
@@ -63,7 +68,15 @@ export function OverviewPage() {
                   <div>
                     <div className="row">
                       <Badge
-                        value={item.priority >= 90 ? "需要介入" : "待核对"}
+                        value={
+                          item.category === "post_completion"
+                            ? "结束后的反馈"
+                            : item.category === "in_progress"
+                              ? "进行中"
+                              : item.priority >= 90
+                                ? "需要介入"
+                                : "待核对"
+                        }
                         tone={item.priority >= 90 ? "warn" : ""}
                       />
                       <span className="muted">
@@ -107,12 +120,12 @@ export function OverviewPage() {
           )}
           {!!result.excluded_projects && (
             <Notice>
-              {result.excluded_projects}{" "}
-              个项目因策略、来源或工作区不可用未进入维护总览。
+              {result.excluded_projects} 个项目因来源主机不同未进入维护总览。
             </Notice>
           )}
           <p className="muted">
-            “重新读取”只读取本地数据。更新 GitHub 缓存请执行：
+            “重新读取”只读取本地数据。进入项目的 GitHub 维护页，点击“同步
+            GitHub”更新观测。原有 CLI 读取入口：
           </p>
           <Command value="reposteward overview refresh" />
           <Detail title="来源与覆盖信息" value={result} />

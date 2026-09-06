@@ -96,7 +96,8 @@ export function ProjectsPage() {
                   </td>
                   <td>
                     <Link to={`/projects/${p.id}`}>代码导览</Link> ·{" "}
-                    <Link to={`/projects/${p.id}/tasks`}>开发任务</Link>
+                    <Link to={`/projects/${p.id}/tasks`}>开发任务</Link> ·{" "}
+                    <Link to={`/projects/${p.id}/github`}>GitHub 维护</Link>
                   </td>
                 </tr>
               ))}
@@ -203,6 +204,7 @@ export function ProjectPage() {
           工作区与代码导览
         </Link>
         <Link to={`/projects/${projectId}/tasks`}>开发任务</Link>
+        <Link to={`/projects/${projectId}/github`}>GitHub 维护</Link>
       </div>
       {project && !binding && (
         <Empty title="尚未关联工作区">

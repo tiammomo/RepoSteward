@@ -13,6 +13,8 @@ import urllib.request
 import urllib.response
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from .config import GitHubConfig
@@ -27,6 +29,41 @@ class GitHubError(RuntimeError):
     def __init__(self, message: str, *, status_code: int = 0) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionalRead:
+    body: Any
+    etag: str
+    has_more: bool
+    not_modified: bool = False
+
+
+class GitHubReadError(GitHubError):
+    def __init__(self, code: str, *, status_code: int = 0, retry_at: str = ""):
+        super().__init__(code, status_code=status_code)
+        self.code, self.retry_at = code, retry_at
+
+
+def _retry_at(headers) -> str:
+    now = datetime.now(UTC)
+    raw = headers.get("Retry-After", "")
+    try:
+        target = now + timedelta(seconds=int(raw))
+    except ValueError:
+        try:
+            target = parsedate_to_datetime(raw).astimezone(UTC)
+        except (ValueError, TypeError, OverflowError):
+            target = now + timedelta(seconds=60)
+    if headers.get("X-RateLimit-Remaining") == "0":
+        try:
+            target = max(
+                target,
+                datetime.fromtimestamp(int(headers.get("X-RateLimit-Reset", "")), UTC),
+            )
+        except (ValueError, OverflowError, OSError):
+            pass
+    return max(now + timedelta(seconds=1), target).isoformat(timespec="microseconds")
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -171,6 +208,75 @@ class GitHubClient:
             return json.loads(payload_bytes), response
         except json.JSONDecodeError as exc:
             raise GitHubError(f"GitHub {method} {path} returned invalid JSON") from exc
+
+    def conditional_get(
+        self, path: str, *, query: dict[str, str | int] | None = None, etag: str = ""
+    ) -> ConditionalRead:
+        """Bounded, nonredirecting GET; conditional cache remains account scoped."""
+        if (
+            not re.fullmatch(r"/[A-Za-z0-9_./-]+", path)
+            or ".." in path.split("/")
+            or path.startswith("//")
+            or len(etag) > 500
+            or any(ord(c) < 32 for c in etag)
+        ):
+            raise ValueError("invalid conditional request")
+        url = self.config.api_url.rstrip("/") + path
+        if query:
+            url += "?" + urllib.parse.urlencode(sorted(query.items()))
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "reposteward/0.1",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self.token:
+            headers["Authorization"] = "Bearer " + self.token
+        if etag:
+            headers["If-None-Match"] = etag
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        opener = urllib.request.build_opener(_NoRedirectHandler())
+        try:
+            with opener.open(request, timeout=30) as response:
+                if response.status != 200:
+                    raise GitHubReadError(
+                        "unexpected_status", status_code=response.status
+                    )
+                raw = response.read(2_000_001)
+                if len(raw) > 2_000_000:
+                    raise GitHubReadError("response_limit")
+                try:
+                    body = json.loads(raw)
+                except (ValueError, UnicodeError) as exc:
+                    raise GitHubReadError("invalid_response") from exc
+                return ConditionalRead(
+                    body,
+                    response.headers.get("ETag", "")[:500],
+                    bool(re.search(r'rel="next"', response.headers.get("Link", ""))),
+                )
+        except urllib.error.HTTPError as exc:
+            with exc:
+                if exc.code == 304 and etag:
+                    return ConditionalRead(None, etag, False, True)
+                if exc.code == 429 or (
+                    exc.code == 403
+                    and (
+                        exc.headers.get("Retry-After")
+                        or exc.headers.get("X-RateLimit-Remaining") == "0"
+                    )
+                ):
+                    raise GitHubReadError(
+                        "rate_limited",
+                        status_code=exc.code,
+                        retry_at=_retry_at(exc.headers),
+                    ) from exc
+                raise GitHubReadError(
+                    "permission_or_missing"
+                    if exc.code in {401, 403, 404}
+                    else "remote_unavailable",
+                    status_code=exc.code,
+                ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise GitHubReadError("network_unavailable") from exc
 
     def authenticated_login(self) -> str:
         if not self.token:

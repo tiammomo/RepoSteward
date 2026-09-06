@@ -550,3 +550,34 @@ dd {
     grid-column: 1 / -1;
   }
 }
+
+.github-items {
+  display: grid;
+  gap: 1rem;
+  margin: 1.25rem 0;
+}
+.github-items .card {
+  padding: 1.25rem;
+  border: 1px solid var(--line, #dce2e6);
+  border-radius: 12px;
+  background: white;
+  overflow-wrap: anywhere;
+}
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1.25rem 0;
+}
+.tabs button[aria-pressed="true"] {
+  background: #e1efe7;
+  border-color: #39765d;
+}
+.preserve {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.sync-control {
+  display: grid;
+  gap: 0.5rem;
+}

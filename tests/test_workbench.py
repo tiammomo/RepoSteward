@@ -239,7 +239,7 @@ class WorkbenchTests(unittest.TestCase):
                 ),
                 0,
             )
-            serve.assert_called_once_with(self.config, port=8765)
+            serve.assert_called_once_with(self.config, port=8765, read_only=False)
 
     def test_unsafe_api_origin_is_not_exposed_via_derived_paths(self):
         config = replace(
