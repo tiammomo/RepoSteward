@@ -70,6 +70,9 @@ API URL 带 userinfo、查询或 fragment 时，本地诊断会先要求修正 U
 
 ## 在目标项目继续工作
 
+可用 `reposteward web` 启动[本地只读工作台](local-workbench.zh-CN.md)，集中查看已关联
+项目、代码导览、任务接续与审阅依据。网页随安装提供，不需要源码 checkout 或 Node。
+
 ```bash
 cd /absolute/path/to/your-project
 reposteward project link .

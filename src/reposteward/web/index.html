@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RepoSteward · 本地工作台</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#content">跳到内容</a>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#today"><span class="brand-mark" aria-hidden="true">R</span><span>RepoSteward<small>本地维护工作台</small></span></a>
+      <div class="nav-label">工作空间</div>
+      <nav aria-label="主要导航">
+        <a href="#today" data-view="today"><span aria-hidden="true">◷</span>今日待处理</a>
+        <a href="#projects" data-view="projects"><span aria-hidden="true">▦</span>项目空间</a>
+        <a href="#tasks" data-view="tasks"><span aria-hidden="true">☷</span>任务接续</a>
+        <a href="#review" data-view="review"><span aria-hidden="true">◇</span>审阅依据</a>
+        <a href="#settings" data-view="settings"><span aria-hidden="true">⚙</span>设置与诊断</a>
+      </nav>
+      <div class="sidebar-bottom"><span class="live-dot"></span>只读 · 本地连接<p>项目的事实与进度，<br>留在你的工作环境中。</p></div>
+    </aside>
+    <div class="main">
+      <header class="topbar"><div class="breadcrumb">工作空间 <span>/</span> <strong id="page-label">今日待处理</strong></div><div class="top-actions"><span id="connection" class="badge">连接中</span><button id="reload" class="button subtle" type="button">重新读取</button></div></header>
+      <main id="content" tabindex="-1" aria-live="polite"><div class="empty">正在读取本地工作空间…</div></main>
+      <footer>RepoSteward <span>项目事实 · 任务上下文 · 验证证据</span></footer>
+    </div>
+  </div>
+  <div id="notice" role="status" class="toast" hidden></div>
+</body>
+</html>
