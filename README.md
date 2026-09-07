@@ -166,12 +166,18 @@ uv run reposteward branch-cleanup plan owner/repository --format text
 uv run reposteward batch plan owner/repository --format text
 uv run reposteward trace owner/repository 123 --format text
 uv run reposteward usage report owner/repository
+uv run reposteward usage external-report owner/repository
 uv run reposteward storage stats --repo owner/repository
 uv run reposteward benchmark run --output .artifacts/benchmark.json
 ```
 
 The persistent queue and batch planner store bounded control-plane intent. They do not
 turn on submit, owner-attestation, or merge permissions.
+
+For an existing Codex session, [external usage collection](docs/external-usage.md)
+binds explicit turns to an external task and refreshes real client counters with
+`usage collect RUN_ID`. Missing metrics and prices remain unknown; reports retain
+no conversation text. Savings comparisons wait for real usage data.
 
 For maintainer same-repository policies, `branch-cleanup plan` builds a read-only,
 digest-bound backlog from submitted runs and successful merge audits. Applying a
