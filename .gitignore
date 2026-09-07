@@ -12,6 +12,10 @@ dist/
 build/
 *.egg-info/
 notes/
+node_modules/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
 .env
 .env.*
 *.sqlite

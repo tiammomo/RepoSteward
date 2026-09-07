@@ -22,9 +22,16 @@ class WorkbenchHTTPTests(unittest.TestCase):
         self.app = Mock()
         self.app.settings.return_value = {"status": "local", "public_write": False}
         self.server = LocalServer(self.app)
+        self.thread_errors = []
+
+        def serve():
+            try:
+                self.server.serve_forever(poll_interval=0.01)
+            except BaseException as exc:  # noqa: BLE001 - asserted by close_server
+                self.thread_errors.append(exc)
+
         self.thread = Thread(
-            target=self.server.serve_forever,
-            kwargs={"poll_interval": 0.01},
+            target=serve,
             daemon=True,
         )
         self.thread.start()
@@ -35,6 +42,7 @@ class WorkbenchHTTPTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=5)
         self.assertFalse(self.thread.is_alive())
+        self.assertEqual(self.thread_errors, [])
 
     def request(self, path="/api/settings", *, method="GET", headers=None, token=True):
         connection = http.client.HTTPConnection(
@@ -44,7 +52,11 @@ class WorkbenchHTTPTests(unittest.TestCase):
         try:
             connection.request(method, path, headers={**default, **(headers or {})})
             response = connection.getresponse()
-            return response.status, dict(response.getheaders()), response.read()
+            return (
+                response.status,
+                {k.title(): v for k, v in response.getheaders()},
+                response.read(),
+            )
         finally:
             connection.close()
 
@@ -106,7 +118,11 @@ class WorkbenchHTTPTests(unittest.TestCase):
                 connection.putheader(header, value)
                 connection.endheaders()
                 response = connection.getresponse()
-                self.assertEqual(response.status, expected)
+                # h11 may reject duplicate Host before the ASGI boundary.
+                if header == "Host":
+                    self.assertIn(response.status, {400, expected})
+                else:
+                    self.assertEqual(response.status, expected)
                 response.read()
             finally:
                 connection.close()
