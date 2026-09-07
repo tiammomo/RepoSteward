@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -144,23 +145,42 @@ class GitHubClient:
         }
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        request = urllib.request.Request(url, data=body, headers=headers, method=method)
-        try:
-            response = urllib.request.urlopen(request, timeout=30)
-            payload_bytes = response.read()
-        except urllib.error.HTTPError as exc:
-            error_body = exc.read().decode("utf-8", errors="replace")
-            message = error_body
+        # GET 请求在瞬时网络错误（截断响应、连接重置等）下重试；POST/PATCH 可能非幂等，不重试
+        attempts = 5 if method == "GET" else 1
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            request = urllib.request.Request(
+                url, data=body, headers=headers, method=method
+            )
             try:
-                message = json.loads(error_body).get("message", error_body)
-            except json.JSONDecodeError:
-                pass
+                response = urllib.request.urlopen(request, timeout=30)
+                payload_bytes = response.read()
+                last_error = None
+                break
+            except urllib.error.HTTPError as exc:
+                error_body = exc.read().decode("utf-8", errors="replace")
+                message = error_body
+                try:
+                    message = json.loads(error_body).get("message", error_body)
+                except json.JSONDecodeError:
+                    pass
+                raise GitHubError(
+                    f"GitHub {method} {path} failed ({exc.code}): {message}",
+                    status_code=exc.code,
+                ) from exc
+            except (
+                urllib.error.URLError,
+                http.client.IncompleteRead,
+                ConnectionResetError,
+                TimeoutError,
+            ) as exc:
+                last_error = exc
+                if attempt + 1 < attempts:
+                    time.sleep((attempt + 1) ** 2)
+        if last_error is not None:
             raise GitHubError(
-                f"GitHub {method} {path} failed ({exc.code}): {message}",
-                status_code=exc.code,
-            ) from exc
-        except urllib.error.URLError as exc:
-            raise GitHubError(f"GitHub {method} {path} failed: {exc.reason}") from exc
+                f"GitHub {method} {path} failed after retries: {last_error}"
+            ) from last_error
         if response.status not in set(expected):
             raise GitHubError(
                 f"GitHub {method} {path} returned unexpected status {response.status}"

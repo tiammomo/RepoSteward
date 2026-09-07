@@ -539,6 +539,11 @@ class DockerVerifier:
             "PNPM_HOME=/reposteward-env/pnpm-home",
             "-e",
             "GRADLE_USER_HOME=/reposteward-env/gradle",
+            # 容器以 host uid 运行且镜像内无对应 passwd 条目时，部分 JDK 会把
+            # user.home 解析为 "?"，导致 Maven 等工具把缓存写到工作区内随沙箱销毁。
+            # 固定 user.home 到持久卷，保证 bootstrap 下载的依赖在断网 verify 阶段可用。
+            "-e",
+            "JAVA_TOOL_OPTIONS=-Duser.home=/reposteward-env/home",
             "-v",
             f"{worktree.resolve()}:/workspace:rw",
             "-v",
