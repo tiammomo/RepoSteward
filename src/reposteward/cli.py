@@ -459,6 +459,24 @@ def _parser() -> argparse.ArgumentParser:
         "usage", help="report prompt-free Harness usage and configured cost"
     )
     usage_commands = usage.add_subparsers(dest="usage_command", required=True)
+    usage_collect = usage_commands.add_parser(
+        "collect", help="collect selected local Codex turns for an external task"
+    )
+    usage_collect.add_argument("run_id")
+    usage_collect.add_argument("--codex-session", type=Path)
+    usage_collect.add_argument("--turn-id", action="append", default=[])
+    external_report = usage_commands.add_parser(
+        "external-report",
+        help="report locally collected external turns without GitHub access",
+    )
+    external_report.add_argument("repository")
+    external_report.add_argument("--issue", type=int, default=0)
+    external_report.add_argument(
+        "--group-by",
+        choices=("none", "work-item", "issue", "model"),
+        default="work-item",
+    )
+    external_report.add_argument("--include-turns", action="store_true")
     usage_report = usage_commands.add_parser(
         "report", help="aggregate one repository's Issue/PR lifecycle usage"
     )
@@ -892,6 +910,28 @@ def main(argv: list[str] | None = None) -> int:
                     print(render_guide(result), end="")
             return 0
         config = load_config(args.config, include_user=True)
+        if args.command == "usage" and args.usage_command in {
+            "collect",
+            "external-report",
+        }:
+            from .external_usage import ExternalUsage
+
+            usage_service = ExternalUsage(config)
+            if args.usage_command == "collect":
+                result = usage_service.collect(
+                    args.run_id,
+                    codex_session=args.codex_session,
+                    turn_ids=tuple(args.turn_id),
+                )
+            else:
+                result = usage_service.report(
+                    args.repository,
+                    issue=args.issue,
+                    group_by=args.group_by,
+                    include_turns=args.include_turns,
+                )
+            _json(result)
+            return 0
         if args.command == "integration":
             from .integrations import AgentIntegration
 
