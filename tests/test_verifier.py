@@ -378,6 +378,37 @@ class VerificationSandboxTests(unittest.TestCase):
                 template.read_text(encoding="utf-8"),
             )
 
+    def test_tracked_template_accepts_api_key_placeholders(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            _repository(worktree)
+            values = (
+                "your-serper-api-key",
+                "your-serply-api-key",
+                "your-tavily-api-key",
+                "your-jina-api-key",
+                "your-infoquest-api-key",
+                "your-sofya-api-key",
+                "your-provider-v2-api-key",
+                "your-" + "a" * 115 + "-api-key",
+            )
+            content = "".join(
+                f"PROVIDER_{index}_API_KEY={value}\n"
+                for index, value in enumerate(values)
+            )
+            template = worktree / ".env.example"
+            template.write_text(content, encoding="utf-8")
+            subprocess.run(["git", "add", ".env.example"], cwd=worktree, check=True)
+
+            DockerVerifier._copy_workspace(worktree, root / "snapshot")
+
+            self.assertEqual(
+                (root / "snapshot" / ".env.example").read_bytes(),
+                template.read_bytes(),
+            )
+
     def test_untracked_environment_template_is_excluded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -414,6 +445,18 @@ class VerificationSandboxTests(unittest.TestCase):
                     "replace-with-token.value",
                     '"replace-with-a-token"',
                     "replace-with-" + "a" * 129,
+                    "your-api-key",
+                    "your--api-key",
+                    "your-UPPER-api-key",
+                    "your-provider_api-key",
+                    "your-provider--v2-api-key",
+                    "your-provider-api-key.value",
+                    "your-provider-api-key-extra",
+                    '"your-provider-api-key"',
+                    "'your-provider-api-key'",
+                    "your-provider-api-key$(id)",
+                    "your-供应商-api-key",
+                    "your-" + "a" * 116 + "-api-key",
                 )
             ):
                 with self.subTest(value=value):
