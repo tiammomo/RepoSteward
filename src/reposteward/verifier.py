@@ -57,7 +57,10 @@ SENSITIVE_ENV_NAME = re.compile(
     re.IGNORECASE,
 )
 EMPTY_ENV_VALUE = re.compile(r"(?:|''|\"\")(?:\s+#.*)?")
-SAFE_ENV_PLACEHOLDER = re.compile(r"replace-with-[a-z0-9]+(?:-[a-z0-9]+)*")
+SAFE_ENV_PLACEHOLDER = re.compile(
+    r"(?:replace-with-[a-z0-9]+(?:-[a-z0-9]+)*"
+    r"|your-[a-z0-9]+(?:-[a-z0-9]+)*-api-key)"
+)
 
 
 class VerificationError(RuntimeError):
