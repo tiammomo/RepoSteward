@@ -310,6 +310,74 @@ class GitHubCompetingWorkTests(unittest.TestCase):
             {"claim_comment", "open_pull_request"},
         )
 
+    @staticmethod
+    def _pull_request_client(body: str) -> tuple[GitHubClient, Any]:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+
+        def request(method: str, path: str, **kwargs: Any) -> tuple[Any, Any]:
+            if path.endswith("/comments"):
+                return [], None
+            return [
+                {
+                    "number": 5045,
+                    "title": "fix(frontend): keep renamed thread titles in sync",
+                    "body": body,
+                    "html_url": "https://example.test/pr/5045",
+                    "user": {"login": "jiaqiang000"},
+                    "head": {"repo": {"owner": {"login": "jiaqiang000"}}},
+                }
+            ], None
+
+        return client, request
+
+    def test_qualified_cross_repository_reference_is_blocker(self) -> None:
+        # Regression for the deer-flow #5043/#5045 miss: the open PR referenced
+        # the issue as "Fixes bytedance/deer-flow#5043" and the gate saw nothing.
+        client, request = self._pull_request_client("Fixes bytedance/deer-flow#5043")
+        with patch.object(client, "_request", side_effect=request):
+            conflicts = client.competing_work(
+                "bytedance/deer-flow", 5043, own_login="betterkite"
+            )
+        self.assertEqual([value.kind for value in conflicts], ["open_pull_request"])
+        self.assertEqual(conflicts[0].actor, "jiaqiang000")
+
+    def test_qualified_reference_to_other_repository_is_ignored(self) -> None:
+        client, request = self._pull_request_client("Fixes other/repo#5043")
+        with patch.object(client, "_request", side_effect=request):
+            conflicts = client.competing_work(
+                "bytedance/deer-flow", 5043, own_login="betterkite"
+            )
+        self.assertEqual(conflicts, ())
+
+    def test_qualified_reference_matches_case_insensitively(self) -> None:
+        client, request = self._pull_request_client("Fixes Bytedance/Deer-Flow#5043")
+        with patch.object(client, "_request", side_effect=request):
+            conflicts = client.competing_work(
+                "bytedance/deer-flow", 5043, own_login="betterkite"
+            )
+        self.assertEqual([value.kind for value in conflicts], ["open_pull_request"])
+
+    def test_bare_and_qualified_references_deduplicate(self) -> None:
+        client, request = self._pull_request_client(
+            "Fixes #5043 and bytedance/deer-flow#5043"
+        )
+        with patch.object(client, "_request", side_effect=request):
+            references = client.open_pull_request_references(
+                "bytedance/deer-flow", own_login="betterkite"
+            )
+        self.assertEqual(list(references), [5043])
+        self.assertEqual(len(references[5043]), 1)
+
+    def test_url_fragments_are_not_issue_references(self) -> None:
+        client, request = self._pull_request_client(
+            "Context: https://github.com/bytedance/deer-flow/pull/5045#issuecomment-1"
+        )
+        with patch.object(client, "_request", side_effect=request):
+            conflicts = client.competing_work(
+                "bytedance/deer-flow", 5043, own_login="betterkite"
+            )
+        self.assertEqual(conflicts, ())
+
 
 class GitHubPullRequestPaginationTests(unittest.TestCase):
     def test_open_pull_requests_follows_every_rest_page(self) -> None:
