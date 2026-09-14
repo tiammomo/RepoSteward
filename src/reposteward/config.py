@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from ipaddress import AddressValueError, IPv4Address
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -185,6 +186,7 @@ class RepositoryPolicy:
     )
     bootstrap_commands: tuple[str, ...] = ()
     verification_prefixes: tuple[str, ...] = ()
+    verification_hosts: tuple[tuple[str, str], ...] = ()
     required_verification_markers: tuple[str, ...] = ()
     required_contribution_files: tuple[str, ...] = ()
     pull_request_body_style: str = "generic"
@@ -362,6 +364,7 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
             for repository in repositories.values():
                 if isinstance(repository, dict):
                     repository.pop("unlimited_diff_lines", None)
+                    repository.pop("verification_hosts", None)
         return result
 
     # Runtime state and disposable clones belong to the user/machine trust layer.
@@ -474,6 +477,11 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
             if not isinstance(repository, dict):
                 continue
             trusted = trusted_by_name.get(str(name).casefold(), {})
+            repository["verification_hosts"] = (
+                trusted.get("verification_hosts", {})
+                if isinstance(trusted, dict)
+                else {}
+            )
             trusted_unlimited = (
                 _boolean(trusted.get("unlimited_diff_lines"), False)
                 if isinstance(trusted, dict)
@@ -484,6 +492,35 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
             else:
                 repository.pop("unlimited_diff_lines", None)
     return result
+
+
+def _verification_hosts(value: object) -> tuple[tuple[str, str], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, dict):
+        raise ConfigError("verification_hosts must be a hostname-to-IPv4 table")
+    hosts: dict[str, str] = {}
+    label = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+    for raw_host, raw_address in value.items():
+        if not isinstance(raw_host, str) or not isinstance(raw_address, str):
+            raise ConfigError(
+                "verification_hosts requires string hostnames and IPv4 values"
+            )
+        hostname = raw_host.casefold()
+        if len(hostname) > 253 or any(
+            label.fullmatch(part) is None for part in hostname.split(".")
+        ):
+            raise ConfigError("verification_hosts contains an invalid hostname")
+        if hostname in hosts:
+            raise ConfigError("verification_hosts contains a duplicate hostname")
+        try:
+            address = str(IPv4Address(raw_address))
+        except AddressValueError as error:
+            raise ConfigError(
+                "verification_hosts requires literal IPv4 addresses"
+            ) from error
+        hosts[hostname] = address
+    return tuple(sorted(hosts.items()))
 
 
 def _tracked_sensitive_paths(
@@ -862,6 +899,13 @@ def load_config(
     for name, repo_value in repositories_raw.items():
         if not isinstance(repo_value, dict):
             raise ConfigError(f"[repositories.{name!r}] must be a table")
+        if (
+            repo_value.get("verification_hosts")
+            and REPOSITORY_NAME.fullmatch(name) is None
+        ):
+            raise ConfigError(
+                "verification_hosts requires a valid owner/repository name"
+            )
         if name.count("/") != 1:
             raise ConfigError(f"repository must use owner/name form: {name!r}")
         repositories[name.lower()] = RepositoryPolicy(
@@ -894,6 +938,9 @@ def load_config(
             ),
             bootstrap_commands=_tuple(repo_value.get("bootstrap_commands")),
             verification_prefixes=_tuple(repo_value.get("verification_prefixes")),
+            verification_hosts=_verification_hosts(
+                repo_value.get("verification_hosts")
+            ),
             required_verification_markers=_tuple(
                 repo_value.get("required_verification_markers")
             ),

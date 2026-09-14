@@ -111,7 +111,7 @@ def _decimal_text(value: Decimal) -> str:
     return rendered.rstrip("0").rstrip(".") or "0"
 
 
-def _run_cost(row: dict[str, Any], prices: tuple[UsagePrice, ...]) -> dict[str, Any]:
+def usage_cost(row: dict[str, Any], prices: tuple[UsagePrice, ...]) -> dict[str, Any]:
     price = _select_price(row, prices)
     if price is None:
         return {"status": "unknown", "reason": "price_not_configured"}
@@ -228,7 +228,7 @@ def build_usage_report(
 ) -> dict[str, Any]:
     if group_by != "none" and group_by not in GROUP_FIELDS:
         raise ValueError(f"unsupported usage group: {group_by!r}")
-    enriched = [{**row, "cost": _run_cost(row, prices)} for row in rows]
+    enriched = [{**row, "cost": usage_cost(row, prices)} for row in rows]
     groups: list[dict[str, Any]] = []
     if group_by != "none":
         field = GROUP_FIELDS[group_by]
