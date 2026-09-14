@@ -220,6 +220,13 @@ class BridgeTests(unittest.TestCase):
             '[repositories."owner/repo"]',
         ]
         for key, value in asdict(self.config.repositories["owner/repo"]).items():
+            if key == "verification_hosts":
+                entries = ", ".join(
+                    f"{json.dumps(host)} = {json.dumps(address)}"
+                    for host, address in value
+                )
+                lines.append(f"{key} = {{ {entries} }}")
+                continue
             if key != "name" and value is not None:
                 lines.append(f"{key} = {json.dumps(value)}")
         user_file.write_text("\n".join(lines) + "\n")
