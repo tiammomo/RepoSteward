@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import io
 import unittest
 import urllib.error
@@ -967,6 +968,41 @@ class GitHubActionsEvidenceTests(unittest.TestCase):
             self.assertRaisesRegex(GitHubError, "unsafe redirect"),
         ):
             client.workflow_job_log("owner/repo", 20, max_bytes=12)
+
+    def test_get_request_retries_transient_transport_errors(self) -> None:
+        class FakeResponse(io.BytesIO):
+            def __init__(self, payload: bytes) -> None:
+                super().__init__(payload)
+                self.status = 200
+
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        responses = [
+            http.client.IncompleteRead(b'{"login": "pw', 5),
+            FakeResponse(b'{"login": "pwd11"}'),
+        ]
+        with (
+            patch("urllib.request.urlopen", side_effect=responses) as urlopen_mock,
+            patch("time.sleep", return_value=None) as sleep_mock,
+        ):
+            payload, _ = client._request("GET", "/user")
+
+        self.assertEqual(payload, {"login": "pwd11"})
+        self.assertEqual(urlopen_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(1)
+
+    def test_post_request_does_not_retry_transient_transport_errors(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=http.client.IncompleteRead(b"{}", 1),
+            ),
+            patch("time.sleep") as sleep_mock,
+            self.assertRaisesRegex(GitHubError, "failed after retries"),
+        ):
+            client._request("POST", "/issues", data={"title": "x"})
+
+        sleep_mock.assert_not_called()
 
 
 if __name__ == "__main__":
