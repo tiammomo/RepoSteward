@@ -57,7 +57,10 @@ SENSITIVE_ENV_NAME = re.compile(
     re.IGNORECASE,
 )
 EMPTY_ENV_VALUE = re.compile(r"(?:|''|\"\")(?:\s+#.*)?")
-SAFE_ENV_PLACEHOLDER = re.compile(r"replace-with-[a-z0-9]+(?:-[a-z0-9]+)*")
+SAFE_ENV_PLACEHOLDER = re.compile(
+    r"(?:replace-with-[a-z0-9]+(?:-[a-z0-9]+)*"
+    r"|your-[a-z0-9]+(?:-[a-z0-9]+)*-api-key)"
+)
 
 
 class VerificationError(RuntimeError):
@@ -133,6 +136,11 @@ class DockerVerifier:
         cancellation = (
             {"cancel_event": cancel_event} if cancel_event is not None else {}
         )
+        host_options = (
+            {"host_aliases": policy.verification_hosts}
+            if policy.verification_hosts
+            else {}
+        )
         with self._verification_sandbox(
             worktree, verification_dir, policy=policy
         ) as sandbox:
@@ -153,6 +161,7 @@ class DockerVerifier:
                     environment_dir=environment_dir,
                     git_dir=git_dir,
                     **cancellation,
+                    **host_options,
                 )
                 results.append(result)
                 if result.exit_code:
@@ -174,6 +183,7 @@ class DockerVerifier:
                     environment_dir=environment_dir,
                     git_dir=git_dir,
                     **cancellation,
+                    **host_options,
                 )
                 results.append(result)
                 if snapshot_guard is not None:
@@ -440,6 +450,7 @@ class DockerVerifier:
                             "trusted_tracked_sensitive_paths": list(
                                 trusted_sensitive_paths
                             ),
+                            "trusted_host_aliases": list(policy.verification_hosts),
                             "host_workspace_writable": False,
                             "shared_dependency_environment": True,
                             "copied_entries": copied_files,
@@ -492,6 +503,7 @@ class DockerVerifier:
         environment_dir: Path | None = None,
         git_dir: Path | None = None,
         cancel_event: Event | None = None,
+        host_aliases: tuple[tuple[str, str], ...] = (),
     ) -> CommandResult:
         runner = self.config.runner
         environment_dir = environment_dir or worktree
@@ -548,6 +560,8 @@ class DockerVerifier:
         ]
         if git_dir is not None:
             docker_command.extend(["-v", f"{git_dir.resolve()}:/reposteward-git:ro"])
+        for hostname, address in host_aliases:
+            docker_command.extend(["--add-host", f"{hostname}:{address}"])
         docker_command.extend([runner.image, "bash", "-lc", shell_command])
         start = time.monotonic()
         try:
