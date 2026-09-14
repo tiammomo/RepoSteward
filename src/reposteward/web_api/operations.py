@@ -33,6 +33,7 @@ class Operation(Record):
     id: str
     project_id: str
     import_id: str = ""
+    binding_id: str = ""
     action: str
     repository: str
     state: Literal["pending", "running", "completed", "failed", "cancelled"]

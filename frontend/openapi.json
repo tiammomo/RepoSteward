@@ -586,6 +586,11 @@
             "title": "Available At",
             "type": "string"
           },
+          "binding_id": {
+            "default": "",
+            "title": "Binding Id",
+            "type": "string"
+          },
           "can_cancel": {
             "title": "Can Cancel",
             "type": "boolean"
@@ -1106,6 +1111,22 @@
         "title": "Response[Review]",
         "type": "object"
       },
+      "Response_ScanPlan_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ScanPlan"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[ScanPlan]",
+        "type": "object"
+      },
       "Response_Session_": {
         "properties": {
           "data": {
@@ -1235,6 +1256,91 @@
           "publication_eligible"
         ],
         "title": "Review",
+        "type": "object"
+      },
+      "ScanPlan": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "binding_id": {
+            "title": "Binding Id",
+            "type": "string"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/Record"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Record"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "rebuild": {
+            "title": "Rebuild",
+            "type": "boolean"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "root": {
+            "title": "Root",
+            "type": "string"
+          },
+          "source_digest": {
+            "title": "Source Digest",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/Record"
+          }
+        },
+        "required": [
+          "project_id",
+          "binding_id",
+          "root",
+          "revision",
+          "source_digest",
+          "rebuild",
+          "state",
+          "coverage",
+          "limits"
+        ],
+        "title": "ScanPlan",
+        "type": "object"
+      },
+      "ScanRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "binding_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Binding Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Revision",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "rebuild": {
+            "default": false,
+            "title": "Rebuild",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id",
+          "binding_id",
+          "expected_revision"
+        ],
+        "title": "ScanRequest",
         "type": "object"
       },
       "Session": {
@@ -2040,6 +2146,56 @@
         "summary": "Plan"
       }
     },
+    "/api/v1/commands/workspaces/scan": {
+      "post": {
+        "operationId": "scanWorkspace",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Operation_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scan"
+      }
+    },
     "/api/v1/github": {
       "get": {
         "operationId": "github",
@@ -2334,6 +2490,66 @@
           }
         },
         "summary": "Review"
+      }
+    },
+    "/api/v1/scan-plan": {
+      "get": {
+        "operationId": "scanPlan",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Binding Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "rebuild",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Rebuild",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_ScanPlan_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview"
       }
     },
     "/api/v1/session": {

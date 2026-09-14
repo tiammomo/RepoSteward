@@ -20,6 +20,7 @@ from .local_queue import digest, enqueue, hex_id, plan_for
 from .project_import import ProjectImports, import_problem
 from .store import SCHEMA_VERSION, Store, StoreError, utc_now
 from .workbench import Workbench
+from .workspace_scans import WorkspaceScans
 
 
 class OperationError(RuntimeError):
@@ -53,6 +54,7 @@ class LocalOperations:
         self.stopping, self.wake = Event(), Event()
         self.thread: Thread | None = None
         self.imports = ProjectImports(self)
+        self.scans = WorkspaceScans(self)
 
     def store(self, *, write: bool = False) -> Store | None:
         self.workbench.check_configuration()
@@ -145,6 +147,7 @@ class LocalOperations:
         task = self._task(store, task_id)
         attempts = store.queue_attempts(task_id, limit=50) if history else []
         with store._connection() as db:
+            payload = plan_for(db, task)["payload"]
             rows = (
                 db.execute(
                     "SELECT * FROM local_operation_results WHERE task_id=? ORDER BY generation DESC,created_at DESC LIMIT 100",
@@ -204,6 +207,9 @@ class LocalOperations:
         } | {
             "project_id": task["scope_key"] if task["scope_kind"] == "project" else "",
             "import_id": task["scope_key"] if task["scope_kind"] == "import" else "",
+            "binding_id": payload.get("binding_id", "")
+            if task["action"] == "workspace.scan"
+            else "",
             "revision": revision(task),
             "can_cancel": task["state"] == "pending",
             "can_retry": task["state"] in {"failed", "cancelled"},
@@ -440,17 +446,27 @@ class LocalOperations:
         if store is None:
             return False
         with store._connection() as db:
-            ready = db.execute(
-                """SELECT 1 FROM queue_tasks WHERE operation_family='local' AND account_digest=?
-                AND action IN ('github.sync','project.inspect','project.apply') AND manual_required=0 AND ((state IN ('pending','failed') AND available_at<=?)
-                OR (state='running' AND lease_expires_at<=?)) LIMIT 1""",
-                (self.account, utc_now(), utc_now()),
-            ).fetchone()
             limit = db.execute(
                 "SELECT retry_at FROM github_account_limits WHERE account_digest=?",
                 (self.account,),
             ).fetchone()
-        if not ready or (limit and limit[0] > utc_now()):
+            actions = (
+                ("workspace.scan",)
+                if limit and limit[0] > utc_now()
+                else (
+                    "github.sync",
+                    "project.inspect",
+                    "project.apply",
+                    "workspace.scan",
+                )
+            )
+            ready = db.execute(
+                """SELECT 1 FROM queue_tasks WHERE operation_family='local' AND account_digest=?
+                AND action IN (SELECT value FROM json_each(?)) AND manual_required=0 AND ((state IN ('pending','failed') AND available_at<=?)
+                OR (state='running' AND lease_expires_at<=?)) LIMIT 1""",
+                (self.account, json.dumps(actions), utc_now(), utc_now()),
+            ).fetchone()
+        if not ready:
             return False
         store = self.store(write=True)
         try:
@@ -466,6 +482,7 @@ class LocalOperations:
                 operation_family="local",
                 account_digest=self.account,
                 lease_seconds=120,
+                actions=actions,
             )
             if not claimed:
                 return False
@@ -499,6 +516,8 @@ class LocalOperations:
                     operation=task,
                     guard=guard,
                 ).execute()
+            elif task["action"] == "workspace.scan":
+                result = self.scans.execute(store, task, plan, guard)
             elif task["action"] in {"project.inspect", "project.apply"}:
                 result = self.imports.execute(
                     store, task, plan, self.client_factory(self.config.github), guard
@@ -542,6 +561,8 @@ class LocalOperations:
                 code = (
                     exc.code
                     if isinstance(exc, (GitHubReadError, OperationError))
+                    else "workspace_scan_failed"
+                    if task["action"] == "workspace.scan"
                     else "project_import_failed"
                     if task["scope_kind"] == "import"
                     else "local_sync_failed"

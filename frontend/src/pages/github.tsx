@@ -31,7 +31,17 @@ function sourceName(raw: unknown): string {
         pulls: "开放 PR",
         issues: "开放 Issue",
         activity: "最近更新",
-        summary: "同步结果",
+        summary: "操作结果",
+        scan_started: "开始扫描",
+        index_published: "索引已更新",
+        inspected: "项目已识别",
+        authorized: "计划已核对",
+        staging: "克隆暂存目录已建立",
+        clone_prepared: "克隆内容已核对",
+        published: "克隆目录已创建",
+        registered: "项目已登记",
+        completed: "导入已完成",
+        failure: "失败原因",
       } as Record<string, string>
     )[name] || name
   );
@@ -40,6 +50,8 @@ function errorText(raw: unknown): string {
   return (
     (
       {
+        workspace_changed: "工作区已变化，请重新核对计划",
+        workspace_scan_failed: "扫描未完成，请核对目录或重建索引",
         partial_sync: "部分来源同步失败，可重试",
         network_unavailable: "暂时无法连接 GitHub",
         permission_or_missing: "权限不足或远程记录不存在",
@@ -301,6 +313,7 @@ function actionName(action: string) {
         "github.sync": "GitHub 同步",
         "project.inspect": "识别项目",
         "project.apply": "导入项目",
+        "workspace.scan": "扫描工作区",
       } as Record<string, string>
     )[action] || action
   );
@@ -315,6 +328,7 @@ function OperationDetail({ id }: { id: string }) {
     if (data && ["completed", "failed", "cancelled"].includes(data.state)) {
       void cache.invalidateQueries({ queryKey: ["github"] });
       void cache.invalidateQueries({ queryKey: ["overview"] });
+      void cache.invalidateQueries({ queryKey: ["workspace"] });
     }
   }, [data?.state, cache]);
   const mutation = useMutation({
@@ -342,8 +356,12 @@ function OperationDetail({ id }: { id: string }) {
             {data.import_id ? (
               <Link to={`/imports/${data.import_id}`}>查看导入与恢复</Link>
             ) : (
-              <Link to={`/projects/${data.project_id}/github`}>
-                查看 GitHub 观测
+              <Link
+                to={`/projects/${data.project_id}${data.action === "workspace.scan" ? `/workspaces/${data.binding_id}` : "/github"}`}
+              >
+                {data.action === "workspace.scan"
+                  ? "查看工作区导览"
+                  : "查看 GitHub 观测"}
               </Link>
             )}
           </div>
@@ -402,6 +420,14 @@ function OperationDetail({ id }: { id: string }) {
                     </Link>
                   )}
                   {stage.stage === "summary" &&
+                    data.action === "workspace.scan" && (
+                      <span>
+                        {" "}
+                        · 已扫描 {str(obj(result.coverage).indexed_files)}{" "}
+                        个文件
+                      </span>
+                    )}
+                  {stage.stage === "summary" &&
                     data.action === "github.sync" && (
                       <span>
                         {" "}
@@ -447,7 +473,7 @@ export function OperationsPage() {
     <>
       <header className="page-heading">
         <h1>本地操作</h1>
-        <p>显式发起的同步与项目导入记录，刷新页面后可以继续查看。</p>
+        <p>显式发起的同步、导入与扫描记录，刷新页面后可以继续查看。</p>
       </header>
       <ReadState query={query} />
       <div className="github-items">

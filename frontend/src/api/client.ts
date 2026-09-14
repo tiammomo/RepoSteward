@@ -18,6 +18,7 @@ export type ReadModels = {
   operations: Schemas["OperationList"];
   operation: Schemas["Operation"];
   import: Schemas["ImportView"];
+  "scan-plan": Schemas["ScanPlan"];
 };
 
 const storageKey = "reposteward-local-session";
@@ -115,6 +116,7 @@ export function useRead<K extends keyof ReadModels>(
 
 const commandKeys = new Map<string, string>();
 type Commands = {
+  "workspaces/scan": [Schemas["ScanRequest"], Schemas["Operation"]];
   "github/sync": [Schemas["SyncRequest"], Schemas["Operation"]];
   "operations/cancel": [Schemas["ControlRequest"], Schemas["Operation"]];
   "operations/retry": [Schemas["ControlRequest"], Schemas["Operation"]];

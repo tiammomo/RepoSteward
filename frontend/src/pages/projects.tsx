@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ScanPanel } from "./scan";
 import {
   Link,
   useNavigate,
@@ -273,6 +274,11 @@ export function ProjectPage() {
             />
             <button type="submit">查阅导览</button>
           </form>
+          <ScanPanel
+            key={binding.id}
+            projectId={projectId}
+            bindingId={binding.id}
+          />
           <ReadState query={query} />
           {result && (
             <>

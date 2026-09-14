@@ -123,6 +123,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/commands/workspaces/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Scan */
+        post: operations["scanWorkspace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/github": {
         parameters: {
             query?: never;
@@ -234,6 +251,23 @@ export interface paths {
         };
         /** Review */
         get: operations["review"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scan-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Preview */
+        get: operations["scanPlan"];
         put?: never;
         post?: never;
         delete?: never;
@@ -577,6 +611,11 @@ export interface components {
             }[];
             /** Available At */
             available_at: string;
+            /**
+             * Binding Id
+             * @default
+             */
+            binding_id: string;
             /** Can Cancel */
             can_cancel: boolean;
             /** Can Retry */
@@ -788,6 +827,11 @@ export interface components {
             data: components["schemas"]["Review"];
             meta: components["schemas"]["Meta"];
         };
+        /** Response[ScanPlan] */
+        Response_ScanPlan_: {
+            data: components["schemas"]["ScanPlan"];
+            meta: components["schemas"]["Meta"];
+        };
         /** Response[Session] */
         Response_Session_: {
             data: components["schemas"]["Session"];
@@ -837,6 +881,40 @@ export interface components {
             } | null;
         } & {
             [key: string]: components["schemas"]["JsonValue"];
+        };
+        /** ScanPlan */
+        ScanPlan: {
+            /** Binding Id */
+            binding_id: string;
+            coverage: components["schemas"]["Record"];
+            limits: components["schemas"]["Record"];
+            /** Project Id */
+            project_id: string;
+            /** Rebuild */
+            rebuild: boolean;
+            /** Revision */
+            revision: string;
+            /** Root */
+            root: string;
+            /** Source Digest */
+            source_digest: string;
+            state: components["schemas"]["Record"];
+        } & {
+            [key: string]: components["schemas"]["JsonValue"];
+        };
+        /** ScanRequest */
+        ScanRequest: {
+            /** Binding Id */
+            binding_id: string;
+            /** Expected Revision */
+            expected_revision: string;
+            /** Project Id */
+            project_id: string;
+            /**
+             * Rebuild
+             * @default false
+             */
+            rebuild: boolean;
         };
         /** Session */
         Session: {
@@ -1265,6 +1343,41 @@ export interface operations {
             };
         };
     };
+    scanWorkspace: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScanRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_Operation_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     github: {
         parameters: {
             query: {
@@ -1452,6 +1565,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Response_Review_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scanPlan: {
+        parameters: {
+            query: {
+                project_id: string;
+                binding_id: string;
+                rebuild?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_ScanPlan_"];
                 };
             };
             /** @description Validation Error */

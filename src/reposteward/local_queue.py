@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 LOCAL_SCOPES = {
     "github.sync": "project",
+    "workspace.scan": "project",
     "project.inspect": "import",
     "project.apply": "import",
 }

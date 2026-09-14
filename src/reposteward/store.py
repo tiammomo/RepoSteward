@@ -3828,6 +3828,7 @@ class Store:
         now: datetime | None = None,
         operation_family: str = "native",
         account_digest: str = "",
+        actions: tuple[str, ...] = (),
     ) -> list[dict[str, Any]]:
         if operation_family not in {"native", "local"}:
             raise ValueError("queue claims require one explicit operation family")
@@ -3835,6 +3836,13 @@ class Store:
             operation_family == "native" and account_digest
         ):
             raise ValueError("queue claim account does not match its family")
+        from .local_queue import LOCAL_ACTIONS
+
+        if actions and (
+            operation_family != "local" or not set(actions).issubset(LOCAL_ACTIONS)
+        ):
+            raise ValueError("action filters require known local actions")
+        action_filter = json.dumps(sorted(set(actions)))
         normalized_worker = self._queue_worker(worker)
         if not 1 <= limit <= 100:
             raise ValueError("queue claim limit must be between 1 and 100")
@@ -3855,6 +3863,7 @@ class Store:
                   AND attempt_count>=max_attempts
                   AND (?='' OR repository=?)
                   AND operation_family=? AND account_digest=?
+                  AND (?=0 OR action IN (SELECT value FROM json_each(?)))
                 ORDER BY sequence ASC
                 LIMIT ?
                 """,
@@ -3864,6 +3873,8 @@ class Store:
                     normalized_repository,
                     operation_family,
                     account_digest,
+                    bool(actions),
+                    action_filter,
                     limit,
                 ),
             ).fetchall()
@@ -3902,6 +3913,7 @@ class Store:
                   AND tasks.attempt_count<tasks.max_attempts
                   AND (?='' OR tasks.repository=?)
                   AND tasks.operation_family=? AND tasks.account_digest=?
+                  AND (?=0 OR tasks.action IN (SELECT value FROM json_each(?)))
                   AND (
                     (tasks.state IN ('pending', 'failed') AND tasks.available_at<=?)
                     OR (tasks.state='running' AND tasks.lease_expires_at<=?)
@@ -3917,6 +3929,8 @@ class Store:
                     normalized_repository,
                     operation_family,
                     account_digest,
+                    bool(actions),
+                    action_filter,
                     current_text,
                     current_text,
                     limit,

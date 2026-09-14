@@ -29,8 +29,10 @@ from . import schemas as dto
 from .assets import load_assets
 from .imports import routes as import_routes
 from .operations import routes
+from .scans import routes as scan_routes
 
 COMMAND_PATHS = {
+    "/api/v1/commands/workspaces/scan",
     "/api/v1/commands/projects/inspect",
     "/api/v1/commands/projects/plan",
     "/api/v1/commands/projects/apply",
@@ -423,6 +425,7 @@ def create_app(
 
     app.include_router(routes(service, manage_local=manage_local))
     app.include_router(import_routes(service, manage_local=manage_local))
+    app.include_router(scan_routes(service, manage_local=manage_local))
 
     @app.get("/{path:path}", include_in_schema=False)
     async def fallback(request: Request, path: str):
@@ -462,6 +465,7 @@ def create_app(
                     "/api/v1/operations": ("project_id", "before"),
                     "/api/v1/operation": ("operation_id",),
                     "/api/v1/import": ("import_id",),
+                    "/api/v1/scan-plan": ("project_id", "binding_id", "rebuild"),
                 }.get(path, ())
             )
             pairs = list(request.query_params.multi_items())
