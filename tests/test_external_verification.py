@@ -14,6 +14,8 @@ from threading import Event, Timer
 from unittest.mock import patch
 
 import test_external_tasks
+from test_env_template_booleans import DECLARATION, TEMPLATE, configuration
+from test_projects import git
 
 from reposteward.cli import main
 from reposteward.config import ConfigError, VerificationProfile, load_config
@@ -120,6 +122,80 @@ class ExternalVerificationTests(unittest.TestCase):
         self.assertIn("workspace_changed_since_verification", inspection["validity"])
         with self.assertRaisesRegex(TaskConflict, "different input"):
             self.request()
+
+    def test_reviewed_boolean_template_enters_task_and_verification_without_authority(
+        self,
+    ):
+        fields = (
+            configuration(self.root, DECLARATION)
+            .repositories["owner/repo"]
+            .env_template_booleans
+        )
+        policy = replace(
+            self.config.repositories["owner/repo"], env_template_booleans=fields
+        )
+        self.config = replace(self.config, repositories={"owner/repo": policy})
+        self.service.config = self.config
+        self.check.config = self.config
+        self.check.tasks.config = self.config
+        self.verifier.config = self.config
+        (self.repo / ".env.example").write_text(TEMPLATE)
+        git(self.repo, "add", ".env.example")
+        self.task = self.service.start(self.repo, issue_number=7, reviewed_by="owner")
+        result = self.request()
+        self.assertEqual(result["outcome"], "passed")
+        self.assertEqual(result["current_applicability"], "matches")
+        self.assertFalse(result["publication_eligible"])
+        self.assertEqual(self.service.inspect(self.task["run_id"])["status"], "running")
+        self.assertEqual([call[2] for call in self.calls], [True, False])
+
+        expanded = replace(
+            policy,
+            env_template_booleans=tuple((name, ("0", "1")) for name, _ in fields),
+        )
+        config = replace(self.config, repositories={"owner/repo": expanded})
+        self.check.config = config
+        self.check.tasks.config = config
+        inspected = self.check.inspect(
+            self.task["run_id"], result["evidence_id"].split(":")[1], live=True
+        )
+        self.assertEqual(inspected["current_applicability"], "not_verified")
+        self.assertIn("verification_profile_changed", inspected["validity"])
+        self.assertIn("policy_changed", inspected["validity"])
+        with self.assertRaisesRegex(TaskConflict, "different input"):
+            self.request()
+
+    def test_bootstrap_cannot_replace_a_reviewed_boolean_with_a_credential(self):
+        fields = (
+            configuration(self.root, DECLARATION)
+            .repositories["owner/repo"]
+            .env_template_booleans
+        )
+        policy = replace(
+            self.config.repositories["owner/repo"], env_template_booleans=fields
+        )
+        self.config = replace(self.config, repositories={"owner/repo": policy})
+        self.service.config = self.config
+        self.check.config = self.config
+        self.check.tasks.config = self.config
+        self.verifier.config = self.config
+        (self.repo / ".env.example").write_text(TEMPLATE)
+        git(self.repo, "add", ".env.example")
+        self.task = self.service.start(self.repo, issue_number=7, reviewed_by="owner")
+
+        def edit_copy(snapshot, command, **kwargs):
+            result = self.container_run(snapshot, command, **kwargs)
+            (snapshot / ".env.example").write_text(
+                "ROUTEPILOT_V1_DEV_AUTH=fake-sensitive-value\n"
+            )
+            return result
+
+        self.mock_container.side_effect = edit_copy
+        result = self.request()
+        self.assertEqual(result["outcome"], "unknown")
+        self.assertFalse(result["publication_eligible"])
+        self.assertNotIn("fake-sensitive-value", result["reason"])
+        self.assertEqual(len(self.calls), 1)
 
     def test_copy_corruption_is_detected_before_any_container_execution(self) -> None:
         original = self.verifier._copy_workspace

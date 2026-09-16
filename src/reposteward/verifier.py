@@ -15,7 +15,12 @@ from itertools import chain
 from pathlib import Path
 from threading import Event
 
-from .config import AppConfig, RepositoryPolicy
+from .config import (
+    ENV_BOOLEAN_LITERALS,
+    AppConfig,
+    EnvTemplateBooleans,
+    RepositoryPolicy,
+)
 from .models import AgentResult, CommandResult, VerificationResult
 
 DANGEROUS_COMMAND = re.compile(
@@ -264,7 +269,12 @@ class DockerVerifier:
         )
 
     @staticmethod
-    def _validate_env_template(source: Path, relative: Path) -> None:
+    def _validate_env_template(
+        source: Path,
+        relative: Path,
+        *,
+        env_template_booleans: EnvTemplateBooleans = (),
+    ) -> None:
         if source.is_symlink() or not source.is_file():
             raise VerificationError(
                 f"tracked environment template must be a regular file: {relative}"
@@ -280,6 +290,7 @@ class DockerVerifier:
             raise VerificationError(
                 f"tracked environment template must be UTF-8: {relative}"
             ) from error
+        boolean_fields = dict(env_template_booleans)
         for line_number, line in enumerate(content.splitlines(), start=1):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
@@ -291,13 +302,24 @@ class DockerVerifier:
                     f"at {relative}:{line_number}"
                 )
             sensitive_value = assignment.group("value")
+            name = assignment.group("name")
+            if name in boolean_fields:
+                if EMPTY_ENV_VALUE.fullmatch(sensitive_value) or (
+                    sensitive_value in ENV_BOOLEAN_LITERALS
+                    and sensitive_value in boolean_fields[name]
+                ):
+                    continue
+                raise VerificationError(
+                    "tracked environment template contains an unapproved boolean "
+                    f"value at {relative}:{line_number}"
+                )
             safe_placeholder = len(
                 sensitive_value
             ) <= MAX_ENV_PLACEHOLDER_CHARS and SAFE_ENV_PLACEHOLDER.fullmatch(
                 sensitive_value
             )
             if (
-                SENSITIVE_ENV_NAME.search(assignment.group("name"))
+                SENSITIVE_ENV_NAME.search(name)
                 and not EMPTY_ENV_VALUE.fullmatch(sensitive_value)
                 and not safe_placeholder
             ):
@@ -313,6 +335,7 @@ class DockerVerifier:
         target: Path,
         *,
         trusted_sensitive_paths: tuple[str, ...] = (),
+        env_template_booleans: EnvTemplateBooleans = (),
     ) -> int:
         """Copy tracked and non-ignored untracked files without scanning caches."""
         tracked = cls._git_file_list(worktree, "--cached")
@@ -328,7 +351,11 @@ class DockerVerifier:
                 raise VerificationError("Git returned an unsafe workspace path")
             if cls._sensitive_path(relative):
                 if is_tracked and cls._is_supported_env_template(relative):
-                    cls._validate_env_template(worktree / relative, relative)
+                    cls._validate_env_template(
+                        worktree / relative,
+                        relative,
+                        env_template_booleans=env_template_booleans,
+                    )
                 elif (
                     is_tracked
                     and not cls._environment_path(relative)
@@ -433,6 +460,7 @@ class DockerVerifier:
                 worktree,
                 sandbox_worktree,
                 trusted_sensitive_paths=trusted_sensitive_paths,
+                env_template_booleans=policy.env_template_booleans,
             )
             environment_dir.mkdir(parents=True)
             (sandbox_worktree / ".git").write_text(
@@ -451,6 +479,9 @@ class DockerVerifier:
                                 trusted_sensitive_paths
                             ),
                             "trusted_host_aliases": list(policy.verification_hosts),
+                            "trusted_env_template_booleans": dict(
+                                policy.env_template_booleans
+                            ),
                             "host_workspace_writable": False,
                             "shared_dependency_environment": True,
                             "copied_entries": copied_files,

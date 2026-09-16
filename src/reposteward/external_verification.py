@@ -51,6 +51,7 @@ class ExternalVerification:
         )
 
     def _profile_digest(self, profile: VerificationProfile) -> str:
+        boolean_fields = self.tasks._policy(profile.repository).env_template_booleans
         return canonical_digest(
             {
                 "profile": asdict(profile),
@@ -58,6 +59,7 @@ class ExternalVerification:
                 "trusted_sensitive_paths": self.config.safety.tracked_sensitive_paths_for(
                     profile.repository
                 ),
+                **({"env_template_booleans": boolean_fields} if boolean_fields else {}),
             }
         )
 
@@ -297,6 +299,7 @@ class ExternalVerification:
                         trusted_sensitive_paths=self.config.safety.tracked_sensitive_paths_for(
                             policy.name
                         ),
+                        env_template_booleans=policy.env_template_booleans,
                     )
                     observed = self.tasks.inspect(run_id, live=True)
                     if (
