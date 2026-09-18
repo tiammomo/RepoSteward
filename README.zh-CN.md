@@ -7,7 +7,7 @@
 RepoSteward 是位于 GitHub、Coding Harness 和隔离验证环境之间的本地优先控制面。仓库策略、
 任务状态、审阅证据和公开写入门禁都保存在模型会话之外。
 
-当前 0.1 版本把经过审核的 GitHub Issue 转换为经过验证和人工审阅的 Pull Request。
+当前实现把经过审核的 GitHub Issue 转换为经过验证和人工审阅的 Pull Request。
 长期方向更进一步：模型能够根据维护者定义的目标和风险边界管理 Issue、实现和审查修改，
 并推进低风险 PR。
 下文提到的自治管家属于路线图，不是当前版本已经提供的功能。
@@ -17,6 +17,26 @@ RepoSteward 是位于 GitHub、Coding Harness 和隔离验证环境之间的本�
 </p>
 
 <p align="center"><sub>流程图提供可编辑的 <a href="docs/assets/reposteward-lifecycle.excalidraw">Excalidraw 源文件</a>。</sub></p>
+
+## 作为现有 Coding Agent 的辅助插件
+
+保留你日常的 Codex 开发方式，用 RepoSteward 补上跨会话的项目导览、任务上下文、验证证据
+与 GitHub 维护流程。推荐插件名为 **`reposteward`**，不要求 `-local` 后缀。
+
+| 需求 | 入口 |
+| --- | --- |
+| 快速了解一个已有 clone | `understand scan/guide/query`；无需先配置 GitHub |
+| 给 Codex 接入四类技能与 MCP | [插件安装、改名、升级指南](docs/agent-plugin.zh-CN.md) |
+| 在 Claude Code / Copilot 中接续 | [CLI、MCP 与文件交接指南](docs/coding-agent-assistance.zh-CN.md)；不等于已支持其插件格式 |
+| 管理多个已有项目 | 每个工作区分别关联；每个插件实例固定绑定一个项目 |
+| 确认版本与变化 | `reposteward version`、[变更日志](CHANGELOG.md)、[发布与回退](docs/releases.md) |
+
+首次接入：安装已核验的 `reposteward[mcp]` → 配置仓库策略并关联工作区 → `plugin plan/export`
+→ 注册个人 marketplace → `codex plugin add reposteward@personal` → 新开会话核对 project。
+完整命令及前置条件见插件指南；仅 clone 本仓库不会自动安装插件。
+
+当前为 **0.1.0 开发基线**，请同时固定提交与构建产物摘要。原生 Codex 插件已提供，
+FastAPI/React 工作台仍以相应 PR 的合入状态为准；暂不承诺实测 token 节约比例。
 
 ## 先理解项目，再进入迭代
 

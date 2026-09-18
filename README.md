@@ -8,7 +8,7 @@ RepoSteward is a local-first control plane between GitHub, coding harnesses, and
 isolated verifier. It keeps repository policy, task state, review evidence, and public
 write gates outside the model session.
 
-The current 0.1 release turns reviewed GitHub Issues into verified, human-reviewed pull
+The current implementation turns reviewed GitHub Issues into verified, human-reviewed pull
 requests. The long-term direction is broader: models should be able to triage Issues,
 implement and review changes, and advance low-risk pull requests under goals and risk
 limits set by the maintainer. That autonomous steward is a roadmap, not a feature in
@@ -19,6 +19,30 @@ the current release.
 </p>
 
 <p align="center"><sub>The diagram has an editable <a href="docs/assets/reposteward-lifecycle.excalidraw">Excalidraw source</a>.</sub></p>
+
+## Assist your existing coding agent
+
+Keep your usual Codex development workflow. Add project guides, durable task context,
+verification evidence and reviewed GitHub maintenance through RepoSteward. The recommended
+plugin name is **`reposteward`**; a `-local` suffix is not required.
+
+| Need | Entry point |
+| --- | --- |
+| Understand an existing clone | `understand scan/guide/query`; no GitHub setup required |
+| Add four skills and MCP to Codex | [Install, rename and upgrade the plugin](docs/agent-plugin.zh-CN.md) |
+| Continue with Claude Code / Copilot | [CLI, MCP and file handoff](docs/coding-agent-assistance.zh-CN.md); native plugin packaging is Codex-only |
+| Work across existing projects | Link each workspace; each plugin instance stays bound to one project |
+| Identify an installation | `reposteward version`, [changelog](CHANGELOG.md), [release and rollback policy](docs/releases.md) |
+
+Quick path: install a verified `reposteward[mcp]` artifact → configure repository policy and
+link the workspace → `plugin plan/export` → register the personal marketplace entry →
+`codex plugin add reposteward@personal` → start a new conversation and check project identity.
+The plugin guide provides full prerequisites and commands. Cloning this repository alone
+does not install the plugin.
+
+The source is a **0.1.0 development baseline**: also pin the commit and artifact hash.
+The Codex plugin is available; FastAPI/React workbench changes depend on their individual PRs
+being merged. No measured token-savings percentage is claimed.
 
 ## Understand a project before changing it
 
