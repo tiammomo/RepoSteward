@@ -62,6 +62,8 @@ def repository_policy_digest(policy: RepositoryPolicy) -> str:
         value.pop("max_active_pull_requests")
     if not policy.unlimited_diff_lines:
         value.pop("unlimited_diff_lines")
+    if not policy.env_template_booleans:
+        value.pop("env_template_booleans")
     return _digest(value)
 
 

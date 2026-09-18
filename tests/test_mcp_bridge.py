@@ -220,7 +220,7 @@ class BridgeTests(unittest.TestCase):
             '[repositories."owner/repo"]',
         ]
         for key, value in asdict(self.config.repositories["owner/repo"]).items():
-            if key == "verification_hosts":
+            if key in {"verification_hosts", "env_template_booleans"}:
                 entries = ", ".join(
                     f"{json.dumps(host)} = {json.dumps(address)}"
                     for host, address in value
