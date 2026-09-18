@@ -50,6 +50,7 @@ class ExternalTasks:
             trusted_sensitive_paths=self.config.safety.tracked_sensitive_paths_for(
                 repository
             ),
+            env_template_booleans=self._policy(repository).env_template_booleans,
         )
 
     def start(
