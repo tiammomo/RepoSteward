@@ -179,6 +179,17 @@ def _parser() -> argparse.ArgumentParser:
         elif action in {"apply", "revert"}:
             command.add_argument("--plan-digest", required=True)
 
+    plugin = subparsers.add_parser(
+        "plugin", help="plan and export a local workspace-bound Codex plugin"
+    )
+    plugin_commands = plugin.add_subparsers(dest="plugin_command", required=True)
+    for action in ("plan", "export"):
+        command = plugin_commands.add_parser(action)
+        command.add_argument("path", type=Path)
+        command.add_argument("--output", type=Path, required=True)
+        if action == "export":
+            command.add_argument("--plan-digest", required=True)
+
     overview = subparsers.add_parser(
         "overview", help="read local attention across linked projects"
     )
@@ -226,6 +237,7 @@ def _parser() -> argparse.ArgumentParser:
     mcp_commands = mcp.add_subparsers(dest="mcp_command", required=True)
     mcp_serve = mcp_commands.add_parser("serve", help="run the local STDIO server")
     mcp_serve.add_argument("path", type=Path)
+    mcp_serve.add_argument("--expected-scope", default="")
     mcp_config = mcp_commands.add_parser(
         "config", help="preview local client configuration"
     )
@@ -932,6 +944,18 @@ def main(argv: list[str] | None = None) -> int:
                 )
             _json(result)
             return 0
+        if args.command == "plugin":
+            from .plugin_bundle import PluginBundle
+
+            service = PluginBundle(config)
+            if args.plugin_command == "plan":
+                result = service.plan(args.path, output=args.output)
+            else:
+                result = service.export(
+                    args.path, output=args.output, plan_digest=args.plan_digest
+                )
+            _json(result)
+            return 0
         if args.command == "integration":
             from .integrations import AgentIntegration
 
@@ -1002,7 +1026,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.mcp_command == "serve":
                 from .mcp_bridge import serve
 
-                serve(config, args.path)
+                serve(config, args.path, expected_scope=args.expected_scope)
             else:
                 from .mcp_config import client_config
 

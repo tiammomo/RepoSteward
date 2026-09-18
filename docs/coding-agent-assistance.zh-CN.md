@@ -26,9 +26,12 @@ reposteward task context RUN_ID --budget 24000 --scope-path src/module.py
 
 ## 文件与 MCP 接入
 
+Codex 用户也可用 `plugin plan/export` 导出绑定工作区的本机插件及四类用户 skills，
+参见[本机插件指南](agent-plugin.zh-CN.md)。导出与客户端安装、真实任务验证分别记录。
+
 `integration plan` 先生成可审阅 diff 和摘要，`apply` 必须使用该摘要。接入保留原有 AGENTS.md、CLAUDE.md 与 Copilot 指令；撤销只移除自己管理的片段。普通文件不会保存机器路径或认证信息。
 
-MCP 是可选依赖：在运行 RepoSteward 的 Python 环境安装 `reposteward[mcp]`。`mcp config PATH --client codex|claude-code|copilot-vscode` 输出本机配置预览，不自动写客户端配置。服务每次只绑定一个具体工作区，提供 project、context、evidence、checkpoint、verification 五类工具。MCP 服务启动后持有当时的用户配置；修改策略或验证 profile 后应重启服务。
+MCP 是可选依赖：在运行 RepoSteward 的 Python 环境安装 `reposteward[mcp]`。`mcp config PATH --client codex|claude-code|copilot-vscode` 输出本机配置预览，不自动写客户端配置。服务每次只绑定一个具体工作区，提供 project、context、evidence、understanding、checkpoint、verification 六类工具。MCP 服务启动后持有当时的用户配置；修改策略或验证 profile 后应重启服务。
 
 Codex 可以通过用户 `config.toml` 配置 STDIO MCP；Claude Code 可使用临时配置文件及 `--mcp-config`；VS Code 使用用户 MCP 设置。命令路径和本地配置保存在用户目录。[Codex MCP 配置](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)、[Claude Code MCP](https://code.claude.com/docs/en/mcp)。
 

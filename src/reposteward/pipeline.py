@@ -7,6 +7,7 @@ import re
 import sqlite3
 import subprocess
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -5352,6 +5353,48 @@ class Pipeline:
             and (not head_sha or pull_request.head_sha == head_sha)
         )
 
+    def _confirm_updated_pull(
+        self,
+        client: GitHubClient,
+        *,
+        repository: str,
+        previous: PullRequest,
+        head_sha: str,
+        lease: RunLease,
+    ) -> PullRequest:
+        """Confirm an already published update without replaying any writes."""
+        for attempt in range(3):
+            self.store.validate_run_lease(lease)
+            pull = client.pull_request(repository, previous.number)
+            self.store.validate_run_lease(lease)
+            if (
+                pull.number != previous.number
+                or pull.url != previous.url
+                or pull.state != "open"
+                or pull.head_owner.casefold() != previous.head_owner.casefold()
+                or pull.head_repository.casefold()
+                != previous.head_repository.casefold()
+                or pull.head_branch != previous.head_branch
+                or pull.base_branch != previous.base_branch
+                or pull.head_sha not in {previous.head_sha, head_sha}
+            ):
+                raise PolicyError(
+                    "branch publication succeeded, but pull request confirmation "
+                    "returned conflicting facts; inspect the publication audit "
+                    "and current pull request before retrying submit"
+                )
+            if pull.head_sha == head_sha:
+                return pull
+            if attempt < 2:
+                # GitHub can briefly serve the pre-push PR head. Only that exact
+                # old head may be retried; the successful push stays audited.
+                time.sleep(attempt + 1)
+        raise PolicyError(
+            "branch publication succeeded, but pull request metadata still shows "
+            "the previous head after three reads; inspect the publication audit "
+            "and retry submit once GitHub reflects the verified commit"
+        )
+
     def _reconcile_publication_step(
         self,
         client: GitHubClient,
@@ -6150,8 +6193,12 @@ class Pipeline:
                         worktree=worktree,
                         lease=mutation_lease,
                     )
-                    pull_request = client.pull_request(
-                        policy.name, existing_pull.number
+                    pull_request = self._confirm_updated_pull(
+                        client,
+                        repository=policy.name,
+                        previous=existing_pull,
+                        head_sha=details["commit_sha"],
+                        lease=mutation_lease,
                     )
             else:
                 public_write = self._publish_branch(
