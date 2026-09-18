@@ -180,7 +180,8 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--plan-digest", required=True)
 
     plugin = subparsers.add_parser(
-        "plugin", help="plan and export a local workspace-bound Codex plugin"
+        "plugin",
+        help="export, diagnose and preview installation of scoped Codex plugins",
     )
     plugin_commands = plugin.add_subparsers(dest="plugin_command", required=True)
     for action in ("plan", "export"):
@@ -189,6 +190,13 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--output", type=Path, required=True)
         if action == "export":
             command.add_argument("--plan-digest", required=True)
+
+    for action in ("doctor", "install-plan"):
+        command = plugin_commands.add_parser(action)
+        command.add_argument("path", type=Path)
+        command.add_argument("--bundle", type=Path, required=True)
+        command.add_argument("--marketplace", type=Path)
+        command.add_argument("--codex-home", type=Path)
 
     overview = subparsers.add_parser(
         "overview", help="read local attention across linked projects"
@@ -945,6 +953,30 @@ def main(argv: list[str] | None = None) -> int:
             _json(result)
             return 0
         if args.command == "plugin":
+            if args.plugin_command in {"doctor", "install-plan"}:
+                from .plugin_diagnostics import PluginDiagnostics
+
+                diagnostics = PluginDiagnostics(config)
+                method = (
+                    diagnostics.doctor
+                    if args.plugin_command == "doctor"
+                    else diagnostics.install_plan
+                )
+                result = method(
+                    args.path,
+                    bundle=args.bundle,
+                    marketplace=args.marketplace,
+                    codex_home=args.codex_home,
+                )
+                _json(result)
+                return (
+                    0
+                    if result.get(
+                        "bundle_compatible", result.get("ready_for_client_install")
+                    )
+                    else 2
+                )
+
             from .plugin_bundle import PluginBundle
 
             service = PluginBundle(config)
