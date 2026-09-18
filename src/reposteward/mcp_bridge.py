@@ -12,7 +12,7 @@ from jsonschema.exceptions import ValidationError
 
 from .config import AppConfig
 from .external_tasks import ExternalTasks, TaskConflict
-from .projects import ProjectError
+from .projects import ProjectError, canonical_digest
 
 MAX_REQUEST_BYTES = 120_000
 MAX_RESPONSE_BYTES = 300_000
@@ -194,6 +194,19 @@ class ScopedBridge:
         self.root = Path(self.bound["binding"]["root"])
         self.tasks._policy(self.bound["project"]["repository"])
 
+    def scope_digest(self) -> str:
+        return canonical_digest(
+            {
+                "project_id": self.bound["project"]["id"],
+                "binding_id": self.bound["binding"]["id"],
+                "fingerprint": self.bound["binding"]["fingerprint"],
+                "binding_updated_at": self.bound["binding"]["updated_at"],
+                "state_dir": str(self.config.state_dir.resolve()),
+                "account": self.config.github.login.casefold(),
+                "api_url": self.config.github.api_url,
+            }
+        )
+
     def _scope(self, run_id: str | None = None) -> dict:
         current = self.tasks.registry.inspect(self.root)
         if any(
@@ -202,6 +215,7 @@ class ScopedBridge:
                 ("project", "id"),
                 ("binding", "id"),
                 ("binding", "fingerprint"),
+                ("binding", "updated_at"),
             )
         ):
             raise ProjectError(
@@ -337,7 +351,7 @@ def error_result(exc: BaseException) -> dict:
     }
 
 
-def create_server(config: AppConfig, workspace: Path):
+def create_server(config: AppConfig, workspace: Path, *, expected_scope: str = ""):
     try:
         import anyio
         from mcp import types
@@ -347,6 +361,10 @@ def create_server(config: AppConfig, workspace: Path):
             "MCP support requires reposteward[mcp]; use the file/CLI handoff until installed"
         ) from exc
     bridge = ScopedBridge(config, workspace)
+    if expected_scope and bridge.scope_digest() != expected_scope:
+        raise ProjectError(
+            "plugin workspace scope changed; review and export a new bundle"
+        )
     limiter = anyio.CapacityLimiter(4)
 
     async def list_tools(_context, params):
@@ -442,10 +460,10 @@ class _BoundedInput:
         return line.decode("utf-8", errors="strict")
 
 
-def serve(config: AppConfig, workspace: Path) -> None:
+def serve(config: AppConfig, workspace: Path, *, expected_scope: str = "") -> None:
     import sys
 
-    server = create_server(config, workspace)
+    server = create_server(config, workspace, expected_scope=expected_scope)
     import anyio
     from mcp.server.stdio import stdio_server
 
