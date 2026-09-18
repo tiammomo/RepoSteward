@@ -10,9 +10,8 @@ from .config import AppConfig
 from .mcp_bridge import ScopedBridge
 
 
-def client_config(config: AppConfig, workspace: Path, *, client: str) -> dict:
-    bridge = ScopedBridge(config, workspace)
-    entry = {
+def server_entry(config: AppConfig, workspace: Path) -> dict:
+    return {
         "command": sys.executable,
         "args": [
             "-m",
@@ -21,9 +20,14 @@ def client_config(config: AppConfig, workspace: Path, *, client: str) -> dict:
             str(config.path),
             "mcp",
             "serve",
-            str(bridge.root),
+            str(workspace),
         ],
     }
+
+
+def client_config(config: AppConfig, workspace: Path, *, client: str) -> dict:
+    bridge = ScopedBridge(config, workspace)
+    entry = server_entry(config, bridge.root)
     if client == "codex":
         fragment = (
             "[mcp_servers.reposteward]\n"
