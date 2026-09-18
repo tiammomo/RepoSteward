@@ -63,6 +63,9 @@ PR 为目标。
 
 日常从源码目录之外使用时，参见[独立安装与离线诊断指南](docs/local-installation.zh-CN.md)。
 
+已有 Codex 工作流可使用[本机插件导出](docs/agent-plugin.zh-CN.md)，
+在明确绑定的项目中读取代码导览、接续任务、验证改动与跟进 PR。
+
 运行 `reposteward web` 打开[本地只读工作台](docs/local-workbench.zh-CN.md)，集中查看
 跨项目待办、代码导览、任务接续、审阅依据与设置诊断。
 `reposteward version` 显示安装信息；`reposteward doctor --local` 可检查配置来源与数据库
