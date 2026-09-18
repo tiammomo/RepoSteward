@@ -1,312 +1,223 @@
 # RepoSteward
 
-<p align="right"><a href="README.zh-CN.md">简体中文</a></p>
+**English** · [简体中文](README.zh-CN.md)
 
-> Govern GitHub repositories with coding models under rules you own.
+**Give your coding agent project context that lasts beyond a conversation.**
 
-RepoSteward is a local-first control plane between GitHub, coding harnesses, and an
-isolated verifier. It keeps repository policy, task state, review evidence, and public
-write gates outside the model session.
+RepoSteward helps individual maintainers and small teams work across GitHub projects:
+understand code, preserve task progress, resume agent sessions, verify changes, and follow
+Issues and pull requests. Keep coding with Codex, Claude Code or Copilot; RepoSteward
+stores project facts, decisions, verification evidence and maintenance rules outside the session.
 
-The current implementation turns reviewed GitHub Issues into verified, human-reviewed pull
-requests. The long-term direction is broader: models should be able to triage Issues,
-implement and review changes, and advance low-risk pull requests under goals and risk
-limits set by the maintainer. That autonomous steward is a roadmap, not a feature in
-the current release.
+[Quick start](#quick-start) · [Codex plugin](#connect-the-codex-plugin) · [Multiple projects](#manage-existing-projects) · [Documentation](#documentation)
 
-<p align="center">
-  <img src="docs/assets/reposteward-lifecycle.svg" width="100%" alt="RepoSteward workflow: a reviewed GitHub Issue enters a credential-free coding workspace, isolated verification produces evidence, a maintainer reviews the result, and a separate gate publishes a Draft PR for CI and reviewer follow-up.">
-</p>
+## What it helps you do
 
-<p align="center"><sub>The diagram has an editable <a href="docs/assets/reposteward-lifecycle.excalidraw">Excalidraw source</a>.</sub></p>
-
-## Assist your existing coding agent
-
-Keep your usual Codex development workflow. Add project guides, durable task context,
-verification evidence and reviewed GitHub maintenance through RepoSteward. The recommended
-plugin name is **`reposteward`**; a `-local` suffix is not required.
-
-| Need | Entry point |
+| When you need to… | RepoSteward provides… |
 | --- | --- |
-| Understand an existing clone | `understand scan/guide/query`; no GitHub setup required |
-| Add four skills and MCP to Codex | [Install, rename and upgrade the plugin](docs/agent-plugin.zh-CN.md) |
-| Continue with Claude Code / Copilot | [CLI, MCP and file handoff](docs/coding-agent-assistance.zh-CN.md); native plugin packaging is Codex-only |
-| Work across existing projects | Link each workspace; each plugin instance stays bound to one project |
-| Identify an installation | `reposteward version`, [changelog](CHANGELOG.md), [release and rollback policy](docs/releases.md) |
+| Join an unfamiliar project or prepare a contribution | Local code guides with implementation, test and source references |
+| Switch conversations, models or clients | Task goals, decisions, remaining work and a concrete next step |
+| Assess an agent's changes | Isolated verification, with agent claims, historical results and applicable evidence kept distinct |
+| Maintain several repositories | Existing clone/worktree bindings and shared views of tasks, blockers and cached GitHub facts |
+| Keep Issues and PRs moving | Reviewed intake, change preparation, CI/review follow-up and separate publication/merge gates |
 
-Quick path: install a verified `reposteward[mcp]` artifact → configure repository policy and
-link the workspace → `plugin plan/export` → register the personal marketplace entry →
-`codex plugin add reposteward@personal` → start a new conversation and check project identity.
-The plugin guide provides full prerequisites and commands. Cloning this repository alone
-does not install the plugin.
+RepoSteward runs locally. Its CLI, MCP server, Codex plugin and local workbench share
+application services and persistent state.
 
-The source is a **0.1.0 development baseline**: also pin the commit and artifact hash.
-The Codex plugin is available; FastAPI/React workbench changes depend on their individual PRs
-being merged. No measured token-savings percentage is claimed.
+## Quick start
 
-## Understand a project before changing it
-
-Read a local clone or worktree with `reposteward understand scan PATH`, then
-`reposteward understand guide PATH` or `reposteward understand query PATH "symbol or problem"`.
-The guide links project declarations, Python static relationships and a suggested reading
-route to versioned source evidence. Reading does not require a linked task or GitHub login.
-See the [project understanding guide](docs/project-understanding.zh-CN.md) for limits and MCP access.
-
-## Why RepoSteward exists
-
-Coding harnesses are good at understanding code and editing a workspace. A model
-session is a poor place to own durable repository policy, GitHub credentials, public
-write authority, or the record of what was reviewed.
-
-RepoSteward keeps those responsibilities in a deterministic control plane:
-
-- it freezes the Issue, base commit, repository instructions, and policy before work;
-- it gives the harness a credential-free worktree and a bounded Context Pack;
-- it runs allowed verification commands in an isolated container;
-- it records checkpoints, evidence, resource use, and GitHub facts;
-- it rechecks identity and remote state before a public write;
-- it separates preparing a change from publishing or merging it.
-
-The project is designed for individual maintainers and small teams that maintain
-several repositories with coding agents. Contributor workflows are supported, but the
-maintainer workflow is the primary product path.
-
-RepoSteward works alongside coding models, CI, and GitHub project management. Its job
-is to govern the maintenance workflow, not to produce a large number of pull requests.
-
-## Current product and long-term direction
-
-| Area | Available in 0.1 | Direction |
-| --- | --- | --- |
-| Issue intake | Local drafts, duplicate search, reviewed Project Draft promotion | Model triage, value scoring, reversible closing, and policy-gated creation |
-| Implementation | Codex CLI or optional Codex SDK prepares a focused local commit | Separate Steward, Builder, and Reviewer model roles |
-| Verification | Allowed commands run in a credential-free, no-network verifier | Risk tiers and evidence-based autonomy levels |
-| Publication | A maintainer reviews a packet and runs a separate submit command | Low-risk PR stages can advance under standing repository policy |
-| Follow-up | CI and review changes are ingested incrementally for repair | Routine repository operation with exception-based human supervision |
-| Merge | Read-only eligibility, optional owner attestation, explicit merge gate | Merge permission earned per repository and revoked after poor outcomes |
-
-Current safety gates remain authoritative until a reviewed Issue changes the
-implementation. [RFC #70](https://github.com/tiammomo/RepoSteward/issues/70) records
-the model-governed repository direction.
-
-## Install
-
-For an isolated installation used outside this source checkout, see the
-[local installation and offline diagnostics guide](docs/local-installation.zh-CN.md).
-
-Run `reposteward web` for the [read-only local workbench](docs/local-workbench.zh-CN.md):
-project guides, task continuity, review evidence and diagnostics in one browser window.
-`reposteward version` reports installation metadata; `reposteward doctor --local`
-checks configuration sources and database compatibility without authentication or migration.
-
-The full Issue-to-PR workflow requires Python 3.12 or newer, uv, Git, Docker,
-GitHub authentication, and the configured coding harness. Local code reading and
-offline diagnostics can be used before configuring those execution services.
+Try a code guide with **Python 3.12+, uv, Git** and an existing local repository.
+You can do this before configuring a GitHub identity, Docker or an agent.
 
 ```bash
 git clone https://github.com/tiammomo/RepoSteward.git
 cd RepoSteward
-uv sync
-uv run reposteward init
-uv run reposteward --help
+uv sync --locked --python 3.12
+
+uv run reposteward understand scan /absolute/path/to/project
+uv run reposteward understand guide /absolute/path/to/project
+uv run reposteward understand query /absolute/path/to/project "symbol_or_path"
 ```
 
-`init` reads the current `gh auth` and Git identity, then writes user-owned settings
-to `~/.config/reposteward/config.toml`. It does not store a GitHub token in that
-file.
+Replace the path with your clone/worktree. `scan` writes an understanding cache outside
+the repository; `guide` returns entry points, a suggested reading route and source evidence.
+`query` narrows the route using symbols, paths or keywords. Rescan after edits: stale guides
+are not presented as current facts.
 
-Add a repository in maintainer mode:
+Coverage currently centers on Python static structure, project manifests and documentation;
+it does not establish full cross-language or runtime understanding.
+See the [project understanding guide (中文)](docs/project-understanding.zh-CN.md).
+
+For everyday use from other project directories, install a verified wheel using the
+[standalone installation guide (中文)](docs/local-installation.zh-CN.md). The remaining
+`reposteward` examples assume that installation; do not rely on this checkout's `uv run`
+environment after moving to another project. Install the wheel's `mcp` extra for MCP or plugins.
+
+## Connect the Codex plugin
+
+The recommended plugin name is **`reposteward`**. Four skills help you understand a project,
+resume a task, verify changes and maintain a PR within your existing Codex workflow.
+
+### 1. Link the target project
+
+For first-time identity setup, authenticate with GitHub CLI and run `reposteward init`.
+Skip initialization if you already have user configuration. This example uses a repository
+you maintain; choose `--mode contributor` when contributing to someone else's project.
 
 ```bash
-cd /path/to/repository
-uv run reposteward repo add owner/repository --mode maintainer
+cd /absolute/path/to/project
+reposteward repo add owner/project --mode maintainer
+reposteward project link .
+reposteward project inspect .
+reposteward understand scan .
 ```
 
-The command creates a machine-local `.reposteward.toml` and excludes it through
-`.git/info/exclude`. Fill in the repository's bootstrap and verification allowlists,
-then build the verifier and check the environment:
+Replace `owner/project`; skip `repo add` for an already configured repository. It creates
+a machine-local policy skeleton. Configure allowed dependency setup and verification commands
+before running verification or delivery workflows.
+
+### 2. Review and export the plugin
+
+Stay in the target project directory. The output must be a new directory outside the repository.
 
 ```bash
-uv run reposteward image build
-uv run reposteward doctor
+mkdir -p "$HOME/plugins"
+reposteward plugin plan . --output "$HOME/plugins/reposteward"
 ```
 
-See the [example configuration](reposteward.example.toml) and the
-[detailed Chinese operator guide](docs/operator-guide.zh-CN.md) for the full setup.
-
-## Prepare the first reviewed change
-
-Start with an open, reviewed Issue in a repository you maintain:
+Review the workspace, account, interpreter path and file contents, then use the returned
+`plan_digest` in a separate export:
 
 ```bash
-uv run reposteward gate owner/repository 123
-uv run reposteward prepare owner/repository 123
+reposteward plugin export . --output "$HOME/plugins/reposteward" \
+  --plan-digest REVIEWED_PLAN_DIGEST
 ```
 
-`prepare` clones the latest default branch into an isolated workspace, invokes the
-configured harness, runs the allowed verifier commands, checks the diff, and creates a
-local commit. It returns a compact Review Packet with the commit, diff size, risks,
-verification status, logs, and resource use.
+### 3. Register, install and use it
 
-Inspect the result without publishing it:
+Follow the [plugin guide (中文)](docs/agent-plugin.zh-CN.md#在-codex-安装) to register the
+exported directory in your personal marketplace. Export alone does not install a client plugin.
+For Codex versions supporting plugin commands, with the default marketplace name `personal`:
 
 ```bash
-uv run reposteward inspect RUN_ID
-uv run reposteward logs RUN_ID
+codex plugin add reposteward@personal
+codex plugin list --json
 ```
 
-After reviewing the exact diff and evidence, publish through a separate command:
+Confirm that it is installed and enabled, then start a new conversation:
+
+> Use the reposteward plugin. Confirm the bound project, read its code guide and current task context, and suggest the next step.
+
+The [rename, upgrade and rollback guide (中文)](docs/agent-plugin.zh-CN.md) also covers an
+existing `reposteward-local` installation. Generated bundles contain local paths; install,
+link and export again on another machine.
+
+## Manage existing projects
+
+Keep your projects where they are. Clone them through their usual workflow, then register them:
 
 ```bash
-REPOSTEWARD_ENABLE_SUBMIT=1 \
-  uv run reposteward submit owner/repository 123 \
-  --reviewed-by your-github-login
+reposteward project link /absolute/path/to/project-a
+reposteward project link /absolute/path/to/project-b
+reposteward project list
+reposteward overview show --format text
+reposteward web
 ```
 
-The default result is a Draft PR. The environment gate, configured identity, actual
-GitHub identity, current head, base, policy, and remote PR state must all match.
+- **Repository identity and workspace binding are separate.** Worktrees sharing a remote belong to one project, with distinct workspace bindings.
+- **Linking is not maintenance authority.** Configure the corresponding repository role and policy for maintenance or contributions.
+- **Each plugin instance binds one workspace.** Use distinct names such as `reposteward-project-a` for additional projects; changing Codex's directory does not switch the binding.
+- **Refresh GitHub facts explicitly.** `overview refresh` fetches and caches facts with timestamps and error states. `overview show` and the current web view read local records.
 
-After publication:
+The current workbench is a local, read-only view of cross-project work, code guides,
+task continuity and review evidence. The FastAPI/React workbench and importing projects
+by pasting a URL into the web interface remain follow-up work.
+See [workbench (中文)](docs/local-workbench.zh-CN.md) and [agent assistance (中文)](docs/coding-agent-assistance.zh-CN.md).
 
-```bash
-uv run reposteward follow-up RUN_ID
-uv run reposteward repair RUN_ID
-uv run reposteward merge-decision RUN_ID
-```
+## From task continuity to GitHub maintenance
 
-`follow-up` ingests only changed GitHub facts. `repair` prepares a new verified
-commit when actionable feedback needs code changes. `merge-decision` records a
-deterministic eligibility result without merging.
+Continue coding in your own agent. Start development tasks from reviewed open Issues on
+feature branches: use `task start`, then CLI/MCP context, checkpoints and constrained
+verification. To delegate change preparation to a configured Codex harness, use the
+`gate` and `prepare` workflow instead.
 
-## Maintainer views
+<p align="center">
+  <img src="docs/assets/reposteward-lifecycle.svg" width="100%" alt="A reviewed Issue enters a separate workspace; an agent prepares changes, isolated verification produces evidence, and a maintainer reviews before separately publishing a PR and following CI and review feedback.">
+</p>
 
-RepoSteward also exposes repository-level, mostly read-only views:
+<p align="center"><sub><a href="docs/assets/reposteward-lifecycle.excalidraw">Editable diagram source</a></sub></p>
 
-```bash
-uv run reposteward inbox --repo owner/repository --format text
-uv run reposteward portfolio inspect owner/repository --format text
-uv run reposteward portfolio plan owner/repository --format text
-uv run reposteward branch-cleanup plan owner/repository --format text
-uv run reposteward batch plan owner/repository --format text
-uv run reposteward trace owner/repository 123 --format text
-uv run reposteward usage report owner/repository
-uv run reposteward usage external-report owner/repository
-uv run reposteward storage stats --repo owner/repository
-uv run reposteward benchmark run --output .artifacts/benchmark.json
-```
+| Stage | Common entry points |
+| --- | --- |
+| Continue work in an existing agent | `task start`, `task current`, `task context`, checkpoints |
+| Delegate a reviewed change | `gate`, `prepare`; `adopt` registers an existing clean commit |
+| Inspect results | `inspect`, `logs`, independent verification records |
+| Publish and follow up | Separate `submit`, `follow-up`, `repair` |
+| Assess merging | `merge-decision`; review and execute a merge separately if eligible |
 
-The persistent queue and batch planner store bounded control-plane intent. They do not
-turn on submit, owner-attestation, or merge permissions.
+Online maintenance requires a GitHub identity, repository policy and SSH. Isolated
+verification requires Docker/Runner; delegated coding also requires the chosen harness's
+authentication. `submit` requires a separate invocation, `REPOSTEWARD_ENABLE_SUBMIT=1`
+and a matching `--reviewed-by` identity. MCP exposes no publication or merge tools.
 
-For an existing Codex session, [external usage collection](docs/external-usage.md)
-binds explicit turns to an external task and refreshes real client counters with
-`usage collect RUN_ID`. Missing metrics and prices remain unknown; reports retain
-no conversation text. Savings comparisons wait for real usage data.
+See the [operator guide (中文)](docs/operator-guide.zh-CN.md) for full commands,
+Project Draft intake and maintenance gates.
 
-For maintainer same-repository policies, `branch-cleanup plan` builds a read-only,
-digest-bound backlog from submitted runs and successful merge audits. Applying a
-reviewed plan additionally requires `branch_cleanup = true`, the
-`REPOSTEWARD_ENABLE_BRANCH_CLEANUP=1` gate, matching configured/reviewed/authenticated
-identity, and fresh exact branch/PR facts. The leased Git delete uses the host SSH
-identity; ambiguous results stay pending for read-only reconciliation and never change
-the authoritative merge result.
+## Context, verification and usage
 
-`benchmark run` executes RepoStewardBench v0 entirely offline. Its versioned fixtures
-cover safety gates, context bounds, maintainer attention, recovery, and scale. Every
-scenario is repeated to detect nondeterminism, critical safety and recovery scenarios
-form a hard gate, and machine-specific duration is reported only as informational data.
-Use `--baseline PREVIOUS.json` to compare semantic metric deltas between commits.
+RepoSteward supplies budgeted Context Packs with task requirements, decisions, remaining
+work and sources. Omitted optional material has coverage notes and retrieval hints;
+mandatory requirements exceeding the budget cause an explicit failure. Checkpoints support
+continuity without reloading the entire conversation history.
 
-## Trust boundaries
+Agent claims of completion or passing tests remain distinct from independently verified
+evidence. Verification results bind a code snapshot and policy; after edits, older results
+remain historical. Harnesses and tests receive no GitHub credentials. Verification runs
+offline inside isolated containers, with dependency preparation in a separate credential-free phase.
 
-- GitHub credentials stay in the control plane. They are not passed to the harness,
-  tests, repository hooks, Git push, or Docker containers.
-- Git clone and push use the host SSH identity. GitHub API calls use the configured
-  maintainer identity.
-- Issue bodies, repository files, comments, reviews, and imported context are treated
-  as untrusted input.
-- Verification commands run without network access. Dependency bootstrap can use
-  network access in a separate credential-free phase.
-- Project configuration can tighten user-owned limits but cannot loosen credential,
-  path, identity, or public-write controls.
-- Incomplete GitHub facts, changed heads, changed policy, competing work, high-risk
-  paths, or oversized diffs fail closed.
-- Public writes have separate environment gates and fresh-state checks. A queue cannot
-  enable those gates on its own.
+[Usage collection](docs/external-usage.md) covers explicitly selected tasks and turns;
+it does not imply access to every project's conversations. Missing metrics stay unknown.
+There is no established token-savings percentage to promise.
 
-GitHub writes use the configured maintainer identity. RepoSteward keeps model,
-policy, evidence, intent, and result provenance in its local audit state.
+## Client support and current limits
 
-## Portable task state
+| Integration | Current support |
+| --- | --- |
+| Codex plugin | Four skills and six MCP tools, scoped to a workspace and account |
+| Codex CLI / optional Codex SDK | Built-in coding harnesses invoked by RepoSteward |
+| Claude Code / Copilot (VS Code) | CLI/file handoff and MCP configuration previews; native plugin packaging, managed runners and further client validation remain separate work |
+| Local workbench | Read-only access to local projects and tasks; no public multi-user deployment |
 
-Every prepared change has a versioned Context Pack, append-only Checkpoints, and a
-harness run record. Native harness sessions can speed up recovery, but they are not the
-source of truth.
-
-```bash
-uv run reposteward context inspect RUN_ID
-uv run reposteward context export RUN_ID --output handoff.json
-uv run reposteward context import handoff.json
-```
-
-The bundle contains digests and bounded task facts, not account credentials. Imported
-content remains untrusted.
-
-## Roadmap: Shadow Steward first
-
-The first milestone toward model-governed maintenance is a read-only Shadow Steward.
-It will inspect Issues, pull requests, CI, reviews, and a human-owned governance
-charter, then propose actions with evidence, confidence, and the policy used.
-
-Autonomy is intended to advance by repository:
-
-1. shadow recommendations with no GitHub writes;
-2. reversible Issue labeling and closing;
-3. policy-gated Issue creation and Draft PR publication;
-4. independent model review and Ready transitions;
-5. low-risk merge after CI, freshness checks, and an observation period.
-
-Each level must be earned from measured results and can be downgraded automatically.
-Security, permissions, releases, governance changes, and other high-risk work continue
-to escalate to a person. Models may propose policy changes but cannot change their own
-authority.
+The [client pilot record (中文)](docs/handoff-pilot-2026-09-05.zh-CN.md) specifies the versions
+and scope of that trial. The long-term direction is more repository automation under
+maintainer-owned rules: evidence-backed recommendations first, then broader actions.
+[RFC #70](https://github.com/tiammomo/RepoSteward/issues/70) describes that direction;
+unattended autonomous maintenance is not a current capability.
 
 ## Documentation
 
-| Need | Document |
+Most operational guides are currently in Chinese.
+
+| What you need | Documentation |
 | --- | --- |
-| Chinese product entry | [README.zh-CN.md](README.zh-CN.md) |
-| Detailed commands and operating procedures | [Chinese operator guide](docs/operator-guide.zh-CN.md) |
-| Components, persistence, and harness contracts | [Architecture](docs/architecture.md) |
-| Project Draft Issue review with GitHub Actions | [GitHub Actions](docs/github-actions.md) |
-| Full project configuration | [Example TOML](reposteward.example.toml) |
-| Contribution workflow | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| Private security reporting | [SECURITY.md](SECURITY.md) |
-| Long-term positioning decision | [RFC #70](https://github.com/tiammomo/RepoSteward/issues/70) |
+| Installation, diagnostics and state upgrades | [Standalone installation](docs/local-installation.zh-CN.md) · [Backup and migration](docs/state-upgrades.zh-CN.md) |
+| Plugins and session continuity | [Codex plugin](docs/agent-plugin.zh-CN.md) · [Existing agents](docs/coding-agent-assistance.zh-CN.md) |
+| Code understanding and project browsing | [Reading guide](docs/project-understanding.zh-CN.md) · [Workbench](docs/local-workbench.zh-CN.md) |
+| GitHub maintenance, queues, portfolio and cleanup | [Operator guide](docs/operator-guide.zh-CN.md) · [Configuration example](reposteward.example.toml) |
+| Architecture, persistence and verification boundaries | [Architecture](docs/architecture.md) · [Project Draft Actions](docs/github-actions.md) |
+| Usage, versions and releases | [Usage collection](docs/external-usage.md) · [Changelog](CHANGELOG.md) · [Release and rollback policy](docs/releases.md) |
 
-## Project status
+## Version and contributing
 
-RepoSteward is at version 0.1. Configuration, schemas, and public interfaces may change
-before 1.0. The built-in harnesses are Codex CLI and the optional Codex SDK.
-Claude Code, DeepSeek, and autonomous repository governance do not have built-in
-implementations yet.
+The source is a **0.1.0 development baseline**. Configuration, schemas and public interfaces
+may change before 1.0. Use `reposteward version` to inspect an installation and retain its
+commit and wheel hash. Plugin content digests distinguish exports; they are not formal
+release versions. Tags, GitHub Releases and changelog entries follow the [version policy](docs/releases.md).
 
-The project is MIT licensed. It was previously named Starfix; legacy configuration and
-state locations remain readable where documented.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) before contributing.
+Start from a reviewed Issue and use a focused PR on a separate branch. Run the required
+verification in the hardened container. Code, documentation, reproducible bug reports
+and feedback from actual use are welcome.
 
-## Development
-
-```bash
-uv sync
-uv run python -m unittest discover -s tests -v
-uvx ruff check .
-uvx ruff format --check .
-uv run reposteward --help
-uv run reposteward benchmark run
-uv build
-```
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a change. Report vulnerabilities
-through [SECURITY.md](SECURITY.md), not a public Issue.
-
-For using RepoSteward with existing coding agents, see the [assistance guide (中文)](docs/coding-agent-assistance.zh-CN.md) and [actual client pilot](docs/handoff-pilot-2026-09-05.zh-CN.md).
+Licensed under [MIT](LICENSE). Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
+Legacy configuration and state locations from the former Starfix name remain readable where documented.
