@@ -8,6 +8,7 @@ import stat
 from pathlib import Path
 from typing import Any
 
+from .config import EnvTemplateBooleans
 from .projects import ProjectError, canonical_digest, local_git, workspace_state
 from .verifier import UNTRACKED_SANDBOX_EXCLUDED_NAMES, DockerVerifier
 
@@ -20,6 +21,7 @@ def _entries(
     root: Path,
     *,
     trusted_sensitive_paths: tuple[str, ...],
+    env_template_booleans: EnvTemplateBooleans = (),
     names: dict[str, bool] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     if names is None:
@@ -45,7 +47,9 @@ def _entries(
         source = root / relative
         if DockerVerifier._sensitive_path(relative):
             if is_tracked and DockerVerifier._is_supported_env_template(relative):
-                DockerVerifier._validate_env_template(source, relative)
+                DockerVerifier._validate_env_template(
+                    source, relative, env_template_booleans=env_template_booleans
+                )
             elif (
                 is_tracked
                 and not DockerVerifier._environment_path(relative)
@@ -143,13 +147,22 @@ def _entries(
 
 
 def workspace_snapshot(
-    root: Path, *, trusted_sensitive_paths: tuple[str, ...] = ()
+    root: Path,
+    *,
+    trusted_sensitive_paths: tuple[str, ...] = (),
+    env_template_booleans: EnvTemplateBooleans = (),
 ) -> dict[str, Any]:
     root = root.resolve(strict=True)
     before = workspace_state(root)
-    manifest, excluded = _entries(root, trusted_sensitive_paths=trusted_sensitive_paths)
+    manifest, excluded = _entries(
+        root,
+        trusted_sensitive_paths=trusted_sensitive_paths,
+        env_template_booleans=env_template_booleans,
+    )
     repeated, repeated_excluded = _entries(
-        root, trusted_sensitive_paths=trusted_sensitive_paths
+        root,
+        trusted_sensitive_paths=trusted_sensitive_paths,
+        env_template_booleans=env_template_booleans,
     )
     after = workspace_state(root)
     if before != after or manifest != repeated or excluded != repeated_excluded:
@@ -179,12 +192,16 @@ def verify_snapshot_copy(
     *,
     exact: bool,
     trusted_sensitive_paths: tuple[str, ...] = (),
+    env_template_booleans: EnvTemplateBooleans = (),
 ) -> None:
     """Compare the actual sandbox bytes with the frozen source manifest, without Git."""
     expected = snapshot["files"]
     names = {entry["path"]: entry["tracked"] for entry in expected}
     actual, _ = _entries(
-        root, trusted_sensitive_paths=trusted_sensitive_paths, names=names
+        root,
+        trusted_sensitive_paths=trusted_sensitive_paths,
+        env_template_booleans=env_template_booleans,
+        names=names,
     )
     if actual != expected:
         raise ProjectError("verification copy differs from the requested code snapshot")

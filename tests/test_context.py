@@ -59,6 +59,7 @@ class RepositoryPolicyDigestTests(unittest.TestCase):
         legacy.pop("max_active_pull_requests")
         legacy.pop("branch_cleanup")
         legacy.pop("unlimited_diff_lines")
+        legacy.pop("env_template_booleans")
         encoded = json.dumps(
             legacy, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode()
