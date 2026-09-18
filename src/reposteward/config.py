@@ -25,6 +25,8 @@ DIAGNOSTIC_SETTINGS = (
 )
 REPOSITORY_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 SENSITIVE_PATH_NAMES = frozenset({"credentials", "secrets"})
+ENV_BOOLEAN_LITERALS = frozenset({"0", "1", "false", "true", "no", "yes"})
+EnvTemplateBooleans = tuple[tuple[str, tuple[str, ...]], ...]
 
 
 class ConfigError(ValueError):
@@ -187,6 +189,7 @@ class RepositoryPolicy:
     bootstrap_commands: tuple[str, ...] = ()
     verification_prefixes: tuple[str, ...] = ()
     verification_hosts: tuple[tuple[str, str], ...] = ()
+    env_template_booleans: EnvTemplateBooleans = ()
     required_verification_markers: tuple[str, ...] = ()
     required_contribution_files: tuple[str, ...] = ()
     pull_request_body_style: str = "generic"
@@ -365,6 +368,7 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
                 if isinstance(repository, dict):
                     repository.pop("unlimited_diff_lines", None)
                     repository.pop("verification_hosts", None)
+                    repository.pop("env_template_booleans", None)
         return result
 
     # Runtime state and disposable clones belong to the user/machine trust layer.
@@ -482,6 +486,11 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
                 if isinstance(trusted, dict)
                 else {}
             )
+            repository["env_template_booleans"] = (
+                trusted.get("env_template_booleans", {})
+                if isinstance(trusted, dict)
+                else {}
+            )
             trusted_unlimited = (
                 _boolean(trusted.get("unlimited_diff_lines"), False)
                 if isinstance(trusted, dict)
@@ -492,6 +501,35 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
             else:
                 repository.pop("unlimited_diff_lines", None)
     return result
+
+
+def _env_template_booleans(value: object) -> EnvTemplateBooleans:
+    if value is None:
+        return ()
+    if not isinstance(value, dict) or len(value) > 64:
+        raise ConfigError("env_template_booleans must be a table of at most 64 fields")
+    fields: dict[str, tuple[str, ...]] = {}
+    for name, literals in value.items():
+        if (
+            not isinstance(name, str)
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", name) is None
+        ):
+            raise ConfigError("env_template_booleans requires exact environment names")
+        if (
+            not isinstance(literals, list)
+            or not 1 <= len(literals) <= len(ENV_BOOLEAN_LITERALS)
+            or any(
+                not isinstance(literal, str) or literal not in ENV_BOOLEAN_LITERALS
+                for literal in literals
+            )
+            or len(set(literals)) != len(literals)
+        ):
+            raise ConfigError(
+                "env_template_booleans values must be non-empty arrays of distinct "
+                "boolean strings: 0, 1, false, true, no, yes"
+            )
+        fields[name] = tuple(sorted(literals))
+    return tuple(sorted(fields.items()))
 
 
 def _verification_hosts(value: object) -> tuple[tuple[str, str], ...]:
@@ -908,6 +946,13 @@ def load_config(
             )
         if name.count("/") != 1:
             raise ConfigError(f"repository must use owner/name form: {name!r}")
+        if (
+            repo_value.get("env_template_booleans")
+            and REPOSITORY_NAME.fullmatch(name) is None
+        ):
+            raise ConfigError(
+                "env_template_booleans requires a valid owner/repository name"
+            )
         repositories[name.lower()] = RepositoryPolicy(
             name=name,
             enabled=_boolean(repo_value.get("enabled"), True),
@@ -940,6 +985,9 @@ def load_config(
             verification_prefixes=_tuple(repo_value.get("verification_prefixes")),
             verification_hosts=_verification_hosts(
                 repo_value.get("verification_hosts")
+            ),
+            env_template_booleans=_env_template_booleans(
+                repo_value.get("env_template_booleans")
             ),
             required_verification_markers=_tuple(
                 repo_value.get("required_verification_markers")
