@@ -669,8 +669,9 @@ Claude Code 或 DeepSeek 等实现时可以共享流程，又不会让每次调�
 技能元数据和正文都属于仓库不可信输入。RepoSteward 不读取越出工作区的链接，frontmatter 最多
 扫描 8 KiB，单个技能文件上限为 1 MiB；Prompt 中的目录值会保持在 JSON 边界内，技能不能放宽
 凭据、网络或公开写入门禁。
-历史 Context Pack v1 与 Bundle v1 仍可严格校验和导入，新生成的文档使用 Context Pack/Bundle v2，
-Checkpoint 保持独立的 v1 协议。
+历史 Context Pack/Bundle v1、v2 仍可严格校验和导入，新生成的文档使用 v3，
+在技能目录基础上增加精确任务契约和修复反馈绑定。Checkpoint 保持独立的 v1 协议。
+完整版本边界与当前安装的核对方式见[协议与兼容性索引](protocol-map.zh-CN.md)。
 
 ## 提交与跟进
 
