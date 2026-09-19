@@ -19,9 +19,16 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from reposteward.projects.identity import (
+    lookup,
+    migrate_registry,
+    profile,
+    register,
+    registry_revision,
+)
 from reposteward.storage.workspace import sanitized_environment
 
-PROJECT_SCHEMA_VERSION = 1
+PROJECT_SCHEMA_VERSION = 2
 MAX_GIT_OUTPUT = 1_000_000
 
 
@@ -208,7 +215,7 @@ class ProjectRegistry:
                 db.execute("""CREATE TABLE project_events (
                     sequence INTEGER PRIMARY KEY, binding_id TEXT NOT NULL,
                     kind TEXT NOT NULL, created_at TEXT NOT NULL)""")
-                db.execute(f"PRAGMA user_version={PROJECT_SCHEMA_VERSION}")
+                migrate_registry(db)
                 version = PROJECT_SCHEMA_VERSION
             if version != PROJECT_SCHEMA_VERSION:
                 raise ProjectError(f"unsupported project registry schema {version}")
@@ -223,8 +230,51 @@ class ProjectRegistry:
         finally:
             db.close()
 
-    def link(self, path: Path, *, name: str = "") -> dict[str, Any]:
+    def register_remote(self, remote: dict, *, purpose: str) -> dict:
+        with self.connection(write=True) as db:
+            return register(db, remote, purpose)
+
+    def revision(self) -> str:
+        with self.connection() as db:
+            return registry_revision(db)
+
+    def import_remote(
+        self,
+        remote: dict,
+        *,
+        purpose: str,
+        plan_id: str,
+        payload_digest: str,
+        expected_revision: str,
+    ) -> dict:
+        with self.connection(write=True) as db:
+            receipt = db.execute(
+                "SELECT * FROM project_import_receipts WHERE plan_id=?", (plan_id,)
+            ).fetchone()
+            if receipt:
+                if receipt["payload_digest"] != payload_digest:
+                    raise ProjectError("registry import receipt changed")
+                row = db.execute(
+                    "SELECT * FROM projects WHERE id=?", (receipt["project_id"],)
+                ).fetchone()
+                return dict(row)
+            if registry_revision(db) != expected_revision:
+                raise ProjectError(
+                    "registry changed before registration; create a new plan"
+                )
+            project = register(db, remote, purpose)
+            db.execute(
+                "INSERT INTO project_import_receipts VALUES (?,?,?)",
+                (plan_id, payload_digest, project["id"]),
+            )
+            return project
+
+    def link(
+        self, path: Path, *, name: str = "", expected_metadata: dict | None = None
+    ) -> dict[str, Any]:
         meta = workspace_metadata(path)
+        if expected_metadata is not None and meta != expected_metadata:
+            raise ProjectError("workspace identity changed before binding")
         label = name.strip() or meta["repository"].split("/")[-1]
         if len(label) > 120 or any(ord(c) < 32 for c in label):
             raise ProjectError("project name must be at most 120 printable characters")
@@ -233,6 +283,9 @@ class ProjectRegistry:
         now = datetime.now(UTC).isoformat()
         with self.connection(write=True) as db:
             assert db is not None
+            known = lookup(db, meta["identity"])
+            if known:
+                project_id = known["id"]
             existing = db.execute(
                 "SELECT * FROM workspace_bindings WHERE root=?", (meta["root"],)
             ).fetchone()
@@ -258,6 +311,10 @@ class ProjectRegistry:
                     now,
                 ),
             )
+            db.execute(
+                "INSERT OR IGNORE INTO project_aliases VALUES (?,?)",
+                (meta["identity"], project_id),
+            )
             if not existing or not existing["active"]:
                 db.execute(
                     """INSERT INTO workspace_bindings VALUES (?,?,?,?,1,?,?)
@@ -276,6 +333,8 @@ class ProjectRegistry:
                     "INSERT INTO project_events(binding_id,kind,created_at) VALUES (?,?,?)",
                     (binding_id, "linked", now),
                 )
+            if workspace_metadata(Path(meta["root"])) != meta:
+                raise ProjectError("workspace identity changed during binding")
         return self.inspect(path)
 
     def inspect(self, path: Path) -> dict[str, Any]:
@@ -299,7 +358,8 @@ class ProjectRegistry:
             if (
                 project is None
                 or row["fingerprint"] != meta["fingerprint"]
-                or project["identity"] != meta["identity"]
+                or not (alias := lookup(db, meta["identity"]))
+                or alias["id"] != project["id"]
             ):
                 raise ProjectError("workspace identity changed; explicitly rebind it")
             binding = dict(row)
@@ -308,7 +368,7 @@ class ProjectRegistry:
                 raise ProjectError("workspace identity changed during inspection")
             result = {
                 "schema_version": 1,
-                "project": dict(project),
+                "project": {**dict(project), **profile(db, project["id"])},
                 "binding": binding,
                 "workspace": state,
                 "public_write": False,
@@ -344,6 +404,7 @@ class ProjectRegistry:
                 projects.append(
                     {
                         **dict(row),
+                        **profile(db, row["id"]),
                         "workspace_count": count,
                         "missing_workspaces": missing,
                         "workspace_check_omitted": max(0, count - 100),

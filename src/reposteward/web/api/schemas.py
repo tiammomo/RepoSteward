@@ -59,6 +59,8 @@ class Project(Record):
     workspace_check_omitted: int = 0
     workspaces: list[WorkspaceRef] = Field(default_factory=list)
     policy: Policy
+    purpose: str = "unspecified"
+    aliases: list[str] = Field(default_factory=list)
 
 
 class Projects(Record):

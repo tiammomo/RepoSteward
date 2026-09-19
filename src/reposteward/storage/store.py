@@ -25,7 +25,7 @@ from reposteward.maintenance.feedback import (
 from reposteward.projects.knowledge_ledger import KNOWLEDGE_MIGRATION
 from reposteward.storage.local_queue import decode as decode_local_queue
 from reposteward.storage.local_queue import hex_id
-from reposteward.storage.workbench_ledger import WORKBENCH_MIGRATION
+from reposteward.storage.workbench_ledger import IMPORT_MIGRATION, WORKBENCH_MIGRATION
 from reposteward.tasks.ledger import (
     EXTERNAL_TASK_MIGRATION,
     EXTERNAL_VERIFICATION_MIGRATION,
@@ -34,9 +34,10 @@ from reposteward.tasks.lifecycle_store import TASK_RESOLUTION_MIGRATION
 from reposteward.verification.recovery_store import VERIFICATION_RECOVERY_MIGRATION
 from reposteward.web.overview_ledger import OVERVIEW_MIGRATION
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
+    26: IMPORT_MIGRATION,
     25: WORKBENCH_MIGRATION,
     24: VERIFICATION_RECOVERY_MIGRATION,
     23: TASK_RESOLUTION_MIGRATION,
@@ -3849,6 +3850,12 @@ class Store:
             operation_family == "native" and account_digest
         ):
             raise ValueError("queue claim account does not match its family")
+        from reposteward.storage.local_queue import LOCAL_ACTIONS
+
+        if actions and (
+            operation_family != "local" or not set(actions).issubset(LOCAL_ACTIONS)
+        ):
+            raise ValueError("action filters require known local actions")
         normalized_worker = self._queue_worker(worker)
         if not 1 <= limit <= 100:
             raise ValueError("queue claim limit must be between 1 and 100")

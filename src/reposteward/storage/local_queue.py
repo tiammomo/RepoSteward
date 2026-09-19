@@ -12,7 +12,20 @@ if TYPE_CHECKING:
     from reposteward.storage.store import Store
 
 ASSISTANCE_ACTIONS = frozenset({"assistance.verification", "assistance.understanding"})
-LOCAL_ACTIONS = frozenset({"github.sync"}) | ASSISTANCE_ACTIONS
+LOCAL_SCOPES = {
+    "github.sync": "project",
+    **{action: "project" for action in ASSISTANCE_ACTIONS},
+    "workspace.scan": "project",
+    "project.inspect": "import",
+    "project.apply": "import",
+}
+LOCAL_ACTIONS = frozenset(LOCAL_SCOPES)
+
+
+def valid_repository(action: str, repository: str) -> bool:
+    return bool(re.fullmatch(r"[^/\s]+/[^/\s]+", repository)) or (
+        action == "project.inspect" and repository == ""
+    )
 
 
 def encoded(value: object) -> str:
@@ -53,11 +66,11 @@ def decode(value: dict) -> dict:
         value["operation_family"] != "local"
         or value["payload_version"] != 2
         or value["action"] not in LOCAL_ACTIONS
-        or value["scope_kind"] != "project"
+        or value["scope_kind"] != LOCAL_SCOPES.get(value["action"])
         or not hex_id(value["scope_key"])
         or not hex_id(value["plan_id"])
         or not hex_id(value["account_digest"], 64)
-        or not re.fullmatch(r"[^/\s]+/[^/\s]+", value["repository"])
+        or not valid_repository(value["action"], value["repository"])
         or any(
             value.get(key)
             for key in (
@@ -141,7 +154,7 @@ def enqueue(
         raise ValueError("invalid local operation scope")
     if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", idempotency_key):
         raise ValueError("invalid idempotency key")
-    if not re.fullmatch(r"[^/\s]+/[^/\s]+", repository):
+    if not valid_repository(action, repository):
         raise ValueError("invalid repository identity")
     worker = store._queue_worker(actor)
     request = {
@@ -153,7 +166,8 @@ def enqueue(
     }
     request_digest = digest(request)
     key_digest = hashlib.sha256(idempotency_key.encode()).hexdigest()
-    scope = (account, action, "project", project, key_digest)
+    scope_kind = LOCAL_SCOPES[action]
+    scope = (account, action, scope_kind, project, key_digest)
     with store.atomic(), store._connection() as db:
         previous = db.execute(
             """SELECT * FROM local_operation_requests WHERE account_digest=? AND action=?
@@ -176,9 +190,9 @@ def enqueue(
         row = db.execute(
             """SELECT q.* FROM queue_tasks q JOIN local_operation_plans p ON p.id=q.plan_id
             WHERE q.operation_family='local' AND q.account_digest=? AND q.action=?
-            AND q.scope_kind='project' AND q.scope_key=? AND p.request_digest=?
+            AND q.scope_kind=? AND q.scope_key=? AND p.request_digest=?
             AND q.state IN ('pending','running') ORDER BY q.sequence LIMIT 1""",
-            (account, action, project, request_digest),
+            (account, action, scope_kind, project, request_digest),
         ).fetchone()
         coalesced = row is not None
         if not coalesced:
@@ -188,7 +202,7 @@ def enqueue(
                 "id": plan_id,
                 "action": action,
                 "account_digest": account,
-                "scope_kind": "project",
+                "scope_kind": scope_kind,
                 "scope_key": project,
                 "repository": repository,
                 "payload_version": 1,
@@ -204,7 +218,7 @@ def enqueue(
                     plan_id,
                     action,
                     account,
-                    "project",
+                    scope_kind,
                     project,
                     repository,
                     1,
@@ -218,7 +232,7 @@ def enqueue(
             identity = {
                 "operation_family": "local",
                 "payload_version": 2,
-                "scope_kind": "project",
+                "scope_kind": scope_kind,
                 "scope_key": project,
                 "account_digest": account,
                 "plan_id": plan_id,
@@ -231,7 +245,7 @@ def enqueue(
                 """INSERT INTO queue_tasks(id,dedupe_key,repository,action,parameters,
                 parameters_digest,idempotency_digest,state,max_attempts,available_at,created_at,updated_at,
                 operation_family,payload_version,scope_kind,scope_key,account_digest,plan_id)
-                VALUES (?,?,?,?,?,?,?,'pending',3,?,?,?,'local',2,'project',?,?,?)""",
+                VALUES (?,?,?,?,?,?,?,'pending',3,?,?,?,'local',2,?,?,?,?)""",
                 (
                     task_id,
                     digest(identity),
@@ -243,6 +257,7 @@ def enqueue(
                     now,
                     now,
                     now,
+                    scope_kind,
                     project,
                     account,
                     plan_id,

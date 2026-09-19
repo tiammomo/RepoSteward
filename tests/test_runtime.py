@@ -17,6 +17,7 @@ from reposteward.core.runtime import (
     installation_info,
     local_diagnostics,
 )
+from reposteward.projects.registry import PROJECT_SCHEMA_VERSION
 from reposteward.storage.store import SCHEMA_VERSION, Store
 
 
@@ -140,7 +141,7 @@ class RuntimeTests(unittest.TestCase):
             with closing(sqlite3.connect(config.state_dir / "projects.sqlite3")) as db:
                 for table in ("projects", "workspace_bindings", "project_events"):
                     db.execute(f"CREATE TABLE {table}(id TEXT)")
-                db.execute("PRAGMA user_version=1")
+                db.execute(f"PRAGMA user_version={PROJECT_SCHEMA_VERSION}")
                 db.commit()
             report, ok = local_diagnostics(config)
             self.assertTrue(ok)

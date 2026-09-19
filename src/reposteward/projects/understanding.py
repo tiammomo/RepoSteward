@@ -219,8 +219,8 @@ class Understanding:
     def __init__(self, cache_dir: Path):
         self.index = CodeIndex(cache_dir)
 
-    def scan(self, path: Path, *, rebuild: bool = False) -> dict:
-        return self.index.scan(path, rebuild=rebuild)
+    def scan(self, path: Path, *, rebuild: bool = False, **callbacks) -> dict:
+        return self.index.scan(path, rebuild=rebuild, **callbacks)
 
     def guide(
         self, path: Path, *, mode: str = "maintainer", focus: str = "", limit: int = 12
