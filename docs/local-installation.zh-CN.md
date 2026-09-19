@@ -5,6 +5,20 @@
 
 ## 固定安装来源
 
+已有插件时，可以一次检查当前 CLI、状态库与明确选定的工作区插件包：
+
+```sh
+reposteward --json-envelope doctor --local --workspace /path/to/project \
+  --bundle /path/to/reposteward-plugin --expect-state-dir /path/to/state
+```
+
+`--workspace` 与 `--bundle` 必须成对提供；可用 `--marketplace`、`--codex-home`
+明确选择客户端配置。状态目录不匹配时不会继续读取插件。报告组合现有诊断，
+不执行包中的 MCP 命令、不访问 GitHub、不自动迁移数据库或修改客户端设置。
+`compatibility.status=static_match` 只表示静态配套，客户端是否启用、注册到哪个
+来源和连接是否健康分别报告；`client_health=not_probed` 不能当成实机连接成功。
+缺少插件或状态库需迁移时，按 `next_actions` 处理后重新检查。
+
 选择已审阅提交构建的 wheel，并保存提交 SHA 与 wheel 的 SHA256。当前包版本为
 `0.1.0`，多个开发提交可能使用相同版本号，单独比较版本字符串不足以确认代码相同。
 这里不假定 PyPI 已发布包含本文命令的版本。
