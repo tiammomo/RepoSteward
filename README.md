@@ -24,6 +24,8 @@ the current release.
 
 For this repository's Python package layout and module ownership, see the
 [source structure guide](docs/source-layout.zh-CN.md).
+For interface boundaries, independent schema versions, and delivery status, see the
+[protocol and compatibility map](docs/protocol-map.zh-CN.md).
 
 Read a local clone or worktree with `reposteward understand scan PATH`, then
 `reposteward understand guide PATH` or `reposteward understand query PATH "symbol or problem"`.

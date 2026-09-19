@@ -20,6 +20,9 @@ RepoSteward 是位于 GitHub、Coding Harness 和隔离验证环境之间的本�
 
 ## 先理解项目，再进入迭代
 
+本项目自身的代码位置见[源码目录指南](docs/source-layout.zh-CN.md)；CLI、MCP、HTTP、A2A
+的职责、版本和交付范围见[协议与兼容性索引](docs/protocol-map.zh-CN.md)。
+
 对本地 clone 或 worktree 执行 `reposteward understand scan PATH`，再用
 `reposteward understand guide PATH` 阅读全貌，或用 `understand query PATH "符号或问题"`
 定位相关实现与测试。导览区分文档声明、Python 静态关系和阅读建议，并提供带版本的代码来源。
