@@ -359,6 +359,23 @@ class AssistanceOperationTests(unittest.TestCase):
                 "passed",
             )
 
+    def test_preexisting_verification_must_match_the_entire_queued_request(self):
+        pending = self.start_operation()
+        (self.repo / "source.txt").write_text("different snapshot\n")
+        current = self.service.inspect(self.task["run_id"], live=True)
+        self.check.request(
+            self.task["run_id"],
+            profile="test",
+            expected_revision=0,
+            expected_snapshot=current["current_snapshot"]["digest"],
+            idempotency_key="operation:" + pending["id"],
+        )
+        self.ops.process_once()
+        result = self.ops.get(pending["id"])
+        self.assertEqual(result["state"], "failed")
+        self.assertFalse(result["stages"])
+        self.assertEqual(len(self.calls), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

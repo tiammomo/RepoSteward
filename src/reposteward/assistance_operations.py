@@ -195,6 +195,15 @@ class AssistanceOperations:
         if (
             row["run_id"] != payload["run_id"]
             or row["profile_digest"] != payload["profile_digest"]
+            or row["request_digest"]
+            != canonical_digest(
+                {
+                    "run_id": payload["run_id"],
+                    "profile_digest": payload["profile_digest"],
+                    "revision": payload["expected_revision"],
+                    "snapshot": payload["expected_snapshot"],
+                }
+            )
         ):
             raise ValueError("verification identity changed")
         if row["outcome"] == "running":
