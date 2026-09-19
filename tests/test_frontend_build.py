@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from reposteward.web_api.assets import load_assets
-from reposteward.workspace import sanitized_environment
+from reposteward.storage.workspace import sanitized_environment
+from reposteward.web.api.assets import load_assets
 
 
 class FrontendBuildTests(unittest.TestCase):

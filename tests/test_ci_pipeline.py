@@ -3,9 +3,9 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from reposteward.config import RepositoryPolicy
-from reposteward.github import PullRequest
-from reposteward.pipeline import Pipeline
+from reposteward.core.config import RepositoryPolicy
+from reposteward.github.client import PullRequest
+from reposteward.workflows.pipeline import Pipeline
 
 
 def _job(

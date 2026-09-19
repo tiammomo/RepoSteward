@@ -14,9 +14,9 @@ from threading import Thread
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from reposteward.config import GitHubConfig
-from reposteward.external_tasks import TaskConflict
-from reposteward.web_server import LocalServer
+from reposteward.core.config import GitHubConfig
+from reposteward.tasks.external import TaskConflict
+from reposteward.web.server import LocalServer
 
 
 class WorkbenchHTTPTests(unittest.TestCase):

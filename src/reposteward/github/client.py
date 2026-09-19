@@ -1,0 +1,1658 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import urllib.response
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
+from typing import Any
+
+from reposteward.core.config import GitHubConfig
+from reposteward.core.models import Issue, RepositoryInfo
+
+MAX_REST_PAGES = 1_000
+
+
+class GitHubError(RuntimeError):
+    """A GitHub API request failed."""
+
+    def __init__(self, message: str, *, status_code: int = 0) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionalRead:
+    body: Any
+    etag: str
+    has_more: bool
+    not_modified: bool = False
+
+
+class GitHubReadError(GitHubError):
+    def __init__(
+        self,
+        code: str,
+        *,
+        status_code: int = 0,
+        retry_at: str = "",
+        redirect_path: str = "",
+    ):
+        super().__init__(code, status_code=status_code)
+        self.code, self.retry_at = code, retry_at
+        self.redirect_path = redirect_path
+
+
+def _retry_at(headers) -> str:
+    now = datetime.now(UTC)
+    raw = headers.get("Retry-After", "")
+    try:
+        target = now + timedelta(seconds=int(raw))
+    except ValueError:
+        try:
+            target = parsedate_to_datetime(raw).astimezone(UTC)
+        except (ValueError, TypeError, OverflowError):
+            target = now + timedelta(seconds=60)
+    if headers.get("X-RateLimit-Remaining") == "0":
+        try:
+            target = max(
+                target,
+                datetime.fromtimestamp(int(headers.get("X-RateLimit-Reset", "")), UTC),
+            )
+        except (ValueError, OverflowError, OSError):
+            pass
+    return max(now + timedelta(seconds=1), target).isoformat(timespec="microseconds")
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _canonical_digest(value: object) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class PullRequest:
+    number: int
+    url: str
+    state: str
+    draft: bool
+    title: str = ""
+    body: str = ""
+    updated_at: str = ""
+    author: str = ""
+    merged: bool = False
+    head_owner: str = ""
+    head_repository: str = ""
+    head_branch: str = ""
+    head_sha: str = ""
+    base_branch: str = ""
+    base_sha: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectIssueProposal:
+    item_id: str
+    database_id: int
+    project_id: str
+    project_number: int
+    project_url: str
+    updated_at: str
+    creator: str
+    content_type: str
+    title: str
+    body: str
+    issue_number: int = 0
+    issue_url: str = ""
+    repository: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class CompetingWork:
+    kind: str
+    actor: str
+    url: str
+    detail: str
+
+
+def resolve_authentication(
+    config: GitHubConfig, *, required: bool = False
+) -> tuple[str, str]:
+    for name in config.token_env:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value, name
+    command = config.gh_auth_command
+    if command and shutil.which(command[0]):
+        try:
+            result = subprocess.run(
+                list(command),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            result = None
+        if result is not None and result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip(), "gh OAuth"
+    if required:
+        names = " or ".join(config.token_env)
+        raise GitHubError(
+            f"GitHub API authentication required; set {names} or authenticate "
+            "GitHub CLI with 'gh auth login'"
+        )
+    return "", "missing"
+
+
+def resolve_token(config: GitHubConfig, *, required: bool = False) -> str:
+    return resolve_authentication(config, required=required)[0]
+
+
+class GitHubClient:
+    def __init__(self, config: GitHubConfig, token: str = "") -> None:
+        self.config = config
+        self.token = token or resolve_token(config)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: dict[str, str | int] | None = None,
+        data: dict[str, Any] | None = None,
+        expected: Iterable[int] = (200,),
+    ) -> tuple[Any, urllib.response.addinfourl]:
+        url = f"{self.config.api_url}/{path.lstrip('/')}"
+        if query:
+            url = f"{url}?{urllib.parse.urlencode(query)}"
+        body = json.dumps(data).encode("utf-8") if data is not None else None
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "reposteward/0.1",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        request = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            response = urllib.request.urlopen(request, timeout=30)
+            payload_bytes = response.read()
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            message = error_body
+            try:
+                message = json.loads(error_body).get("message", error_body)
+            except json.JSONDecodeError:
+                pass
+            raise GitHubError(
+                f"GitHub {method} {path} failed ({exc.code}): {message}",
+                status_code=exc.code,
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise GitHubError(f"GitHub {method} {path} failed: {exc.reason}") from exc
+        if response.status not in set(expected):
+            raise GitHubError(
+                f"GitHub {method} {path} returned unexpected status {response.status}"
+            )
+        if not payload_bytes:
+            return None, response
+        try:
+            return json.loads(payload_bytes), response
+        except json.JSONDecodeError as exc:
+            raise GitHubError(f"GitHub {method} {path} returned invalid JSON") from exc
+
+    def conditional_get(
+        self, path: str, *, query: dict[str, str | int] | None = None, etag: str = ""
+    ) -> ConditionalRead:
+        """Bounded, nonredirecting GET; conditional cache remains account scoped."""
+        if (
+            not re.fullmatch(r"/[A-Za-z0-9_./-]+", path)
+            or ".." in path.split("/")
+            or path.startswith("//")
+            or len(etag) > 500
+            or any(ord(c) < 32 for c in etag)
+        ):
+            raise ValueError("invalid conditional request")
+        url = self.config.api_url.rstrip("/") + path
+        if query:
+            url += "?" + urllib.parse.urlencode(sorted(query.items()))
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "reposteward/0.1",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self.token:
+            headers["Authorization"] = "Bearer " + self.token
+        if etag:
+            headers["If-None-Match"] = etag
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        opener = urllib.request.build_opener(_NoRedirectHandler())
+        try:
+            with opener.open(request, timeout=30) as response:
+                if response.status != 200:
+                    raise GitHubReadError(
+                        "unexpected_status", status_code=response.status
+                    )
+                raw = response.read(2_000_001)
+                if len(raw) > 2_000_000:
+                    raise GitHubReadError("response_limit")
+                try:
+                    body = json.loads(raw)
+                except (ValueError, UnicodeError) as exc:
+                    raise GitHubReadError("invalid_response") from exc
+                return ConditionalRead(
+                    body,
+                    response.headers.get("ETag", "")[:500],
+                    bool(re.search(r'rel="next"', response.headers.get("Link", ""))),
+                )
+        except urllib.error.HTTPError as exc:
+            with exc:
+                if exc.code == 304 and etag:
+                    return ConditionalRead(None, etag, False, True)
+                if (
+                    exc.code in {301, 302, 307, 308}
+                    and re.fullmatch(
+                        r"/(?:repos/[^/]+/[^/]+|repositories/[0-9]+)", path
+                    )
+                    and not query
+                ):
+                    # Return a validated API-local identity hint, never follow an
+                    # arbitrary Location with credentials. The caller bounds hops.
+                    location = urllib.parse.urljoin(
+                        url, exc.headers.get("Location", "")
+                    )
+                    prefix = self.config.api_url.rstrip("/")
+                    candidate = (
+                        location[len(prefix) :]
+                        if location.startswith(prefix + "/")
+                        else ""
+                    )
+                    if re.fullmatch(
+                        r"/(?:repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|repositories/[0-9]+)",
+                        candidate,
+                    ) and ".." not in candidate.split("/"):
+                        raise GitHubReadError(
+                            "repository_moved",
+                            status_code=exc.code,
+                            redirect_path=candidate,
+                        ) from exc
+                if exc.code == 429 or (
+                    exc.code == 403
+                    and (
+                        exc.headers.get("Retry-After")
+                        or exc.headers.get("X-RateLimit-Remaining") == "0"
+                    )
+                ):
+                    raise GitHubReadError(
+                        "rate_limited",
+                        status_code=exc.code,
+                        retry_at=_retry_at(exc.headers),
+                    ) from exc
+                raise GitHubReadError(
+                    "permission_or_missing"
+                    if exc.code in {401, 403, 404}
+                    else "remote_unavailable",
+                    status_code=exc.code,
+                ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise GitHubReadError("network_unavailable") from exc
+
+    def authenticated_login(self) -> str:
+        if not self.token:
+            raise GitHubError("cannot check login without a GitHub token")
+        payload, _ = self._request("GET", "/user")
+        return str(payload["login"])
+
+    def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        payload, _ = self._request(
+            "POST", "/graphql", data={"query": query, "variables": variables}
+        )
+        if not isinstance(payload, dict):
+            raise GitHubError("GitHub GraphQL response was not an object")
+        errors = payload.get("errors")
+        if isinstance(errors, list) and errors:
+            messages = "; ".join(str(value.get("message", value)) for value in errors)
+            raise GitHubError(f"GitHub GraphQL failed: {messages}")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise GitHubError("GitHub GraphQL response did not contain data")
+        return data
+
+    @staticmethod
+    def _response_has_next_page(response: object) -> bool:
+        headers = getattr(response, "headers", None)
+        if headers is None or not hasattr(headers, "get"):
+            return False
+        link = str(headers.get("Link", ""))
+        return any('rel="next"' in value for value in link.split(",") if value.strip())
+
+    def _paginated_rest_values(
+        self,
+        path: str,
+        *,
+        container: str = "",
+        query: dict[str, str | int] | None = None,
+        max_items: int = 0,
+    ) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            payload, response = self._request(
+                "GET",
+                path,
+                query={**(query or {}), "per_page": 100, "page": page},
+            )
+            values = (
+                payload.get(container)
+                if container and isinstance(payload, dict)
+                else payload
+            )
+            if not isinstance(values, list) or not all(
+                isinstance(value, dict) for value in values
+            ):
+                label = container or "response"
+                raise GitHubError(f"GitHub paginated {label} was not a list")
+            result.extend(values)
+            if max_items and len(result) >= max_items:
+                return result[:max_items]
+            if not self._response_has_next_page(response):
+                return result
+            if page >= MAX_REST_PAGES:
+                raise GitHubError(
+                    f"GitHub pagination exceeded {MAX_REST_PAGES} pages for {path}"
+                )
+            page += 1
+
+    def project_v2(self, owner: str, number: int, *, owner_type: str) -> dict[str, Any]:
+        field = "organization" if owner_type == "organization" else "user"
+        data = self._graphql(
+            f"""
+            query($owner: String!, $number: Int!) {{
+              {field}(login: $owner) {{
+                projectV2(number: $number) {{ id number url closed }}
+              }}
+            }}
+            """,
+            {"owner": owner, "number": number},
+        )
+        container = data.get(field)
+        project = container.get("projectV2") if isinstance(container, dict) else None
+        if not isinstance(project, dict):
+            raise GitHubError(
+                f"GitHub Project not found: {owner_type} {owner}#{number}"
+            )
+        if bool(project.get("closed")):
+            raise GitHubError(
+                f"GitHub Project is closed: {owner_type} {owner}#{number}"
+            )
+        return {
+            "id": str(project["id"]),
+            "number": int(project["number"]),
+            "url": str(project["url"]),
+        }
+
+    @staticmethod
+    def _project_item_fields() -> str:
+        return """
+          id
+          fullDatabaseId
+          updatedAt
+          creator { login }
+          project { id number url }
+          content {
+            __typename
+            ... on DraftIssue { title body }
+            ... on Issue {
+              number
+              url
+              title
+              body
+              repository { nameWithOwner }
+            }
+          }
+        """
+
+    @staticmethod
+    def _parse_project_issue_proposal(value: dict[str, Any]) -> ProjectIssueProposal:
+        project = value.get("project")
+        content = value.get("content")
+        creator = value.get("creator")
+        if not isinstance(project, dict) or not isinstance(content, dict):
+            raise GitHubError("GitHub Project item is missing project or content")
+        content_type = str(content.get("__typename") or "")
+        if content_type not in {"DraftIssue", "Issue"}:
+            raise GitHubError(
+                f"GitHub Project item must contain a draft or issue, got {content_type!r}"
+            )
+        repository = content.get("repository")
+        return ProjectIssueProposal(
+            item_id=str(value["id"]),
+            database_id=int(value.get("fullDatabaseId") or 0),
+            project_id=str(project["id"]),
+            project_number=int(project["number"]),
+            project_url=str(project["url"]),
+            updated_at=str(value["updatedAt"]),
+            creator=(
+                str(creator.get("login") or "") if isinstance(creator, dict) else ""
+            ),
+            content_type=content_type,
+            title=str(content.get("title") or ""),
+            body=str(content.get("body") or ""),
+            issue_number=int(content.get("number") or 0),
+            issue_url=str(content.get("url") or ""),
+            repository=(
+                str(repository.get("nameWithOwner") or "")
+                if isinstance(repository, dict)
+                else ""
+            ),
+        )
+
+    def add_project_issue_proposal(
+        self, *, project_id: str, title: str, body: str, client_mutation_id: str
+    ) -> ProjectIssueProposal:
+        fields = self._project_item_fields()
+        data = self._graphql(
+            f"""
+            mutation($projectId: ID!, $title: String!, $body: String!,
+                     $clientMutationId: String!) {{
+              addProjectV2DraftIssue(input: {{
+                projectId: $projectId,
+                title: $title,
+                body: $body,
+                clientMutationId: $clientMutationId
+              }}) {{
+                projectItem {{ {fields} }}
+              }}
+            }}
+            """,
+            {
+                "projectId": project_id,
+                "title": title,
+                "body": body,
+                "clientMutationId": client_mutation_id,
+            },
+        )
+        result = data.get("addProjectV2DraftIssue")
+        item = result.get("projectItem") if isinstance(result, dict) else None
+        if not isinstance(item, dict):
+            raise GitHubError("GitHub did not return the created Project draft item")
+        return self._parse_project_issue_proposal(item)
+
+    def project_issue_proposal(self, item_id: str) -> ProjectIssueProposal:
+        fields = self._project_item_fields()
+        data = self._graphql(
+            f"""
+            query($itemId: ID!) {{
+              node(id: $itemId) {{
+                ... on ProjectV2Item {{ {fields} }}
+              }}
+            }}
+            """,
+            {"itemId": item_id},
+        )
+        item = data.get("node")
+        if not isinstance(item, dict) or not item.get("id"):
+            raise GitHubError(f"GitHub Project item not found: {item_id}")
+        return self._parse_project_issue_proposal(item)
+
+    def project_issue_proposal_by_database_id(
+        self,
+        *,
+        project_id: str,
+        database_id: int,
+        max_items: int = 1000,
+    ) -> ProjectIssueProposal:
+        """Resolve the numeric itemId exposed by GitHub Project browser URLs."""
+        if database_id < 1:
+            raise GitHubError("GitHub Project item database ID must be positive")
+        max_items = min(max(max_items, 1), 1000)
+        fields = self._project_item_fields()
+        cursor: str | None = None
+        scanned = 0
+        max_pages = (max_items + 99) // 100
+        pages = 0
+        while scanned < max_items and pages < max_pages:
+            pages += 1
+            page_size = min(100, max_items - scanned)
+            data = self._graphql(
+                f"""
+                query($projectId: ID!, $cursor: String, $first: Int!) {{
+                  node(id: $projectId) {{
+                    ... on ProjectV2 {{
+                      items(
+                        first: $first,
+                        after: $cursor,
+                        archivedStates: [NOT_ARCHIVED]
+                      ) {{
+                        nodes {{ {fields} }}
+                        pageInfo {{ hasNextPage endCursor }}
+                      }}
+                    }}
+                  }}
+                }}
+                """,
+                {
+                    "projectId": project_id,
+                    "cursor": cursor,
+                    "first": page_size,
+                },
+            )
+            project = data.get("node")
+            connection = project.get("items") if isinstance(project, dict) else None
+            if not isinstance(connection, dict):
+                raise GitHubError(f"GitHub Project not found: {project_id}")
+            nodes = connection.get("nodes")
+            if not isinstance(nodes, list):
+                raise GitHubError("GitHub Project items response was not a list")
+            if not nodes:
+                break
+            scanned += len(nodes)
+            for value in nodes:
+                if (
+                    isinstance(value, dict)
+                    and int(value.get("fullDatabaseId") or 0) == database_id
+                ):
+                    return self._parse_project_issue_proposal(value)
+            page_info = connection.get("pageInfo")
+            has_next = (
+                bool(page_info.get("hasNextPage"))
+                if isinstance(page_info, dict)
+                else False
+            )
+            if not has_next:
+                break
+            cursor_value = page_info.get("endCursor")
+            if not isinstance(cursor_value, str) or not cursor_value:
+                raise GitHubError("GitHub Project pagination cursor is missing")
+            cursor = cursor_value
+        raise GitHubError(
+            f"active GitHub Project item {database_id} was not found in the first "
+            f"{max_items} items; use its GraphQL node ID or archive old proposals"
+        )
+
+    def convert_project_issue_proposal(
+        self, *, item_id: str, repository: str
+    ) -> ProjectIssueProposal:
+        owner, name = repository.split("/", 1)
+        repository_data = self._graphql(
+            """
+            query($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) { id }
+            }
+            """,
+            {"owner": owner, "name": name},
+        ).get("repository")
+        if not isinstance(repository_data, dict):
+            raise GitHubError(f"repository not found: {repository}")
+        fields = self._project_item_fields()
+        data = self._graphql(
+            f"""
+            mutation($itemId: ID!, $repositoryId: ID!) {{
+              convertProjectV2DraftIssueItemToIssue(input: {{
+                itemId: $itemId,
+                repositoryId: $repositoryId
+              }}) {{
+                item {{ {fields} }}
+              }}
+            }}
+            """,
+            {"itemId": item_id, "repositoryId": str(repository_data["id"])},
+        )
+        result = data.get("convertProjectV2DraftIssueItemToIssue")
+        item = result.get("item") if isinstance(result, dict) else None
+        if not isinstance(item, dict):
+            raise GitHubError("GitHub did not return the converted Issue")
+        return self._parse_project_issue_proposal(item)
+
+    def repository(self, full_name: str) -> RepositoryInfo:
+        payload, _ = self._request("GET", f"/repos/{full_name}")
+        license_info = payload.get("license") or {}
+        return RepositoryInfo(
+            full_name=str(payload["full_name"]),
+            default_branch=str(payload["default_branch"]),
+            stars=int(payload["stargazers_count"]),
+            forks=int(payload["forks_count"]),
+            open_issues=int(payload["open_issues_count"]),
+            pushed_at=str(payload["pushed_at"]),
+            archived=bool(payload["archived"]),
+            is_fork=bool(payload["fork"]),
+            license_spdx=(str(license_info["spdx_id"]) if license_info else None),
+            can_push=bool((payload.get("permissions") or {}).get("push", False)),
+            can_admin=bool((payload.get("permissions") or {}).get("admin", False)),
+            owner_login=str((payload.get("owner") or {}).get("login") or ""),
+            delete_branch_on_merge=bool(payload.get("delete_branch_on_merge")),
+        )
+
+    def branch_review_policy(self, full_name: str, branch: str) -> dict[str, Any]:
+        """Read every applicable GitHub review rule and fail closed on ambiguity."""
+        if not branch:
+            raise ValueError("branch must not be empty")
+        encoded = urllib.parse.quote(branch, safe="")
+        branch_payload, _ = self._request(
+            "GET", f"/repos/{full_name}/branches/{encoded}"
+        )
+        if not isinstance(branch_payload, dict) or not isinstance(
+            branch_payload.get("protected"), bool
+        ):
+            raise GitHubError("GitHub branch protection status was malformed")
+        classic: dict[str, Any] = {}
+        try:
+            payload, _ = self._request(
+                "GET", f"/repos/{full_name}/branches/{encoded}/protection"
+            )
+        except GitHubError as exc:
+            if exc.status_code != 404:
+                raise
+            if bool(branch_payload["protected"]):
+                raise GitHubError(
+                    "GitHub reports a protected branch but its classic protection "
+                    "settings are unavailable"
+                ) from exc
+        else:
+            if not isinstance(payload, dict):
+                raise GitHubError("GitHub branch protection was not an object")
+            classic = payload
+
+        requirements: set[str] = set()
+        classic_reviews = classic.get("required_pull_request_reviews")
+        if classic_reviews is not None:
+            if not isinstance(classic_reviews, dict):
+                raise GitHubError("GitHub branch review protection was malformed")
+            self._collect_review_requirements(
+                classic_reviews, requirements, source="classic"
+            )
+        rules = self._paginated_rest_values(
+            f"/repos/{full_name}/rules/branches/{encoded}"
+        )
+        compact_rules: list[dict[str, Any]] = []
+        for rule in rules:
+            rule_type = str(rule.get("type") or "")
+            if not rule_type:
+                raise GitHubError("GitHub applicable branch rule omitted its type")
+            if rule_type != "pull_request":
+                continue
+            parameters = rule.get("parameters")
+            if not isinstance(parameters, dict):
+                raise GitHubError("GitHub pull-request rule omitted its parameters")
+            before = set(requirements)
+            self._collect_review_requirements(
+                parameters, requirements, source="ruleset"
+            )
+            compact_rules.append(
+                {
+                    "type": rule_type,
+                    "source_type": str(rule.get("ruleset_source_type") or ""),
+                    "source": str(rule.get("ruleset_source") or ""),
+                    "requirements": sorted(requirements - before),
+                }
+            )
+        facts = {
+            "repository": full_name.casefold(),
+            "branch": branch,
+            "classic_review_protection": classic_reviews is not None,
+            "rules": sorted(
+                compact_rules,
+                key=lambda value: (
+                    value["source_type"],
+                    value["source"],
+                    value["type"],
+                ),
+            ),
+            "requirements": sorted(requirements),
+            "requires_independent_review": bool(requirements),
+            "complete": True,
+        }
+        return {**facts, "rules_digest": _canonical_digest(facts)}
+
+    @staticmethod
+    def _collect_review_requirements(
+        parameters: dict[str, Any], requirements: set[str], *, source: str
+    ) -> None:
+        count = parameters.get("required_approving_review_count", 0)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise GitHubError("GitHub required review count was malformed")
+        if count:
+            requirements.add(f"{source}:approvals={count}")
+        for key in ("require_code_owner_reviews", "require_code_owner_review"):
+            value = parameters.get(key, False)
+            if not isinstance(value, bool):
+                raise GitHubError(f"GitHub {key} review rule was malformed")
+            if value:
+                requirements.add(f"{source}:code_owner_review")
+        last_push = parameters.get("require_last_push_approval", False)
+        if not isinstance(last_push, bool):
+            raise GitHubError("GitHub last-push review rule was malformed")
+        if last_push:
+            requirements.add(f"{source}:last_push_approval")
+        required_reviewers = parameters.get("required_reviewers", [])
+        if not isinstance(required_reviewers, list):
+            raise GitHubError("GitHub required reviewers rule was malformed")
+        if required_reviewers:
+            requirements.add(f"{source}:required_reviewers")
+
+    def issues(
+        self, full_name: str, *, per_page: int = 100, max_pages: int = 2
+    ) -> list[Issue]:
+        result: list[Issue] = []
+        for page in range(1, max_pages + 1):
+            payload, _ = self._request(
+                "GET",
+                f"/repos/{full_name}/issues",
+                query={
+                    "state": "open",
+                    "sort": "updated",
+                    "direction": "desc",
+                    "per_page": per_page,
+                    "page": page,
+                },
+            )
+            if not isinstance(payload, list):
+                raise GitHubError(f"issue response for {full_name} was not a list")
+            for item in payload:
+                if "pull_request" in item:
+                    continue
+                result.append(self._parse_issue(full_name, item))
+            if len(payload) < per_page:
+                break
+        return result
+
+    def issue(self, full_name: str, number: int) -> Issue:
+        payload, _ = self._request("GET", f"/repos/{full_name}/issues/{number}")
+        if "pull_request" in payload:
+            raise GitHubError(f"{full_name}#{number} is a pull request, not an issue")
+        return self._parse_issue(full_name, payload)
+
+    def similar_issues(
+        self, full_name: str, title: str, *, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        terms = re.findall(r"[\w.-]{2,}", title, flags=re.UNICODE)[:12]
+        if not terms:
+            return []
+        payload, _ = self._request(
+            "GET",
+            "/search/issues",
+            query={
+                "q": f"repo:{full_name} is:issue {' '.join(terms)}",
+                "per_page": min(max(limit, 1), 20),
+            },
+        )
+        items = payload.get("items", ()) if isinstance(payload, dict) else ()
+        return [
+            {
+                "number": int(value["number"]),
+                "title": str(value.get("title") or "")[:200],
+                "state": str(value.get("state") or ""),
+                "url": str(value.get("html_url") or ""),
+            }
+            for value in items[:limit]
+        ]
+
+    @staticmethod
+    def _parse_issue(full_name: str, item: dict[str, Any]) -> Issue:
+        return Issue(
+            repository=full_name,
+            number=int(item["number"]),
+            node_id=int(item["id"]),
+            title=str(item["title"]),
+            body=str(item.get("body") or ""),
+            url=str(item["html_url"]),
+            labels=tuple(str(label["name"]) for label in item.get("labels", ())),
+            comments=int(item.get("comments", 0)),
+            created_at=str(item["created_at"]),
+            updated_at=str(item["updated_at"]),
+            author_login=str(item["user"]["login"]),
+            author_association=str(item.get("author_association") or "NONE"),
+            state=str(item.get("state") or "open"),
+            assignees=tuple(
+                str(assignee["login"]) for assignee in item.get("assignees", ())
+            ),
+            locked=bool(item.get("locked", False)),
+        )
+
+    def has_maintainer_approval(
+        self,
+        full_name: str,
+        number: int,
+        command: str,
+        allowed_associations: tuple[str, ...],
+    ) -> bool:
+        payload, _ = self._request(
+            "GET",
+            f"/repos/{full_name}/issues/{number}/comments",
+            query={"per_page": 100},
+        )
+        associations = {value.upper() for value in allowed_associations}
+        command_pattern = re.escape(command)
+        start = re.compile(
+            rf"^(?:\s*@[-\w]+\s+)*{command_pattern}(?:\s|$)", re.IGNORECASE
+        )
+        end = re.compile(rf"(?:^|\s){command_pattern}\s*$", re.IGNORECASE)
+        for comment in payload:
+            if str(comment.get("author_association", "")).upper() not in associations:
+                continue
+            body = str(comment.get("body") or "").strip()
+            if start.search(body) or end.search(body):
+                return True
+        return False
+
+    def competing_work(
+        self,
+        full_name: str,
+        number: int,
+        *,
+        own_login: str,
+        pull_request_references: dict[int, tuple[CompetingWork, ...]] | None = None,
+    ) -> tuple[CompetingWork, ...]:
+        conflicts: list[CompetingWork] = []
+        comments, _ = self._request(
+            "GET",
+            f"/repos/{full_name}/issues/{number}/comments",
+            query={"per_page": 100},
+        )
+        claim = re.compile(
+            r"(?:^|\n)\s*/claim\s*(?:$|\n)|"
+            r"\b(?:i(?:'d|'ll|'m| am| can| will| would)|working on|picking up|"
+            r"taking)\b.{0,100}\b(?:take|work|fix|implement|prepare|send|open|pr)\b|"
+            r"我.{0,40}(?:正在|会|准备).{0,40}(?:修复|实现|提交|提\s*pr)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        for comment in comments:
+            actor = str((comment.get("user") or {}).get("login") or "")
+            if not actor or actor.casefold() == own_login.casefold():
+                continue
+            body = str(comment.get("body") or "").strip()
+            if claim.search(body):
+                conflicts.append(
+                    CompetingWork(
+                        kind="claim_comment",
+                        actor=actor,
+                        url=str(comment.get("html_url") or ""),
+                        detail=body[:240],
+                    )
+                )
+
+        references = pull_request_references
+        if references is None:
+            references = self.open_pull_request_references(
+                full_name, own_login=own_login
+            )
+        conflicts.extend(references.get(number, ()))
+        return tuple(conflicts)
+
+    def open_pull_request_references(
+        self, full_name: str, *, own_login: str
+    ) -> dict[int, tuple[CompetingWork, ...]]:
+        references: dict[int, list[CompetingWork]] = {}
+        seen_pulls: set[int] = set()
+        issue_reference = re.compile(r"(?<![\w/])#(\d+)(?!\d)")
+        for page in range(1, 3):
+            pulls, _ = self._request(
+                "GET",
+                f"/repos/{full_name}/pulls",
+                query={"state": "open", "per_page": 100, "page": page},
+            )
+            for pull in pulls:
+                pull_number = int(pull["number"])
+                if pull_number in seen_pulls:
+                    continue
+                seen_pulls.add(pull_number)
+                body = str(pull.get("body") or "")
+                actor = str((pull.get("user") or {}).get("login") or "")
+                head_owner = str(
+                    (
+                        ((pull.get("head") or {}).get("repo") or {}).get("owner") or {}
+                    ).get("login")
+                    or ""
+                )
+                if own_login.casefold() in {actor.casefold(), head_owner.casefold()}:
+                    continue
+                conflict = CompetingWork(
+                    kind="open_pull_request",
+                    actor=actor,
+                    url=str(pull.get("html_url") or ""),
+                    detail=f"#{pull_number}: {pull.get('title', '')}",
+                )
+                for match in issue_reference.finditer(body):
+                    number = int(match.group(1))
+                    references.setdefault(number, []).append(conflict)
+            if len(pulls) < 100:
+                break
+        return {key: tuple(value) for key, value in references.items()}
+
+    def ensure_fork(self, upstream: str, owner: str, *, timeout: int = 120) -> str:
+        fork_name = upstream.split("/", 1)[1]
+        fork = f"{owner}/{fork_name}"
+        try:
+            payload, _ = self._request("GET", f"/repos/{fork}")
+            parent = (payload.get("parent") or {}).get("full_name", "")
+            source = (payload.get("source") or {}).get("full_name", "")
+            if not payload.get("fork") or upstream.lower() not in {
+                str(parent).lower(),
+                str(source).lower(),
+            }:
+                raise GitHubError(
+                    f"{fork} already exists but is not a fork of {upstream}"
+                )
+            return fork
+        except GitHubError as exc:
+            if "failed (404)" not in str(exc):
+                raise
+
+        self._request("POST", f"/repos/{upstream}/forks", data={}, expected=(202,))
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            time.sleep(2)
+            try:
+                self._request("GET", f"/repos/{fork}")
+                return fork
+            except GitHubError as exc:
+                if "failed (404)" not in str(exc):
+                    raise
+        raise GitHubError(f"timed out waiting for fork {fork}")
+
+    def existing_pull_request(
+        self, upstream: str, *, owner: str, branch: str
+    ) -> PullRequest | None:
+        payload, _ = self._request(
+            "GET",
+            f"/repos/{upstream}/pulls",
+            query={"state": "open", "head": f"{owner}:{branch}", "per_page": 10},
+        )
+        if not payload:
+            return None
+        return self._parse_pull_request(payload[0])
+
+    def open_pull_requests(self, upstream: str) -> tuple[PullRequest, ...]:
+        """Return every open pull request by following REST pagination."""
+        values = self._paginated_rest_values(
+            f"/repos/{upstream}/pulls", query={"state": "open"}
+        )
+        return tuple(
+            sorted(
+                (self._parse_pull_request(value) for value in values),
+                key=lambda value: value.number,
+            )
+        )
+
+    def all_pull_requests(self, upstream: str) -> tuple[PullRequest, ...]:
+        """Return complete PR history used by terminal branch classification."""
+        values = self._paginated_rest_values(
+            f"/repos/{upstream}/pulls", query={"state": "all", "sort": "updated"}
+        )
+        return tuple(
+            sorted(
+                (self._parse_pull_request(value) for value in values),
+                key=lambda value: value.number,
+            )
+        )
+
+    def repository_branches(self, upstream: str) -> tuple[dict[str, Any], ...]:
+        """Return a complete normalized branch snapshot or fail closed."""
+        values = self._paginated_rest_values(f"/repos/{upstream}/branches")
+        branches = []
+        for value in values:
+            name = str(value.get("name") or "")
+            protected = value.get("protected")
+            head_sha = str(((value.get("commit") or {}).get("sha")) or "")
+            if (
+                not name
+                or not isinstance(protected, bool)
+                or not re.fullmatch(r"[0-9a-f]{40}", head_sha)
+            ):
+                raise GitHubError("GitHub branch snapshot was incomplete")
+            branches.append(
+                {"name": name, "head_sha": head_sha, "protected": protected}
+            )
+        return tuple(sorted(branches, key=lambda branch: str(branch["name"])))
+
+    def repository_branch(self, upstream: str, branch: str) -> dict[str, Any] | None:
+        """Read one exact branch including protection, or return absent."""
+        if not branch:
+            raise ValueError("branch must not be empty")
+        encoded = urllib.parse.quote(branch, safe="")
+        try:
+            value, _ = self._request("GET", f"/repos/{upstream}/branches/{encoded}")
+        except GitHubError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        protected = value.get("protected") if isinstance(value, dict) else None
+        head_sha = str(((value.get("commit") or {}).get("sha")) or "")
+        if not isinstance(protected, bool) or not re.fullmatch(
+            r"[0-9a-f]{40}", head_sha
+        ):
+            raise GitHubError("GitHub branch response was incomplete")
+        return {"name": branch, "head_sha": head_sha, "protected": protected}
+
+    def pull_requests_for_head(
+        self, upstream: str, *, owner: str, branch: str
+    ) -> tuple[PullRequest, ...]:
+        """Return all PR history for one exact same-repository head."""
+        if not owner or not branch:
+            raise ValueError("pull request head owner and branch must not be empty")
+        values = self._paginated_rest_values(
+            f"/repos/{upstream}/pulls",
+            query={"state": "all", "head": f"{owner}:{branch}"},
+        )
+        return tuple(
+            sorted(
+                (self._parse_pull_request(value) for value in values),
+                key=lambda value: value.number,
+            )
+        )
+
+    @staticmethod
+    def _parse_pull_request(item: dict[str, Any]) -> PullRequest:
+        head = item.get("head") or {}
+        base = item.get("base") or {}
+        head_owner = ((head.get("repo") or {}).get("owner") or {}).get("login") or ""
+        head_repository = str((head.get("repo") or {}).get("full_name") or "")
+        return PullRequest(
+            number=int(item["number"]),
+            url=str(item["html_url"]),
+            state=str(item["state"]),
+            draft=bool(item.get("draft", False)),
+            title=str(item.get("title") or ""),
+            body=str(item.get("body") or ""),
+            updated_at=str(item.get("updated_at") or ""),
+            author=str((item.get("user") or {}).get("login") or ""),
+            merged=bool(item.get("merged_at")),
+            head_owner=str(head_owner),
+            head_repository=head_repository,
+            head_branch=str(head.get("ref") or ""),
+            head_sha=str(head.get("sha") or ""),
+            base_branch=str(base.get("ref") or ""),
+            base_sha=str(base.get("sha") or ""),
+        )
+
+    def pull_request(self, upstream: str, number: int) -> PullRequest:
+        payload, _ = self._request("GET", f"/repos/{upstream}/pulls/{number}")
+        return self._parse_pull_request(payload)
+
+    def pull_request_head_identity(
+        self, repository: str, number: int
+    ) -> dict[str, Any]:
+        """Read the exact PR head owner and repository without fetching comments."""
+        value, _ = self._request("GET", f"/repos/{repository}/pulls/{number}")
+        head, base = value.get("head") or {}, value.get("base") or {}
+        head_repo = head.get("repo") or {}
+        return {
+            "number": int(value["number"]),
+            "state": str(value.get("state") or ""),
+            "author": str((value.get("user") or {}).get("login") or ""),
+            "head_owner": str((head_repo.get("owner") or {}).get("login") or ""),
+            "head_repository": str(head_repo.get("full_name") or ""),
+            "head_branch": str(head.get("ref") or ""),
+            "head_sha": str(head.get("sha") or ""),
+            "base_branch": str(base.get("ref") or ""),
+            "base_sha": str(base.get("sha") or ""),
+        }
+
+    def pull_request_activity(
+        self, upstream: str, number: int, *, include_body: bool = False
+    ) -> dict[str, Any]:
+        pull, _ = self._request("GET", f"/repos/{upstream}/pulls/{number}")
+        comments = self._paginated_rest_values(
+            f"/repos/{upstream}/issues/{number}/comments"
+        )
+        reviews = self._paginated_rest_values(
+            f"/repos/{upstream}/pulls/{number}/reviews"
+        )
+        review_comments = self._paginated_rest_values(
+            f"/repos/{upstream}/pulls/{number}/comments"
+        )
+        head_sha = str((pull.get("head") or {}).get("sha") or "")
+        check_runs = self._paginated_rest_values(
+            f"/repos/{upstream}/commits/{head_sha}/check-runs",
+            container="check_runs",
+        )
+        pull_state = {
+            "number": int(pull["number"]),
+            "url": str(pull["html_url"]),
+            "state": str(pull["state"]),
+            "draft": bool(pull.get("draft", False)),
+            "updated_at": str(pull.get("updated_at") or ""),
+            "head_sha": head_sha,
+            "base_branch": str((pull.get("base") or {}).get("ref") or ""),
+            "base_sha": str((pull.get("base") or {}).get("sha") or ""),
+            "mergeable": pull.get("mergeable"),
+            "mergeable_state": str(pull.get("mergeable_state") or ""),
+            "merged": bool(pull.get("merged_at")),
+        }
+        if include_body:
+            pull_state["body"] = str(pull.get("body") or "")
+            pull_state["author"] = str((pull.get("user") or {}).get("login") or "")
+            head = pull.get("head") or {}
+            pull_state["head_owner"] = str(
+                (((head.get("repo") or {}).get("owner") or {}).get("login")) or ""
+            )
+            pull_state["head_repository"] = str(
+                (head.get("repo") or {}).get("full_name") or ""
+            )
+            pull_state["head_branch"] = str(head.get("ref") or "")
+        return {
+            "pull_request": pull_state,
+            "comments": [
+                {
+                    "id": int(value["id"]),
+                    "author": str((value.get("user") or {}).get("login") or ""),
+                    "association": str(value.get("author_association") or ""),
+                    "created_at": str(value.get("created_at") or ""),
+                    "updated_at": str(value.get("updated_at") or ""),
+                    "url": str(value.get("html_url") or ""),
+                    "body": str(value.get("body") or ""),
+                }
+                for value in comments
+            ],
+            "reviews": [
+                {
+                    "id": int(value["id"]),
+                    "author": str((value.get("user") or {}).get("login") or ""),
+                    "association": str(value.get("author_association") or ""),
+                    "state": str(value.get("state") or ""),
+                    "submitted_at": str(value.get("submitted_at") or ""),
+                    "url": str(value.get("html_url") or ""),
+                    "body": str(value.get("body") or ""),
+                }
+                for value in reviews
+            ],
+            "review_comments": [
+                {
+                    "id": int(value["id"]),
+                    "author": str((value.get("user") or {}).get("login") or ""),
+                    "association": str(value.get("author_association") or ""),
+                    "created_at": str(value.get("created_at") or ""),
+                    "updated_at": str(value.get("updated_at") or ""),
+                    "url": str(value.get("html_url") or ""),
+                    "path": str(value.get("path") or ""),
+                    "line": value.get("line") or value.get("original_line"),
+                    "body": str(value.get("body") or ""),
+                }
+                for value in review_comments
+            ],
+            "checks": [
+                {
+                    "id": int(value["id"]),
+                    "name": str(value.get("name") or ""),
+                    "status": str(value.get("status") or ""),
+                    "conclusion": str(value.get("conclusion") or ""),
+                    "url": str(value.get("details_url") or ""),
+                }
+                for value in check_runs
+            ],
+        }
+
+    def branch_head_sha(self, full_name: str, branch: str) -> str:
+        """Return one exact remote branch head, or empty when it does not exist."""
+        if not branch:
+            raise ValueError("branch must not be empty")
+        encoded = urllib.parse.quote(branch, safe="")
+        try:
+            payload, _ = self._request("GET", f"/repos/{full_name}/branches/{encoded}")
+        except GitHubError as exc:
+            if exc.status_code == 404:
+                return ""
+            raise
+        sha = str(((payload.get("commit") or {}).get("sha")) or "")
+        if len(sha) != 40 or any(value not in "0123456789abcdef" for value in sha):
+            raise GitHubError("GitHub branch response omitted a valid head SHA")
+        return sha
+
+    def check_runs(self, upstream: str, ref: str) -> tuple[dict[str, Any], ...]:
+        values = self._paginated_rest_values(
+            f"/repos/{upstream}/commits/{urllib.parse.quote(ref, safe='')}/check-runs",
+            container="check_runs",
+        )
+        return tuple(
+            {
+                "id": int(value["id"]),
+                "name": str(value.get("name") or ""),
+                "status": str(value.get("status") or ""),
+                "conclusion": str(value.get("conclusion") or ""),
+                "url": str(value.get("details_url") or ""),
+                "app_slug": str((value.get("app") or {}).get("slug") or ""),
+            }
+            for value in values
+        )
+
+    def workflow_runs(
+        self,
+        upstream: str,
+        *,
+        head_sha: str = "",
+        branch: str = "",
+        event: str = "",
+        limit: int = 0,
+    ) -> tuple[dict[str, Any], ...]:
+        query: dict[str, str | int] = {"status": "completed"}
+        if head_sha:
+            query["head_sha"] = head_sha
+        if branch:
+            query["branch"] = branch
+        if event:
+            query["event"] = event
+        values = self._paginated_rest_values(
+            f"/repos/{upstream}/actions/runs",
+            container="workflow_runs",
+            query=query,
+            max_items=limit,
+        )
+        return tuple(
+            {
+                "id": int(value["id"]),
+                "name": str(value.get("name") or ""),
+                "event": str(value.get("event") or ""),
+                "status": str(value.get("status") or ""),
+                "conclusion": str(value.get("conclusion") or ""),
+                "head_branch": str(value.get("head_branch") or ""),
+                "head_sha": str(value.get("head_sha") or ""),
+                "run_attempt": int(value.get("run_attempt") or 0),
+                "created_at": str(value.get("created_at") or ""),
+                "updated_at": str(value.get("updated_at") or ""),
+                "url": str(value.get("html_url") or ""),
+                "pull_numbers": sorted(
+                    int(pull["number"])
+                    for pull in (value.get("pull_requests") or ())
+                    if isinstance(pull, dict) and pull.get("number")
+                ),
+            }
+            for value in values
+        )
+
+    def workflow_jobs(self, upstream: str, run_id: int) -> tuple[dict[str, Any], ...]:
+        values = self._paginated_rest_values(
+            f"/repos/{upstream}/actions/runs/{run_id}/jobs",
+            container="jobs",
+            query={"filter": "all"},
+        )
+        result = []
+        for value in values:
+            check_run_match = re.search(
+                r"/check-runs/(\d+)$", str(value.get("check_run_url") or "")
+            )
+            result.append(
+                {
+                    "id": int(value["id"]),
+                    "run_id": int(value.get("run_id") or run_id),
+                    "run_attempt": int(value.get("run_attempt") or 0),
+                    "head_sha": str(value.get("head_sha") or ""),
+                    "workflow_name": str(value.get("workflow_name") or ""),
+                    "name": str(value.get("name") or ""),
+                    "status": str(value.get("status") or ""),
+                    "conclusion": str(value.get("conclusion") or ""),
+                    "started_at": str(value.get("started_at") or ""),
+                    "completed_at": str(value.get("completed_at") or ""),
+                    "url": str(value.get("html_url") or ""),
+                    "labels": [str(label) for label in (value.get("labels") or ())],
+                    "runner_group_name": str(value.get("runner_group_name") or ""),
+                    "check_run_id": (
+                        int(check_run_match.group(1)) if check_run_match else 0
+                    ),
+                    "steps": [
+                        {
+                            "number": int(step.get("number") or 0),
+                            "name": str(step.get("name") or ""),
+                            "status": str(step.get("status") or ""),
+                            "conclusion": str(step.get("conclusion") or ""),
+                        }
+                        for step in (value.get("steps") or ())
+                        if isinstance(step, dict)
+                    ],
+                }
+            )
+        return tuple(result)
+
+    def workflow_job_log(
+        self, upstream: str, job_id: int, *, max_bytes: int
+    ) -> dict[str, Any]:
+        """Download a bounded job log without forwarding auth to its signed URL."""
+        if job_id < 1 or max_bytes < 1:
+            raise ValueError("job_id and max_bytes must be positive")
+        api_url = f"{self.config.api_url}/repos/{upstream}/actions/jobs/{job_id}/logs"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "reposteward/0.1",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        request = urllib.request.Request(api_url, headers=headers, method="GET")
+        opener = urllib.request.build_opener(_NoRedirectHandler())
+        try:
+            response = opener.open(request, timeout=30)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 302:
+                raise GitHubError(f"GitHub GET job log failed ({exc.code})") from exc
+            location = str(exc.headers.get("Location") or "")
+            exc.close()
+        except urllib.error.URLError as exc:
+            raise GitHubError("GitHub GET job log failed") from exc
+        else:
+            response.close()
+            raise GitHubError("GitHub job log endpoint did not return a redirect")
+        parsed = urllib.parse.urlparse(location)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise GitHubError("GitHub job log returned an unsafe redirect")
+        download = urllib.request.Request(
+            location,
+            headers={
+                "User-Agent": "reposteward/0.1",
+                "Range": f"bytes=-{max_bytes}",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(download, timeout=30) as response:
+                payload = response.read(max_bytes + 1)
+        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+            raise GitHubError("GitHub signed job log download failed") from exc
+        truncated = len(payload) > max_bytes
+        bounded = payload[:max_bytes]
+        return {
+            "text": bounded.decode("utf-8", errors="replace"),
+            "bytes_read": len(bounded),
+            "truncated": truncated,
+        }
+
+    def pull_request_merge_snapshot(self, upstream: str, number: int) -> dict[str, Any]:
+        """Read a complete PR decision snapshot without making GitHub writes."""
+        owner, name = upstream.split("/", 1)
+        cursors: dict[str, str | None] = {
+            "files": None,
+            "threads": None,
+            "checks": None,
+        }
+        values: dict[str, list[dict[str, Any]]] = {
+            "files": [],
+            "threads": [],
+            "checks": [],
+        }
+        totals = {"files": 0, "threads": 0, "checks": 0}
+        pull: dict[str, Any] | None = None
+        for _page in range(MAX_REST_PAGES):
+            data = self._graphql(
+                """
+                query(
+                  $owner: String!, $name: String!, $number: Int!,
+                  $files: String, $threads: String, $checks: String
+                ) {
+                  repository(owner: $owner, name: $name) {
+                    pullRequest(number: $number) {
+                      number title url updatedAt state isDraft mergeable reviewDecision
+                      headRefName baseRefName
+                      headRefOid baseRefOid additions deletions changedFiles
+                      mergeCommit { oid }
+                      files(first: 100, after: $files) {
+                        totalCount
+                        nodes { path }
+                        pageInfo { hasNextPage endCursor }
+                      }
+                      reviewThreads(first: 100, after: $threads) {
+                        totalCount
+                        nodes { id isResolved }
+                        pageInfo { hasNextPage endCursor }
+                      }
+                      commits(last: 1) {
+                        nodes {
+                          commit {
+                            statusCheckRollup {
+                              contexts(first: 100, after: $checks) {
+                                totalCount
+                                nodes {
+                                  __typename
+                                  ... on CheckRun {
+                                    name status conclusion
+                                    isRequired(pullRequestNumber: $number)
+                                  }
+                                  ... on StatusContext {
+                                    context state
+                                    isRequired(pullRequestNumber: $number)
+                                  }
+                                }
+                                pageInfo { hasNextPage endCursor }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                """,
+                {"owner": owner, "name": name, "number": number, **cursors},
+            )
+            repository = data.get("repository")
+            current = (
+                repository.get("pullRequest") if isinstance(repository, dict) else None
+            )
+            if not isinstance(current, dict):
+                raise GitHubError(f"pull request not found: {upstream}#{number}")
+            pull = current
+            commits = current.get("commits")
+            commit_nodes = commits.get("nodes") if isinstance(commits, dict) else []
+            latest = (
+                commit_nodes[0]
+                if isinstance(commit_nodes, list) and commit_nodes
+                else {}
+            )
+            commit = latest.get("commit") if isinstance(latest, dict) else {}
+            rollup = commit.get("statusCheckRollup") if isinstance(commit, dict) else {}
+            connections = {
+                "files": current.get("files"),
+                "threads": current.get("reviewThreads"),
+                "checks": (
+                    rollup.get("contexts") if isinstance(rollup, dict) else None
+                ),
+            }
+            pending = False
+            for key, connection in connections.items():
+                if connection is None and key == "checks":
+                    continue
+                if not isinstance(connection, dict):
+                    raise GitHubError(f"GitHub merge snapshot omitted {key}")
+                nodes = connection.get("nodes")
+                page_info = connection.get("pageInfo")
+                total_count = connection.get("totalCount")
+                if (
+                    not isinstance(nodes, list)
+                    or not isinstance(page_info, dict)
+                    or not isinstance(total_count, int)
+                ):
+                    raise GitHubError(f"GitHub merge snapshot returned invalid {key}")
+                totals[key] = total_count
+                values[key].extend(value for value in nodes if isinstance(value, dict))
+                if bool(page_info.get("hasNextPage")):
+                    cursor = str(page_info.get("endCursor") or "")
+                    if not cursor or cursor == cursors[key]:
+                        raise GitHubError(f"GitHub {key} pagination did not advance")
+                    cursors[key] = cursor
+                    pending = True
+                else:
+                    cursors[key] = str(page_info.get("endCursor") or "") or None
+            if not pending:
+                break
+        else:
+            raise GitHubError("GitHub merge snapshot pagination exceeded its limit")
+
+        assert pull is not None
+        incomplete = [key for key in values if len(values[key]) != totals[key]]
+        if incomplete:
+            raise GitHubError(
+                "GitHub merge snapshot is incomplete: " + ", ".join(incomplete)
+            )
+        checks = []
+        for value in values["checks"]:
+            kind = str(value.get("__typename") or "")
+            if kind == "CheckRun":
+                checks.append(
+                    {
+                        "name": str(value.get("name") or ""),
+                        "status": str(value.get("status") or ""),
+                        "conclusion": str(value.get("conclusion") or ""),
+                        "required": bool(value.get("isRequired")),
+                    }
+                )
+            elif kind == "StatusContext":
+                state = str(value.get("state") or "").casefold()
+                checks.append(
+                    {
+                        "name": str(value.get("context") or ""),
+                        "status": "completed" if state != "pending" else "pending",
+                        "conclusion": "success" if state == "success" else state,
+                        "required": bool(value.get("isRequired")),
+                    }
+                )
+        conversation_state = sorted(
+            (
+                {
+                    "id": str(value.get("id") or ""),
+                    "resolved": bool(value.get("isResolved")),
+                }
+                for value in values["threads"]
+            ),
+            key=lambda value: value["id"],
+        )
+        return {
+            "repository": upstream.casefold(),
+            "pull_number": int(pull["number"]),
+            "title": str(pull.get("title") or ""),
+            "url": str(pull.get("url") or ""),
+            "updated_at": str(pull.get("updatedAt") or ""),
+            "head_branch": str(pull.get("headRefName") or ""),
+            "head_sha": str(pull.get("headRefOid") or ""),
+            "base_branch": str(pull.get("baseRefName") or ""),
+            "base_sha": str(pull.get("baseRefOid") or ""),
+            "state": str(pull.get("state") or ""),
+            "draft": bool(pull.get("isDraft")),
+            "mergeable": str(pull.get("mergeable") or ""),
+            "review_decision": str(pull.get("reviewDecision") or ""),
+            "unresolved_conversations": sum(
+                not bool(value.get("isResolved")) for value in values["threads"]
+            ),
+            "conversation_digest": _canonical_digest(conversation_state),
+            "files": sorted(
+                {
+                    str(value.get("path") or "")
+                    for value in values["files"]
+                    if value.get("path")
+                }
+            ),
+            "additions": int(pull.get("additions") or 0),
+            "deletions": int(pull.get("deletions") or 0),
+            "checks": sorted(checks, key=lambda value: value["name"].casefold()),
+            "files_complete": True,
+            "conversations_complete": True,
+            "checks_complete": True,
+            "merge_commit_sha": str(((pull.get("mergeCommit") or {}).get("oid")) or ""),
+        }
+
+    def merge_pull_request(
+        self,
+        upstream: str,
+        number: int,
+        *,
+        head_sha: str,
+        method: str,
+    ) -> dict[str, Any]:
+        """Merge one exact PR head and return GitHub's normalized result."""
+        if method not in {"merge", "squash", "rebase"}:
+            raise ValueError(f"unsupported merge method: {method!r}")
+        payload, _ = self._request(
+            "PUT",
+            f"/repos/{upstream}/pulls/{number}/merge",
+            data={"sha": head_sha, "merge_method": method},
+        )
+        if not isinstance(payload, dict):
+            raise GitHubError("GitHub merge response was not an object")
+        return {
+            "merged": bool(payload.get("merged")),
+            "sha": str(payload.get("sha") or ""),
+            "message": str(payload.get("message") or ""),
+        }
+
+    def reopen_pull_request(
+        self,
+        upstream: str,
+        number: int,
+        *,
+        owner: str,
+        branch: str,
+        base: str,
+        title: str,
+        body: str,
+    ) -> PullRequest:
+        current = self.pull_request(upstream, number)
+        if current.state not in {"closed", "open"}:
+            raise GitHubError(
+                f"pull request {upstream}#{number} cannot be reopened from {current.state!r}"
+            )
+        expected = (owner.casefold(), branch, base)
+        actual = (
+            current.head_owner.casefold(),
+            current.head_branch,
+            current.base_branch,
+        )
+        if actual != expected:
+            raise GitHubError(
+                f"pull request {upstream}#{number} does not match "
+                f"{owner}:{branch} -> {base}"
+            )
+        payload, _ = self._request(
+            "PATCH",
+            f"/repos/{upstream}/pulls/{number}",
+            data={"title": title, "body": body, "state": "open"},
+        )
+        return self._parse_pull_request(payload)
+
+    def close_pull_request(self, upstream: str, number: int) -> PullRequest:
+        payload, _ = self._request(
+            "PATCH",
+            f"/repos/{upstream}/pulls/{number}",
+            data={"state": "closed"},
+        )
+        return self._parse_pull_request(payload)
+
+    def create_pull_request(
+        self,
+        upstream: str,
+        *,
+        owner: str,
+        branch: str,
+        base: str,
+        title: str,
+        body: str,
+        draft: bool,
+    ) -> PullRequest:
+        existing = self.existing_pull_request(upstream, owner=owner, branch=branch)
+        if existing:
+            return existing
+        payload, _ = self._request(
+            "POST",
+            f"/repos/{upstream}/pulls",
+            data={
+                "title": title,
+                "head": f"{owner}:{branch}",
+                "base": base,
+                "body": body,
+                "draft": draft,
+                "maintainer_can_modify": True,
+            },
+            expected=(201,),
+        )
+        return self._parse_pull_request(payload)

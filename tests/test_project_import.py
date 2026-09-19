@@ -10,20 +10,20 @@ from unittest.mock import Mock, patch
 import test_external_tasks
 from test_projects import git, repository
 
-from reposteward.github import ConditionalRead, GitHubReadError
-from reposteward.local_operations import LocalOperations
-from reposteward.project_clone import directory_identity, publish_directory
-from reposteward.project_import import source_input
-from reposteward.projects import ProjectError
-from reposteward.snapshots import workspace_snapshot
-from reposteward.state_upgrade import (
+from reposteward.github.client import ConditionalRead, GitHubReadError
+from reposteward.projects.clone import directory_identity, publish_directory
+from reposteward.projects.imports import source_input
+from reposteward.projects.registry import ProjectError
+from reposteward.storage.snapshots import workspace_snapshot
+from reposteward.storage.state_upgrade import (
     StateUpgradeError,
     inspect_backup,
     upgrade_plan,
     upgrade_state,
 )
-from reposteward.store import SCHEMA_VERSION
-from reposteward.workbench import Workbench
+from reposteward.storage.store import SCHEMA_VERSION
+from reposteward.tasks.local_operations import LocalOperations
+from reposteward.web.workbench import Workbench
 
 
 class ProjectImportTests(unittest.TestCase):
@@ -95,7 +95,7 @@ class ProjectImportTests(unittest.TestCase):
         ]:
             self.assertEqual(source_input("github_url", value, "github.com"), expected)
         with patch(
-            "reposteward.project_import.clone_ssh",
+            "reposteward.projects.imports.clone_ssh",
             side_effect=AssertionError("no clone"),
         ):
             self.inspect("https://github.com/owner/repo")
@@ -218,16 +218,18 @@ class ProjectImportTests(unittest.TestCase):
 
         with (
             patch(
-                "reposteward.project_import.clone_ssh", side_effect=self.fake_clone
+                "reposteward.projects.imports.clone_ssh", side_effect=self.fake_clone
             ) as clone,
-            patch("reposteward.project_import.publish_directory", side_effect=lost_ack),
+            patch(
+                "reposteward.projects.imports.publish_directory", side_effect=lost_ack
+            ),
         ):
             result = self.apply(current, preview)
         self.assertEqual(result["state"], "failed")
         self.assertTrue((target / ".git").is_dir())
         self.operations.control(result["id"], "retry", result["revision"], "retry")
         with patch(
-            "reposteward.project_import.clone_ssh",
+            "reposteward.projects.imports.clone_ssh",
             side_effect=AssertionError("do not reclone"),
         ):
             self.operations.process_once()
@@ -273,11 +275,13 @@ class ProjectImportTests(unittest.TestCase):
             leftovers.append(destination)
             raise GitHubReadError("network_unavailable")
 
-        with patch("reposteward.project_import.clone_ssh", side_effect=fail):
+        with patch("reposteward.projects.imports.clone_ssh", side_effect=fail):
             result = self.apply(current, preview)
         self.assertEqual(result["state"], "failed")
         self.operations.control(result["id"], "retry", result["revision"], "retry")
-        with patch("reposteward.project_import.clone_ssh", side_effect=self.fake_clone):
+        with patch(
+            "reposteward.projects.imports.clone_ssh", side_effect=self.fake_clone
+        ):
             self.operations.process_once()
         self.assertEqual(self.operations.operation(result["id"])["state"], "completed")
         self.assertEqual((leftovers[0] / "keep").read_text(), "partial")
@@ -340,7 +344,7 @@ class ProjectImportTests(unittest.TestCase):
         plan = upgrade_plan(self.config)
         with (
             patch(
-                "reposteward.state_upgrade_pair.migrate_registry",
+                "reposteward.storage.state_upgrade_pair.migrate_registry",
                 side_effect=sqlite3.OperationalError("injected"),
             ),
             self.assertRaisesRegex(StateUpgradeError, "did not commit"),
@@ -386,7 +390,7 @@ class ProjectImportTests(unittest.TestCase):
         plan = upgrade_plan(self.config)
         with (
             patch(
-                "reposteward.state_upgrade_pair.sqlite3.connect",
+                "reposteward.storage.state_upgrade_pair.sqlite3.connect",
                 side_effect=intercepted,
             ),
             self.assertRaisesRegex(StateUpgradeError, "partially committed"),
@@ -504,7 +508,7 @@ class ProjectImportTests(unittest.TestCase):
         import os
         from unittest.mock import MagicMock
 
-        from reposteward.project_clone import clone_ssh
+        from reposteward.projects.clone import clone_ssh
 
         process = MagicMock()
         process.__enter__.return_value = process
@@ -522,7 +526,7 @@ class ProjectImportTests(unittest.TestCase):
                 },
             ),
             patch(
-                "reposteward.project_clone.subprocess.Popen", return_value=process
+                "reposteward.projects.clone.subprocess.Popen", return_value=process
             ) as launch,
         ):
             clone_ssh("github.com", "owner/repo", self.root / "target", lambda: None)
@@ -586,7 +590,7 @@ class ProjectImportTests(unittest.TestCase):
             return descriptor
 
         with (
-            patch("reposteward.project_clone.os.open", side_effect=fail_second),
+            patch("reposteward.projects.clone.os.open", side_effect=fail_second),
             self.assertRaises(OSError),
         ):
             publish_directory(source, target, directory_identity(self.root))

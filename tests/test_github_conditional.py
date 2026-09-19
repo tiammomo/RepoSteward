@@ -6,8 +6,8 @@ import urllib.error
 from email.message import Message
 from unittest.mock import Mock, patch
 
-from reposteward.config import GitHubConfig
-from reposteward.github import GitHubClient, GitHubReadError
+from reposteward.core.config import GitHubConfig
+from reposteward.github.client import GitHubClient, GitHubReadError
 
 
 class ConditionalTests(unittest.TestCase):

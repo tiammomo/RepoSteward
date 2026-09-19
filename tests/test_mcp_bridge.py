@@ -13,11 +13,11 @@ import test_external_verification
 from jsonschema import Draft202012Validator
 from test_projects import git, repository
 
-from reposteward.mcp_bridge import SCHEMAS, ScopedBridge, create_server
-from reposteward.mcp_config import client_config
-from reposteward.projects import ProjectError
-from reposteward.verifier import DockerVerifier
-from reposteward.workspace import sanitized_environment
+from reposteward.integrations.mcp import SCHEMAS, ScopedBridge, create_server
+from reposteward.integrations.mcp_config import client_config
+from reposteward.projects.registry import ProjectError
+from reposteward.storage.workspace import sanitized_environment
+from reposteward.verification.verifier import DockerVerifier
 
 HAS_MCP = importlib.util.find_spec("mcp") is not None
 
@@ -30,7 +30,7 @@ class BridgeTests(unittest.TestCase):
         self.bridge = ScopedBridge(self.config, self.repo)
 
     def test_understanding_is_read_only_and_matches_shared_service(self):
-        from reposteward.understanding import Understanding
+        from reposteward.projects.understanding import Understanding
 
         service = Understanding(self.config.state_dir / "understanding")
         self.assertEqual(
@@ -323,7 +323,7 @@ class BridgeTests(unittest.TestCase):
     def test_sdk_cancellation_reaches_worker_and_waits_for_cleanup(self) -> None:
         from mcp import Client
 
-        from reposteward.external_verification import ExternalVerification
+        from reposteward.verification.external import ExternalVerification
 
         started, cancelled, finished = Event(), Event(), Event()
 

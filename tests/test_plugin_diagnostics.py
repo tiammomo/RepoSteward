@@ -15,10 +15,10 @@ from unittest.mock import patch
 from test_projects import repository
 
 from reposteward.cli import main
-from reposteward.config import load_config
-from reposteward.plugin_bundle import MANIFEST, PluginBundle
-from reposteward.plugin_diagnostics import FILES, MAX_FILE_BYTES, PluginDiagnostics
-from reposteward.projects import ProjectRegistry, canonical_digest
+from reposteward.core.config import load_config
+from reposteward.plugins.bundle import MANIFEST, PluginBundle
+from reposteward.plugins.diagnostics import FILES, MAX_FILE_BYTES, PluginDiagnostics
+from reposteward.projects.registry import ProjectRegistry, canonical_digest
 
 
 class PluginDiagnosticsTests(unittest.TestCase):
@@ -89,7 +89,8 @@ class PluginDiagnosticsTests(unittest.TestCase):
         shutil.copytree(self.bundle, cache)
         before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
         with patch(
-            "reposteward.github.GitHubClient", side_effect=AssertionError("offline")
+            "reposteward.github.client.GitHubClient",
+            side_effect=AssertionError("offline"),
         ):
             report = self.doctor()
             plan = self.service.install_plan(self.repo, **self.kwargs)
@@ -113,7 +114,7 @@ class PluginDiagnosticsTests(unittest.TestCase):
 
     def test_default_personal_marketplace_is_not_explicitly_added(self):
         self.register()
-        with patch("reposteward.plugin_diagnostics.Path.home", return_value=self.root):
+        with patch("reposteward.plugins.diagnostics.Path.home", return_value=self.root):
             plan = self.service.install_plan(self.repo, **self.kwargs)
         self.assertEqual(plan["steps"][0]["action"], "install")
 
@@ -147,11 +148,14 @@ class PluginDiagnosticsTests(unittest.TestCase):
         report = self.doctor()
         self.assertTrue(report["bundle_compatible"])
         self.assertEqual(self.status(report, "configuration_snapshot"), "warning")
-        with patch("reposteward.plugin_bundle._runtime_digest", return_value="changed"):
+        with patch(
+            "reposteward.plugins.bundle._runtime_digest", return_value="changed"
+        ):
             report = self.doctor()
         self.assertEqual(self.status(report, "runtime_matches"), "error")
         with patch(
-            "reposteward.plugin_diagnostics.importlib.util.find_spec", return_value=None
+            "reposteward.plugins.diagnostics.importlib.util.find_spec",
+            return_value=None,
         ):
             report = self.doctor()
         self.assertEqual(self.status(report, "mcp_available"), "error")

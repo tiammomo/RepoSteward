@@ -9,10 +9,10 @@ import test_external_tasks
 from fastapi.testclient import TestClient
 from test_projects import git, repository
 
-from reposteward.local_operations import LocalOperations, OperationError
-from reposteward.projects import ProjectError
-from reposteward.web_api.app import LocalSession, create_app
-from reposteward.workbench import Workbench
+from reposteward.projects.registry import ProjectError
+from reposteward.tasks.local_operations import LocalOperations, OperationError
+from reposteward.web.api.app import LocalSession, create_app
+from reposteward.web.workbench import Workbench
 
 
 class WorkspaceScanTests(unittest.TestCase):
@@ -196,7 +196,7 @@ class WorkspaceScanTests(unittest.TestCase):
         index = next((self.config.state_dir / "understanding").glob("*.json"))
         before = index.read_bytes()
         task = self.enqueue("new", rebuild=True)
-        from reposteward.code_facts import parse_code
+        from reposteward.projects.code_facts import parse_code
 
         changed = False
 
@@ -211,7 +211,7 @@ class WorkspaceScanTests(unittest.TestCase):
                     )
             return parse_code(*args)
 
-        with patch("reposteward.code_index.parse_code", side_effect=take_over):
+        with patch("reposteward.projects.code_index.parse_code", side_effect=take_over):
             self.operations.process_once()
         self.assertEqual(self.operations.operation(task["id"])["state"], "running")
         self.assertEqual(index.read_bytes(), before)
@@ -241,13 +241,13 @@ class WorkspaceScanTests(unittest.TestCase):
         index = next((self.config.state_dir / "understanding").glob("*.json"))
         before = index.read_bytes()
         task = self.enqueue("during-parse", rebuild=True)
-        from reposteward.code_facts import parse_code
+        from reposteward.projects.code_facts import parse_code
 
         def edit(*args):
             (self.repo / "app.py").write_text("def changed():\n    return 99\n")
             return parse_code(*args)
 
-        with patch("reposteward.code_index.parse_code", side_effect=edit):
+        with patch("reposteward.projects.code_index.parse_code", side_effect=edit):
             self.operations.process_once()
         self.assertEqual(self.operations.operation(task["id"])["state"], "failed")
         self.assertEqual(index.read_bytes(), before)
