@@ -43,3 +43,21 @@ WORKBENCH_MIGRATION = (
     """CREATE TABLE IF NOT EXISTS github_account_limits (
         account_digest TEXT PRIMARY KEY, retry_at TEXT NOT NULL, reason TEXT NOT NULL)""",
 )
+
+
+IMPORT_MIGRATION = (
+    """CREATE TABLE IF NOT EXISTS project_import_requests (
+        account_digest TEXT NOT NULL, action TEXT NOT NULL, key_digest TEXT NOT NULL,
+        request_digest TEXT NOT NULL, resource_id TEXT NOT NULL,
+        PRIMARY KEY(account_digest,action,key_digest))""",
+    """CREATE TABLE IF NOT EXISTS project_import_previews (
+        id TEXT PRIMARY KEY, import_id TEXT NOT NULL, account_digest TEXT NOT NULL,
+        body TEXT NOT NULL, body_digest TEXT NOT NULL, created_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS project_imports (
+        id TEXT PRIMARY KEY, account_digest TEXT NOT NULL, source TEXT NOT NULL,
+        source_digest TEXT NOT NULL, created_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS project_import_steps (
+        plan_id TEXT NOT NULL REFERENCES local_operation_plans(id), stage TEXT NOT NULL,
+        body TEXT NOT NULL, body_digest TEXT NOT NULL, created_at TEXT NOT NULL,
+        PRIMARY KEY(plan_id,stage))""",
+)

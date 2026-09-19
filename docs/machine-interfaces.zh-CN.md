@@ -1,5 +1,8 @@
 # Agent 可读取的接口契约
 
+跨 CLI、MCP、HTTP、A2A 的交付范围与持久文档版本见
+[协议与兼容性索引](protocol-map.zh-CN.md)。本页详述主线已有的 CLI/MCP 机器接口。
+
 `reposteward capabilities` 离线列出当前安装的命令、数据 schema 和 MCP 输入/输出
 契约。它不加载账号配置、不检查认证、不创建数据库、不启动客户端。依赖可用与
 客户端实机通过分别表示；未实现的协议明确报告不支持。

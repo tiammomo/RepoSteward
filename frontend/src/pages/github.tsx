@@ -21,9 +21,6 @@ import {
   when,
 } from "../components";
 
-function operationName(action: string): string {
-  return ({ "github.sync": "GitHub 同步", "assistance.verification": "开发快照验证", "assistance.understanding": "项目理解报告" } as Record<string, string>)[action] || action;
-}
 
 function sourceName(raw: unknown): string {
   const name = str(raw);
@@ -36,7 +33,17 @@ function sourceName(raw: unknown): string {
         pulls: "开放 PR",
         issues: "开放 Issue",
         activity: "最近更新",
-        summary: "同步结果",
+        summary: "操作结果",
+        scan_started: "开始扫描",
+        index_published: "索引已更新",
+        inspected: "项目已识别",
+        authorized: "计划已核对",
+        staging: "克隆暂存目录已建立",
+        clone_prepared: "克隆内容已核对",
+        published: "克隆目录已创建",
+        registered: "项目已登记",
+        completed: "导入已完成",
+        failure: "失败原因",
       } as Record<string, string>
     )[name] || name
   );
@@ -45,6 +52,8 @@ function errorText(raw: unknown): string {
   return (
     (
       {
+        workspace_changed: "工作区已变化，请重新核对计划",
+        workspace_scan_failed: "扫描未完成，请核对目录或重建索引",
         partial_sync: "部分来源同步失败，可重试",
         network_unavailable: "暂时无法连接 GitHub",
         permission_or_missing: "权限不足或远程记录不存在",
@@ -299,6 +308,21 @@ export function GitHubPage() {
   );
 }
 
+function actionName(action: string) {
+  return (
+    (
+      {
+        "github.sync": "GitHub 同步",
+        "project.inspect": "识别项目",
+        "project.apply": "导入项目",
+        "workspace.scan": "扫描工作区",
+        "assistance.verification": "验证操作",
+        "assistance.understanding": "项目理解报告",
+      } as Record<string, string>
+    )[action] || action
+  );
+}
+
 function OperationDetail({ id }: { id: string }) {
   const query = useRead("operation", { operation_id: id });
   const session = useRead("session");
@@ -308,6 +332,7 @@ function OperationDetail({ id }: { id: string }) {
     if (data && ["completed", "failed", "cancelled"].includes(data.state)) {
       void cache.invalidateQueries({ queryKey: ["github"] });
       void cache.invalidateQueries({ queryKey: ["overview"] });
+      void cache.invalidateQueries({ queryKey: ["workspace"] });
     }
   }, [data?.state, cache]);
   const mutation = useMutation({
@@ -324,7 +349,7 @@ function OperationDetail({ id }: { id: string }) {
       {data && (
         <>
           <header className="page-heading">
-            <h1>{operationName(data.action)}</h1>
+            <h1>{actionName(data.action)}</h1>
             <p>{data.repository}</p>
           </header>
           <div className="row">
@@ -332,9 +357,17 @@ function OperationDetail({ id }: { id: string }) {
             <span>
               尝试 {data.attempt_count} / {data.max_attempts}
             </span>
-            <Link to={`/projects/${data.project_id}/github`}>
-              查看 GitHub 观测
-            </Link>
+            {data.import_id ? (
+              <Link to={`/imports/${data.import_id}`}>查看导入与恢复</Link>
+            ) : (
+              <Link
+                to={`/projects/${data.project_id}${data.action === "workspace.scan" ? `/workspaces/${data.binding_id}` : "/github"}`}
+              >
+                {data.action === "workspace.scan"
+                  ? "查看工作区导览"
+                  : "查看 GitHub 观测"}
+              </Link>
+            )}
           </div>
           <p>
             登记于 {when(data.created_at)} · 更新于 {when(data.updated_at)}
@@ -370,7 +403,7 @@ function OperationDetail({ id }: { id: string }) {
                 }
                 onClick={() => mutation.mutate("retry")}
               >
-                重试同步
+                重试操作
               </button>
             )}
           </div>
@@ -386,16 +419,31 @@ function OperationDetail({ id }: { id: string }) {
                   {when(stage.created_at)}
                   {Boolean(result.error_code) &&
                     ` · ${errorText(result.error_code)}`}
-                  {stage.stage === "summary" && (
-                    <span>
-                      {" "}
-                      · 成功 {str(result.sources_ok)} 项，失败{" "}
-                      {str(result.sources_failed)} 项，已知 PR 未覆盖{" "}
-                      {str(result.known_omitted)} 项，CI / 评审未覆盖{" "}
-                      {str(result.checks_omitted)} 项
-                    </span>
+                  {Boolean(result.message) && <p>{str(result.message)}</p>}
+                  {Boolean(result.project_id) && (
+                    <Link to={`/projects/${str(result.project_id)}`}>
+                      查看已登记项目
+                    </Link>
                   )}
                   {stage.stage === "result" && <Detail title="结果与来源依据" value={result} />}
+                  {stage.stage === "summary" &&
+                    data.action === "workspace.scan" && (
+                      <span>
+                        {" "}
+                        · 已扫描 {str(obj(result.coverage).indexed_files)}{" "}
+                        个文件
+                      </span>
+                    )}
+                  {stage.stage === "summary" &&
+                    data.action === "github.sync" && (
+                      <span>
+                        {" "}
+                        · 成功 {str(result.sources_ok)} 项，失败{" "}
+                        {str(result.sources_failed)} 项，已知 PR 未覆盖{" "}
+                        {str(result.known_omitted)} 项，CI / 评审未覆盖{" "}
+                        {str(result.checks_omitted)} 项
+                      </span>
+                    )}
                 </li>
               );
             })}
@@ -433,7 +481,7 @@ export function OperationsPage() {
     <>
       <header className="page-heading">
         <h1>本地操作</h1>
-        <p>显式发起的同步、验证与报告记录，刷新页面后可以继续查看。</p>
+        <p>显式发起的同步、导入、扫描、验证与报告记录，刷新页面后可以继续查看。</p>
       </header>
       <ReadState query={query} />
       <div className="github-items">
@@ -441,7 +489,7 @@ export function OperationsPage() {
           <article className="card" key={item.id}>
             <Badge value={item.state} />{" "}
             <Link to={`/operations/${item.id}`}>
-              {item.repository} · {operationName(item.action)}
+              {item.repository || "新项目"} · {actionName(item.action)}
             </Link>
             <p>{when(item.created_at)}</p>
           </article>

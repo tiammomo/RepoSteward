@@ -142,6 +142,9 @@ def upgrade_plan(config: AppConfig, *, expected_state_dir: Path | None = None) -
         except (OSError, sqlite3.Error, StateUpgradeError, KeyError):
             result["database"] = {**database, "status": "snapshot_required"}
             result["eligible"] = False
+    from reposteward.storage.state_upgrade_pair import add_registry_plan
+
+    add_registry_plan(config, result)
     result["plan_digest"] = _digest(result)
     return result
 
@@ -218,6 +221,10 @@ def inspect_backup(directory: Path) -> dict:
     if manifest.is_symlink() or manifest.stat().st_size > 100_000:
         raise StateUpgradeError("backup manifest is unsupported")
     record = json.loads(manifest.read_text())
+    if isinstance(record, dict) and record.get("format_version") == 2:
+        from reposteward.storage.state_upgrade_pair import inspect_pair
+
+        return inspect_pair(directory, record)
     if not isinstance(record, dict) or record.get("format_version") != FORMAT_VERSION:
         raise StateUpgradeError("unsupported backup format")
     fingerprint = _fingerprint(backup)
@@ -256,6 +263,10 @@ def upgrade_state(
         raise StateUpgradeError(
             "upgrade plan is stale or ineligible; inspect a fresh plan"
         )
+    if plan["registry"]["database"]["status"] != "missing":
+        from reposteward.storage.state_upgrade_pair import upgrade_pair
+
+        return upgrade_pair(config, plan)
     path = root / "reposteward.sqlite3"
     directory = None
     record = {}

@@ -7,9 +7,10 @@ import hashlib
 import json
 import os
 import stat
+import time
 import uuid
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
@@ -287,18 +288,33 @@ class CodeIndex:
                     "understanding cache is incompatible or damaged; run scan --rebuild"
                 ) from exc
 
-    def scan(self, path: Path, *, rebuild: bool = False) -> dict:
+    def scan(
+        self,
+        path: Path,
+        *,
+        rebuild: bool = False,
+        guard=lambda: None,
+        publication=nullcontext,
+    ) -> dict:
+        guard()
         metadata = workspace_metadata(path)
         root = Path(metadata["root"])
         with self.directory(root, create=True) as directory:
             # Serialize scans; read-only queries see either complete generation.
-            fcntl.flock(directory, fcntl.LOCK_EX)
+            while True:
+                guard()
+                try:
+                    fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(0.1)
             previous = None if rebuild else self.load(metadata)
             state = workspace_state(root)
             snapshot, contents = inventory(metadata)
             files = {}
             reused = 0
             for name, data in contents.items():
+                guard()
                 digest = snapshot["records"][name]
                 old = previous["files"].get(name) if previous else None
                 if old and old["digest"] == digest:
@@ -350,12 +366,15 @@ class CodeIndex:
                     stream.write(raw)
                     stream.flush()
                     os.fsync(stream.fileno())
-                os.replace(
-                    temporary,
-                    self.binding(metadata) + ".json",
-                    src_dir_fd=directory,
-                    dst_dir_fd=directory,
-                )
+                with publication():
+                    guard()
+                    os.replace(
+                        temporary,
+                        self.binding(metadata) + ".json",
+                        src_dir_fd=directory,
+                        dst_dir_fd=directory,
+                    )
+                    os.fsync(directory)
             finally:
                 try:
                     os.unlink(temporary, dir_fd=directory)

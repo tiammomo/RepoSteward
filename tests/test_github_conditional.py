@@ -71,3 +71,29 @@ class ConditionalTests(unittest.TestCase):
                     self.client.conditional_get(path)
             with self.assertRaises(ValueError):
                 self.client.conditional_get("/user", etag="x\r\ninjected: value")
+
+    def test_repository_redirect_is_only_a_validated_same_api_hint(self):
+        for location, allowed in [
+            ("https://api.github.com/repositories/123", True),
+            ("/repos/owner/renamed", True),
+            ("https://evil.test/repositories/123", False),
+            ("https://api.github.com.evil.test/repositories/123", False),
+            ("https://api.github.com/repos/owner/repo?token=secret", False),
+            ("https://api.github.com/user", False),
+        ]:
+            stream = io.BytesIO(b"do not expose redirect body")
+            headers = Message()
+            headers["Location"] = location
+            opener = Mock()
+            opener.open.side_effect = urllib.error.HTTPError(
+                "https://api.github.com/repos/owner/repo", 301, "moved", headers, stream
+            )
+            with (
+                patch("urllib.request.build_opener", return_value=opener),
+                self.assertRaises(GitHubReadError) as raised,
+            ):
+                self.client.conditional_get("/repos/owner/repo")
+            self.assertEqual(raised.exception.code == "repository_moved", allowed)
+            self.assertEqual(opener.open.call_count, 1)
+            self.assertTrue(stream.closed)
+            self.assertNotIn("secret", str(raised.exception))

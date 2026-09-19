@@ -581,3 +581,29 @@ dd {
   display: grid;
   gap: 0.5rem;
 }
+
+.import-form {
+  display: grid;
+  gap: 1rem;
+  max-width: 52rem;
+  margin: 1rem 0;
+}
+.import-form .field {
+  display: grid;
+  gap: 0.4rem;
+}
+.import-form input,
+.import-form select {
+  width: 100%;
+  min-width: 0;
+}
+.import-source,
+.import-form p {
+  overflow-wrap: anywhere;
+}
+
+.import-panel {
+  max-width: 52rem;
+  margin: 1rem 0;
+  overflow-wrap: anywhere;
+}

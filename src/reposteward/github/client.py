@@ -40,9 +40,17 @@ class ConditionalRead:
 
 
 class GitHubReadError(GitHubError):
-    def __init__(self, code: str, *, status_code: int = 0, retry_at: str = ""):
+    def __init__(
+        self,
+        code: str,
+        *,
+        status_code: int = 0,
+        retry_at: str = "",
+        redirect_path: str = "",
+    ):
         super().__init__(code, status_code=status_code)
         self.code, self.retry_at = code, retry_at
+        self.redirect_path = redirect_path
 
 
 def _retry_at(headers) -> str:
@@ -257,6 +265,33 @@ class GitHubClient:
             with exc:
                 if exc.code == 304 and etag:
                     return ConditionalRead(None, etag, False, True)
+                if (
+                    exc.code in {301, 302, 307, 308}
+                    and re.fullmatch(
+                        r"/(?:repos/[^/]+/[^/]+|repositories/[0-9]+)", path
+                    )
+                    and not query
+                ):
+                    # Return a validated API-local identity hint, never follow an
+                    # arbitrary Location with credentials. The caller bounds hops.
+                    location = urllib.parse.urljoin(
+                        url, exc.headers.get("Location", "")
+                    )
+                    prefix = self.config.api_url.rstrip("/")
+                    candidate = (
+                        location[len(prefix) :]
+                        if location.startswith(prefix + "/")
+                        else ""
+                    )
+                    if re.fullmatch(
+                        r"/(?:repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|repositories/[0-9]+)",
+                        candidate,
+                    ) and ".." not in candidate.split("/"):
+                        raise GitHubReadError(
+                            "repository_moved",
+                            status_code=exc.code,
+                            redirect_path=candidate,
+                        ) from exc
                 if exc.code == 429 or (
                     exc.code == 403
                     and (
