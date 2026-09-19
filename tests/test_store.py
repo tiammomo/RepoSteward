@@ -9,9 +9,9 @@ from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
 
-from reposteward.merge import MergeCheck, MergeSnapshot, evaluate_merge
-from reposteward.models import Candidate, Issue, RepositoryInfo
-from reposteward.store import SCHEMA_VERSION, Store, StoreError
+from reposteward.core.models import Candidate, Issue, RepositoryInfo
+from reposteward.maintenance.merge import MergeCheck, MergeSnapshot, evaluate_merge
+from reposteward.storage.store import SCHEMA_VERSION, Store, StoreError
 
 
 def _context_source_digest(marker: str) -> str:

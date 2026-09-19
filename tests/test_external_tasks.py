@@ -14,15 +14,15 @@ from test_context import _candidate
 from test_projects import git, repository
 
 from reposteward.cli import main
-from reposteward.config import load_config
-from reposteward.context import portable_bundle
-from reposteward.context_budget import ContextBudgetError
-from reposteward.external_tasks import ExternalTasks, TaskConflict
-from reposteward.policy import PolicyError
-from reposteward.projects import ProjectError
-from reposteward.setup import add_repository, initialize_user_config
-from reposteward.snapshots import workspace_snapshot
-from reposteward.store import Store, StoreError
+from reposteward.context.budget import ContextBudgetError
+from reposteward.context.pack import portable_bundle
+from reposteward.core.config import load_config
+from reposteward.core.setup import add_repository, initialize_user_config
+from reposteward.projects.registry import ProjectError
+from reposteward.storage.snapshots import workspace_snapshot
+from reposteward.storage.store import Store, StoreError
+from reposteward.tasks.external import ExternalTasks, TaskConflict
+from reposteward.workflows.policy import PolicyError
 
 
 class ExternalTaskTests(unittest.TestCase):
@@ -204,7 +204,7 @@ class ExternalTaskTests(unittest.TestCase):
         reader = ExternalTasks(self.config)
         with (
             patch(
-                "reposteward.external_tasks.GitHubClient",
+                "reposteward.tasks.external.GitHubClient",
                 side_effect=AssertionError("unexpected auth"),
             ),
             patch(

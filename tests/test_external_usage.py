@@ -16,9 +16,9 @@ import test_external_tasks
 from test_projects import repository
 
 from reposteward.cli import main
-from reposteward.codex_usage import UsageSourceError, read_codex_turns
-from reposteward.config import UsagePrice
-from reposteward.external_usage import ExternalUsage
+from reposteward.core.config import UsagePrice
+from reposteward.tasks.usage import ExternalUsage
+from reposteward.telemetry.codex_usage import UsageSourceError, read_codex_turns
 
 
 def record(kind: str, **payload) -> dict:
@@ -218,17 +218,17 @@ class CodexUsageParserTests(unittest.TestCase):
         result = read_codex_turns(self.path, {"chosen"})
         prefix = (result["prefix_bytes"], result["prefix_sha256"])
         with (
-            patch("reposteward.codex_usage.MAX_SOURCE_BYTES", 10),
+            patch("reposteward.telemetry.codex_usage.MAX_SOURCE_BYTES", 10),
             self.assertRaisesRegex(UsageSourceError, "bounded regular"),
         ):
             read_codex_turns(self.path, {"chosen"})
         with (
-            patch("reposteward.codex_usage.MAX_LINE_BYTES", 10),
+            patch("reposteward.telemetry.codex_usage.MAX_LINE_BYTES", 10),
             self.assertRaisesRegex(UsageSourceError, "line exceeds"),
         ):
             read_codex_turns(self.path, {"chosen"})
         with (
-            patch("reposteward.codex_usage.MAX_RECORDS", 1),
+            patch("reposteward.telemetry.codex_usage.MAX_RECORDS", 1),
             self.assertRaisesRegex(UsageSourceError, "record limit"),
         ):
             read_codex_turns(self.path, {"chosen"})
@@ -262,12 +262,12 @@ class ExternalUsageTests(unittest.TestCase):
 
     def test_repeat_refresh_successor_run_and_adopted_run_do_not_double_count(self):
         with patch(
-            "reposteward.external_usage.utc_now",
+            "reposteward.tasks.usage.utc_now",
             return_value="2026-09-07T02:00:00+00:00",
         ):
             self.assertEqual(self.collect()["sources"][0]["updated_turns"], 1)
         with patch(
-            "reposteward.external_usage.utc_now",
+            "reposteward.tasks.usage.utc_now",
             return_value="2026-09-07T03:00:00+00:00",
         ):
             self.assertTrue(self.collect()["sources"][0]["idempotent"])
@@ -377,7 +377,7 @@ class ExternalUsageTests(unittest.TestCase):
                     side_effect=AssertionError("must remain local"),
                 ),
                 patch(
-                    "reposteward.github.GitHubClient",
+                    "reposteward.github.client.GitHubClient",
                     side_effect=AssertionError("no auth"),
                 ),
                 redirect_stdout(output),

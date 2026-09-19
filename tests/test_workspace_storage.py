@@ -8,15 +8,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from reposteward import workspace_storage
-from reposteward.config import RepositoryPolicy, StorageConfig
-from reposteward.pipeline import Pipeline
-from reposteward.workspace_storage import (
+from reposteward.core.config import RepositoryPolicy, StorageConfig
+from reposteward.storage import workspace_storage
+from reposteward.storage.workspace_storage import (
     delete_workspace,
     scan_workspaces,
     workspace_gc_inventory,
     workspace_statistics,
 )
+from reposteward.workflows.pipeline import Pipeline
 
 OLD_TIMESTAMP = 1_577_836_800
 OLD_ISO = "2020-01-01T00:00:00+00:00"
@@ -127,7 +127,8 @@ class WorkspaceStorageTests(unittest.TestCase):
             workspace, head = create_workspace(root)
 
             with patch(
-                "reposteward.workspace_storage._git", wraps=workspace_storage._git
+                "reposteward.storage.workspace_storage._git",
+                wraps=workspace_storage._git,
             ) as git_command:
                 result = workspace_gc_inventory(
                     root,

@@ -11,18 +11,18 @@ from unittest.mock import Mock, patch
 
 from test_context import _candidate
 
-from reposteward.config import ContextConfig, RepositoryPolicy
-from reposteward.context import build_context_pack, running_checkpoint
-from reposteward.models import (
+from reposteward.context.pack import build_context_pack, running_checkpoint
+from reposteward.core.config import ContextConfig, RepositoryPolicy
+from reposteward.core.models import (
     AgentExecution,
     AgentMetrics,
     AgentResult,
     VerificationResult,
 )
-from reposteward.pipeline import Pipeline
-from reposteward.policy import DiffSummary
-from reposteward.store import Store
-from reposteward.task_contract import issue_digest, review_contract
+from reposteward.storage.store import Store
+from reposteward.tasks.contract import issue_digest, review_contract
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import DiffSummary
 
 
 class FeedbackTests(unittest.TestCase):
@@ -150,11 +150,11 @@ class FeedbackTests(unittest.TestCase):
         with (
             patch.object(Pipeline, "_revision", return_value="a" * 40),
             patch(
-                "reposteward.pipeline.subprocess.run",
+                "reposteward.workflows.pipeline.subprocess.run",
                 return_value=SimpleNamespace(stdout=""),
             ),
             patch(
-                "reposteward.pipeline.enforce_change_policy",
+                "reposteward.workflows.pipeline.enforce_change_policy",
                 return_value=DiffSummary(("src/example.py",), 1, 1),
             ),
         ):

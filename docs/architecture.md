@@ -27,6 +27,9 @@ Harness 仍然可以保留自己的原生 session，作为命中缓存或继续�
 
 ## 组件边界
 
+源码按职责分包，入口和各类模块的位置见[源码目录指南](source-layout.zh-CN.md)。
+子包是代码导航边界，当前不代表可以独立部署的服务，也不宣称已经消除所有跨域依赖。
+
 ```text
 GitHub facts + repository policy
               │

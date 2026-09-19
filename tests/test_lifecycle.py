@@ -9,14 +9,14 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import UUID
 
-from reposteward.lifecycle import (
+from reposteward.storage.store import Store
+from reposteward.workflows.lifecycle import (
     MAX_TEXT_CHARS,
     SOURCE_ORDER,
     LifecycleTraceError,
     build_lifecycle_trace,
     render_lifecycle_text,
 )
-from reposteward.store import Store
 
 
 def _digest(value: object) -> str:
@@ -432,9 +432,12 @@ class LifecycleTraceTests(unittest.TestCase):
                 title="Missing relationships",
             )
             with (
-                patch("reposteward.store.utc_now", return_value="2026-01-01T00:00:00Z"),
                 patch(
-                    "reposteward.store.uuid.uuid4",
+                    "reposteward.storage.store.utc_now",
+                    return_value="2026-01-01T00:00:00Z",
+                ),
+                patch(
+                    "reposteward.storage.store.uuid.uuid4",
                     side_effect=[UUID(int=n) for n in (3, 2, 1)],
                 ),
             ):

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from reposteward.issues import (
+from reposteward.github.issues import (
     attach_proposal_marker,
     issue_security_signals,
     proposal_body,

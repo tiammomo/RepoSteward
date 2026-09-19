@@ -8,18 +8,18 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from reposteward.branch_cleanup import (
+from reposteward.core.config import RepositoryPolicy, load_config
+from reposteward.core.models import RepositoryInfo
+from reposteward.github.client import GitHubError, PullRequest
+from reposteward.maintenance.branch_cleanup import (
     build_branch_cleanup_plan,
     fresh_candidate_blockers,
     render_branch_cleanup_text,
 )
-from reposteward.config import RepositoryPolicy, load_config
-from reposteward.github import GitHubError, PullRequest
-from reposteward.models import RepositoryInfo
-from reposteward.pipeline import Pipeline
-from reposteward.policy import PolicyError
-from reposteward.store import SCHEMA_VERSION, Store
-from reposteward.workspace import WorkspaceError, WorkspaceManager
+from reposteward.storage.store import SCHEMA_VERSION, Store
+from reposteward.storage.workspace import WorkspaceError, WorkspaceManager
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import PolicyError
 
 ROOT = Path(__file__).parents[1]
 
@@ -536,7 +536,7 @@ class NativeDeleteTests(unittest.TestCase):
         completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
         with (
             patch(
-                "reposteward.workspace.subprocess.run", return_value=completed
+                "reposteward.storage.workspace.subprocess.run", return_value=completed
             ) as run,
             patch.dict("os.environ", {"GH_TOKEN": "secret"}),
         ):

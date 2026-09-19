@@ -10,9 +10,9 @@ from unittest.mock import patch
 import test_plugin_diagnostics
 
 from reposteward.cli import main
-from reposteward.plugin_diagnostics import PluginDiagnostics
-from reposteward.runtime_alignment import alignment_report
-from reposteward.store import SCHEMA_VERSION, Store
+from reposteward.core.runtime_alignment import alignment_report
+from reposteward.plugins.diagnostics import PluginDiagnostics
+from reposteward.storage.store import SCHEMA_VERSION, Store
 
 
 class RuntimeAlignmentTests(unittest.TestCase):
@@ -32,7 +32,7 @@ class RuntimeAlignmentTests(unittest.TestCase):
             p: p.read_bytes() for p in self.config.state_dir.iterdir() if p.is_file()
         }
         with patch(
-            "reposteward.github.resolve_authentication",
+            "reposteward.github.client.resolve_authentication",
             side_effect=AssertionError("credentials"),
         ):
             report, ok = self.report()
