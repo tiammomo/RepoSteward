@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 
 from reposteward.config import RepositoryPolicy
@@ -17,6 +19,7 @@ from reposteward.models import (
     AgentDecision,
     AgentResult,
     Candidate,
+    CommandResult,
     Issue,
     RepositoryInfo,
     VerificationResult,
@@ -29,6 +32,7 @@ from reposteward.protocol import (
     validate_context_bundle,
     validate_context_pack,
 )
+from reposteward.store import Store
 
 
 def _candidate() -> Candidate:
@@ -258,6 +262,148 @@ class ProtocolSchemaTests(unittest.TestCase):
 
 def replace_bundle(bundle: dict, **updates) -> dict:
     return json.loads(json.dumps({**bundle, **updates}))
+
+
+class CheckpointBoundTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.pack = _pack(self.root)
+        self.result = AgentResult("Prepared", "refactor: organize", "Moved modules", ())
+
+    def ready(self, paths, commands=()):
+        return ready_checkpoint(
+            self.pack,
+            head_commit="b" * 40,
+            result=self.result,
+            verification=VerificationResult(True, commands),
+            changed_files=paths,
+        )
+
+    def test_small_and_boundary_checkpoints_are_unchanged(self):
+        for count in (0, 1, 127):
+            paths = tuple(f"file-{n}.py" for n in range(count))
+            value = self.ready(paths)
+            validate_checkpoint(value)
+            self.assertEqual(len(value["evidence"]), count + 1)
+            self.assertEqual(tuple(e["locator"] for e in value["evidence"][1:]), paths)
+
+    def test_large_change_keeps_commit_commands_and_verifiable_manifest(self):
+        paths = tuple(f"file-{n}.py" for n in range(149))
+        command = CommandResult("test", 0, "", 1.0, output_sha256="a" * 64)
+        value = self.ready(paths, (command,))
+        validate_checkpoint(value)
+        evidence = value["evidence"]
+        self.assertEqual(len(evidence), 128)
+        self.assertEqual([e["kind"] for e in evidence[:2]], ["commit", "verification"])
+        manifest = evidence[-1]
+        facts = json.loads(manifest["summary"])
+        self.assertEqual((facts["total"], facts["omitted"]), (151, 24))
+        commit = self.ready(())["evidence"][0]
+        receipt = self.ready((), (command,))["evidence"][-1]
+        complete = [
+            commit,
+            *[
+                {
+                    "kind": "changed_file",
+                    "locator": p,
+                    "status": "changed",
+                    "digest": "",
+                    "summary": "",
+                }
+                for p in paths
+            ],
+            receipt,
+        ]
+        digest = hashlib.sha256(
+            json.dumps(
+                complete, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+        self.assertEqual(manifest["digest"], digest)
+        self.assertEqual(value, self.ready(paths, (command,)))
+        changed = self.ready((*paths[:-1], "changed.py"), (command,))
+        self.assertNotEqual(changed["evidence"][-1]["digest"], digest)
+
+    def test_many_failed_commands_stay_failed_in_both_checkpoint_states(self):
+        commands = tuple(CommandResult(str(n), 1, "", 1.0) for n in range(150))
+        failed = failed_checkpoint(
+            self.pack,
+            error="verification failed",
+            details={"verification": asdict(VerificationResult(False, commands))},
+        )
+        ready = ready_checkpoint(
+            self.pack,
+            head_commit="b" * 40,
+            result=self.result,
+            verification=VerificationResult(False, commands),
+            changed_files=("a.py",),
+        )
+        for value in (failed, ready):
+            validate_checkpoint(value)
+            self.assertEqual(len(value["evidence"]), 128)
+            manifest = value["evidence"][-1]
+            self.assertEqual(manifest["status"], "failed")
+            self.assertEqual(
+                json.loads(manifest["summary"])["failed_verifications"], 150
+            )
+        self.assertEqual(ready["evidence"][0]["status"], "unverified")
+
+    def test_large_checkpoint_persists_with_full_run_details(self):
+        store = Store(self.root / "state.sqlite3")
+        work = store.ensure_work_item(
+            "owner/repo",
+            kind="github_issue",
+            external_id="7",
+            title="Example",
+            payload={},
+        )
+        run = store.start_run("owner/repo", 7, "agent")
+        pack = build_context_pack(
+            _candidate(),
+            RepositoryPolicy(name="owner/repo"),
+            work_item_id=work["id"],
+            run_id=run,
+            worktree=self.root,
+            base_commit="a" * 40,
+            harness="external-workspace",
+            model="",
+        )
+        store.save_context_run(
+            pack_id=pack.id,
+            work_item_id=work["id"],
+            run_id=run,
+            schema_version=pack.schema_version,
+            source_digest=pack.source_digest,
+            base_commit="a" * 40,
+            payload=pack.to_dict(),
+            harness="external-workspace",
+        )
+        self.pack = pack
+        paths = tuple(f"file-{n}.py" for n in range(149))
+        value = self.ready(paths)
+        store.save_checkpoint(
+            work_item_id=work["id"],
+            run_id=run,
+            context_pack_id=pack.id,
+            status="ready",
+            payload=value,
+        )
+        store.update_run(
+            run, status="ready", stage="review", details={"changed_files": paths}
+        )
+        with store._connection() as db:
+            saved = json.loads(
+                db.execute(
+                    "SELECT payload FROM checkpoints WHERE run_id=?", (run,)
+                ).fetchone()[0]
+            )
+            details = json.loads(
+                db.execute("SELECT details FROM runs WHERE id=?", (run,)).fetchone()[0]
+            )
+        self.assertEqual(len(saved["evidence"]), 128)
+        self.assertEqual(details["changed_files"], list(paths))
 
 
 if __name__ == "__main__":

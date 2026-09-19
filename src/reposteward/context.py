@@ -661,6 +661,48 @@ def build_repair_context_pack(
     )
 
 
+def _bounded_checkpoint_evidence(
+    evidence: list[dict[str, Any]], *, run_id: str
+) -> tuple[dict[str, Any], ...]:
+    """Summarize overflow; complete input remains reconstructible from run details."""
+    if len(evidence) <= 128:
+        return tuple(evidence)
+    ordered = sorted(
+        enumerate(evidence),
+        key=lambda item: (
+            0
+            if item[1]["kind"] == "commit"
+            else 1
+            if item[1]["kind"] == "verification" and item[1]["status"] == "failed"
+            else 2
+            if item[1]["kind"] == "verification"
+            else 3,
+            item[0],
+        ),
+    )
+    retained = [entry for _, entry in ordered[:127]]
+    failures = sum(
+        entry["kind"] == "verification" and entry["status"] == "failed"
+        for entry in evidence
+    )
+    manifest = {
+        "kind": "evidence_manifest",
+        "locator": f"run:{run_id}:details",
+        "status": "failed" if failures else "summarized",
+        "digest": _digest(evidence),
+        "summary": _canonical_json(
+            {
+                "total": len(evidence),
+                "retained": len(retained),
+                "omitted": len(evidence) - len(retained),
+                "failed_verifications": failures,
+                "digest_scope": "complete normalized evidence in original order",
+            }
+        ),
+    }
+    return (*retained, manifest)
+
+
 def ready_checkpoint(
     context: ContextPack,
     *,
@@ -720,7 +762,9 @@ def ready_checkpoint(
         "next_action": "human_review",
         "blockers": (),
         "decisions": tuple(asdict(value) for value in result.decisions),
-        "evidence": tuple(evidence),
+        "evidence": _bounded_checkpoint_evidence(
+            evidence, run_id=context.provenance.run_id
+        ),
     }
 
 
@@ -869,7 +913,9 @@ def failed_checkpoint(
         "next_action": "diagnose_failure",
         "blockers": (error[:20_000],),
         "decisions": tuple(decisions),
-        "evidence": tuple(evidence),
+        "evidence": _bounded_checkpoint_evidence(
+            evidence, run_id=context.provenance.run_id
+        ),
     }
 
 
