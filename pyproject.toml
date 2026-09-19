@@ -23,13 +23,14 @@ Repository = "https://github.com/tiammomo/RepoSteward.git"
 Issues = "https://github.com/tiammomo/RepoSteward/issues"
 
 [project.optional-dependencies]
+a2a = ["a2a-sdk==1.1.0"]
 codex-sdk = ["openai-codex>=0.147,<0.148"]
 mcp = [
     "mcp>=2.1.1,<3",
 ]
 
 [dependency-groups]
-dev = ["mcp>=2.1.1,<3", "httpx>=0.28,<1"]
+dev = ["mcp>=2.1.1,<3", "httpx>=0.28,<1", "a2a-sdk==1.1.0"]
 
 [project.scripts]
 reposteward = "reposteward.cli:main"

@@ -66,9 +66,11 @@ def _parser() -> argparse.ArgumentParser:
         help="emit a versioned machine response; place before the command",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    from .a2a_cli import add_parser as add_a2a_parser
     from .operation_api import add_parser
 
     add_parser(subparsers)
+    add_a2a_parser(subparsers)
     subparsers.add_parser("version", help="show offline installation metadata as JSON")
     subparsers.add_parser(
         "capabilities", help="discover implemented interfaces offline"
@@ -870,8 +872,10 @@ def _main(argv: list[str]) -> int:
         parser = _parser()
         args = parser.parse_args(argv)
         if _MACHINE_OUTPUT.get():
-            if args.command in {"web", "image"} or (
-                args.command == "mcp" and args.mcp_command == "serve"
+            if (
+                args.command in {"web", "image"}
+                or (args.command == "mcp" and args.mcp_command == "serve")
+                or (args.command == "a2a" and args.a2a_command == "serve")
             ):
                 raise ValueError(
                     "long-lived or subprocess output has no response envelope"
@@ -887,6 +891,19 @@ def _main(argv: list[str]) -> int:
             from .runtime import installation_info
 
             _json(installation_info())
+            return 0
+        if args.command == "a2a":
+            from .a2a_cli import create_token, serve
+
+            if args.a2a_command == "token":
+                _json(create_token(args.output))
+            else:
+                serve(
+                    load_config(args.config, include_user=True),
+                    workspace=args.workspace,
+                    token_file=args.token_file,
+                    port=args.port,
+                )
             return 0
         if args.command == "web":
             from .web_server import serve

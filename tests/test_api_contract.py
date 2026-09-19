@@ -34,7 +34,8 @@ class MachineContractTests(unittest.TestCase):
         self.assertEqual((code, errors, value["error"]), (0, "", None))
         self.assertEqual(value["schema_version"], 1)
         self.assertIn("task resolve", value["data"]["cli"]["commands"])
-        self.assertFalse(value["data"]["a2a"]["implemented"])
+        self.assertTrue(value["data"]["a2a"]["implemented"])
+        self.assertEqual(value["data"]["a2a"]["protocol_version"], "1.0")
         for tool in value["data"]["mcp"]["tools"].values():
             Draft202012Validator.check_schema(tool["output_schema"])
 

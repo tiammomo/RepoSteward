@@ -317,7 +317,11 @@ class AssistanceOperations:
             "current_applicability": "not_checked",
         }
 
-    def process_once(self) -> bool:
+    def process_once(
+        self, *, actions: tuple[str, ...] = tuple(sorted(ASSISTANCE_ACTIONS))
+    ) -> bool:
+        if not actions or not set(actions) <= ASSISTANCE_ACTIONS:
+            raise ValueError("invalid assistance worker actions")
         self.bridge._scope()
         store = self.local.store()
         if store is None:
@@ -327,9 +331,17 @@ class AssistanceOperations:
                 """SELECT q.id FROM queue_tasks q JOIN local_operation_plans p ON p.id=q.plan_id
                 WHERE q.operation_family='local' AND q.account_digest=? AND q.scope_key=?
                 AND json_extract(p.payload,'$.scope_digest')=? AND q.manual_required=0
+                AND q.action IN (SELECT value FROM json_each(?))
                 AND ((q.state IN ('pending','failed') AND q.available_at<=?)
                 OR (q.state='running' AND q.lease_expires_at<=?)) ORDER BY q.sequence LIMIT 25""",
-                (self.local.account, self.project, self.scope, utc_now(), utc_now()),
+                (
+                    self.local.account,
+                    self.project,
+                    self.scope,
+                    encoded(actions),
+                    utc_now(),
+                    utc_now(),
+                ),
             ).fetchall()
         for row in rows:
             try:

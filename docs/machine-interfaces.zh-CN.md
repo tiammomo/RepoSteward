@@ -36,4 +36,4 @@ envelope 版本或数据库版本替代。
 
 官方依据：[MCP 工具与输出 schema](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)。
 持久异步操作使用普通 `operation` 工具，见[异步操作](assistance-operations.zh-CN.md)。
-它不声明实验性 MCP Tasks 协议能力；A2A 由独立适配器提供。
+它不声明实验性 MCP Tasks 协议能力；[A2A](a2a.zh-CN.md) 由可选的本地报告适配器提供。
