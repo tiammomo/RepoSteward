@@ -7,7 +7,7 @@ from unittest.mock import patch
 import test_local_operations
 from fastapi.testclient import TestClient
 
-from reposteward.web_api.app import LocalSession, create_app
+from reposteward.web.api.app import LocalSession, create_app
 
 
 class LocalHTTPTests(unittest.TestCase):

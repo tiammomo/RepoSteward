@@ -10,12 +10,12 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from reposteward.config import RepositoryPolicy
-from reposteward.github import GitHubError, PullRequest
-from reposteward.pipeline import Pipeline
-from reposteward.policy import PolicyError
-from reposteward.store import RunLease, StoreError
-from reposteward.workspace import WorkspaceError
+from reposteward.core.config import RepositoryPolicy
+from reposteward.github.client import GitHubError, PullRequest
+from reposteward.storage.store import RunLease, StoreError
+from reposteward.storage.workspace import WorkspaceError
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import PolicyError
 
 
 def _pull(number: int, *, author: str = "alice", draft: bool = False) -> PullRequest:
@@ -322,8 +322,8 @@ class SubmissionCapacityTests(unittest.TestCase):
         pipeline.workspaces.push.side_effect = push
         with (
             patch.dict(os.environ, {"REPOSTEWARD_ENABLE_SUBMIT": "1"}),
-            patch("reposteward.pipeline.resolve_token", return_value="token"),
-            patch("reposteward.pipeline.GitHubClient", return_value=client),
+            patch("reposteward.workflows.pipeline.resolve_token", return_value="token"),
+            patch("reposteward.workflows.pipeline.GitHubClient", return_value=client),
         ):
             return pipeline.submit(
                 "owner/repo",
@@ -384,7 +384,7 @@ class SubmissionCapacityTests(unittest.TestCase):
     def test_delayed_updated_pull_head_converges_without_repeating_push(self) -> None:
         pipeline, client, old = self.delayed_update()
         client.pull_request = Mock(side_effect=[old, replace(old, head_sha=self.head)])
-        with patch("reposteward.pipeline.time.sleep") as sleep:
+        with patch("reposteward.workflows.pipeline.time.sleep") as sleep:
             result = self.submit(pipeline, client)
         self.assertEqual(result["pr_number"], old.number)
         self.assertTrue(result["public_write"])
@@ -397,7 +397,7 @@ class SubmissionCapacityTests(unittest.TestCase):
     def test_updated_pull_already_current_does_not_wait(self) -> None:
         pipeline, client, old = self.delayed_update()
         client.pull_request = Mock(return_value=replace(old, head_sha=self.head))
-        with patch("reposteward.pipeline.time.sleep") as sleep:
+        with patch("reposteward.workflows.pipeline.time.sleep") as sleep:
             self.submit(pipeline, client)
         client.pull_request.assert_called_once()
         sleep.assert_not_called()
@@ -408,7 +408,7 @@ class SubmissionCapacityTests(unittest.TestCase):
         pipeline, client, old = self.delayed_update()
         client.pull_request = Mock(return_value=old)
         with (
-            patch("reposteward.pipeline.time.sleep") as sleep,
+            patch("reposteward.workflows.pipeline.time.sleep") as sleep,
             self.assertRaisesRegex(
                 PolicyError, "branch publication succeeded.*metadata"
             ),
@@ -423,7 +423,7 @@ class SubmissionCapacityTests(unittest.TestCase):
         )
         self.assertEqual(client.create_calls, 0)
         pipeline.workspaces.push.reset_mock()
-        with patch("reposteward.pipeline.time.sleep") as sleep:
+        with patch("reposteward.workflows.pipeline.time.sleep") as sleep:
             result = self.submit(pipeline, client)
         self.assertFalse(result["public_write"])
         pipeline.workspaces.push.assert_not_called()
@@ -444,7 +444,7 @@ class SubmissionCapacityTests(unittest.TestCase):
                 pipeline, client, old = self.delayed_update()
                 client.pull_request = Mock(return_value=replace(old, **changes))
                 with (
-                    patch("reposteward.pipeline.time.sleep") as sleep,
+                    patch("reposteward.workflows.pipeline.time.sleep") as sleep,
                     self.assertRaisesRegex(PolicyError, "conflicting"),
                 ):
                     self.submit(pipeline, client)
@@ -464,7 +464,7 @@ class SubmissionCapacityTests(unittest.TestCase):
 
         client.pull_request = Mock(side_effect=read)
         with (
-            patch("reposteward.pipeline.time.sleep") as sleep,
+            patch("reposteward.workflows.pipeline.time.sleep") as sleep,
             self.assertRaisesRegex(StoreError, "lease lost"),
         ):
             self.submit(pipeline, client)
@@ -482,7 +482,7 @@ class SubmissionCapacityTests(unittest.TestCase):
             )
 
         with (
-            patch("reposteward.pipeline.time.sleep", side_effect=lose_lease),
+            patch("reposteward.workflows.pipeline.time.sleep", side_effect=lose_lease),
             self.assertRaisesRegex(StoreError, "lease lost"),
         ):
             self.submit(pipeline, client)

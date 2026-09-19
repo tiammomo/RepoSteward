@@ -22,6 +22,9 @@ the current release.
 
 ## Understand a project before changing it
 
+For this repository's Python package layout and module ownership, see the
+[source structure guide](docs/source-layout.zh-CN.md).
+
 Read a local clone or worktree with `reposteward understand scan PATH`, then
 `reposteward understand guide PATH` or `reposteward understand query PATH "symbol or problem"`.
 The guide links project declarations, Python static relationships and a suggested reading

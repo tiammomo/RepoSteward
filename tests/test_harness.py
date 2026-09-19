@@ -5,15 +5,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from reposteward.agent import CodexCliHarness
-from reposteward.codex_sdk import CodexSdkHarness
-from reposteward.config import AgentConfig, load_config
-from reposteward.doctor import run_doctor
-from reposteward.harness import (
+from reposteward.agents.agent import CodexCliHarness
+from reposteward.agents.codex_sdk import CodexSdkHarness
+from reposteward.agents.harness import (
     CapabilitySupport,
     HarnessCapabilities,
     harness_capabilities,
 )
+from reposteward.core.config import AgentConfig, load_config
+from reposteward.core.doctor import run_doctor
 
 
 class HarnessCapabilitiesTests(unittest.TestCase):
@@ -75,14 +75,14 @@ class HarnessCapabilitiesTests(unittest.TestCase):
         completed = SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
         with (
-            patch("reposteward.doctor.shutil.which", return_value="/bin/tool"),
-            patch("reposteward.doctor.subprocess.run", return_value=completed),
+            patch("reposteward.core.doctor.shutil.which", return_value="/bin/tool"),
+            patch("reposteward.core.doctor.subprocess.run", return_value=completed),
             patch(
-                "reposteward.doctor.DockerVerifier.image_available",
+                "reposteward.core.doctor.DockerVerifier.image_available",
                 return_value=True,
             ),
             patch(
-                "reposteward.doctor.resolve_authentication",
+                "reposteward.core.doctor.resolve_authentication",
                 return_value=(None, "missing"),
             ),
         ):

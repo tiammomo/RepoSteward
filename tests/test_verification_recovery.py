@@ -14,18 +14,18 @@ from unittest.mock import patch
 import test_external_verification
 
 from reposteward.cli import main
-from reposteward.external_tasks import TaskConflict
-from reposteward.policy import PolicyError
-from reposteward.store import Store, StoreError
-from reposteward.task_lifecycle import TaskLifecycle
-from reposteward.verification_execution import (
+from reposteward.storage.store import Store, StoreError
+from reposteward.tasks.external import TaskConflict
+from reposteward.tasks.lifecycle import TaskLifecycle
+from reposteward.verification.execution import (
     observe,
     read_record,
     record_container,
     write_record,
 )
-from reposteward.verification_recovery import VerificationRecovery
-from reposteward.verifier import DockerVerifier
+from reposteward.verification.recovery import VerificationRecovery
+from reposteward.verification.verifier import DockerVerifier
+from reposteward.workflows.policy import PolicyError
 
 
 class RecoveryTests(unittest.TestCase):
@@ -211,7 +211,7 @@ class RecoveryTests(unittest.TestCase):
         (self.directory / "execution.json").unlink()
         self.assertIn("execution_unconfirmed", self.plan()["reasons"])
         with patch(
-            "reposteward.verification_recovery.observe",
+            "reposteward.verification.recovery.observe",
             side_effect=RuntimeError("Docker unavailable"),
         ):
             self.assertFalse(self.plan()["eligible"])
@@ -257,7 +257,7 @@ class RecoveryTests(unittest.TestCase):
     def receipt(self):
         name = "reposteward-verify-" + "a" * 32
         with patch(
-            "reposteward.verification_execution.docker", return_value="daemon-one\n"
+            "reposteward.verification.execution.docker", return_value="daemon-one\n"
         ):
             token = record_container(
                 self.directory / "verification" / "00-test.log", name
@@ -267,14 +267,14 @@ class RecoveryTests(unittest.TestCase):
     def test_docker_absence_is_bound_to_same_daemon(self):
         self.receipt()
         with patch(
-            "reposteward.verification_execution.docker", side_effect=["daemon-one", ""]
+            "reposteward.verification.execution.docker", side_effect=["daemon-one", ""]
         ):
             self.assertEqual(
                 observe(self.directory)["containers"][0]["state"], "absent"
             )
         with (
             patch(
-                "reposteward.verification_execution.docker",
+                "reposteward.verification.execution.docker",
                 return_value="different-daemon",
             ),
             self.assertRaises(ValueError),
@@ -297,14 +297,14 @@ class RecoveryTests(unittest.TestCase):
             container["State"]["Status"] = status
             container["Config"]["Labels"]["reposteward.execution"] = label
             with patch(
-                "reposteward.verification_execution.docker",
+                "reposteward.verification.execution.docker",
                 side_effect=["daemon-one", "b" * 64, json.dumps([container])],
             ):
                 self.assertFalse(self.plan()["eligible"])
         container["State"]["Status"] = "exited"
         container["Config"]["Labels"]["reposteward.execution"] = token
         with patch(
-            "reposteward.verification_execution.docker",
+            "reposteward.verification.execution.docker",
             side_effect=["daemon-one", "b" * 64, json.dumps([container])],
         ):
             self.assertTrue(self.plan()["eligible"])

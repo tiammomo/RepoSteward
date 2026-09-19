@@ -10,12 +10,12 @@ from unittest.mock import Mock, patch
 
 import test_external_tasks
 
-from reposteward.github import ConditionalRead, GitHubReadError
-from reposteward.github_sync import observations
-from reposteward.local_operations import LocalOperations, OperationError
-from reposteward.overview import ProjectOverview
-from reposteward.store import Store
-from reposteward.workbench import Workbench
+from reposteward.github.client import ConditionalRead, GitHubReadError
+from reposteward.github.sync import observations
+from reposteward.storage.store import Store
+from reposteward.tasks.local_operations import LocalOperations, OperationError
+from reposteward.web.overview import ProjectOverview
+from reposteward.web.workbench import Workbench
 
 
 class LocalOperationTests(unittest.TestCase):

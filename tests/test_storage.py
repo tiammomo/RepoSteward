@@ -7,9 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from reposteward.config import RepositoryPolicy, StorageConfig
-from reposteward.pipeline import Pipeline
-from reposteward.policy import PolicyError
+from reposteward.core.config import RepositoryPolicy, StorageConfig
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import PolicyError
 
 
 class StubStore:

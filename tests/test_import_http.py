@@ -6,7 +6,7 @@ from unittest.mock import patch
 import test_project_import
 from fastapi.testclient import TestClient
 
-from reposteward.web_api.app import LocalSession, create_app
+from reposteward.web.api.app import LocalSession, create_app
 
 
 class ImportHTTPTests(unittest.TestCase):
@@ -16,7 +16,7 @@ class ImportHTTPTests(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.session = LocalSession("127.0.0.1:8123")
         with patch(
-            "reposteward.web_api.app.LocalOperations",
+            "reposteward.web.api.app.LocalOperations",
             return_value=self.fixture.operations,
         ):
             self.app = create_app(
