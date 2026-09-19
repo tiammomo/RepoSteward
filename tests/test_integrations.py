@@ -12,7 +12,7 @@ from unittest.mock import patch
 from test_projects import repository
 
 from reposteward.cli import main
-from reposteward.integrations import (
+from reposteward.integrations.clients import (
     SHARED_PATH,
     SHARED_TEXT,
     AgentIntegration,

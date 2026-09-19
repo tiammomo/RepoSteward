@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import test_workbench
 from fastapi.testclient import TestClient
 
-from reposteward.web_api.app import LocalSession, create_app
+from reposteward.web.api.app import LocalSession, create_app
 
 
 class WorkbenchASGITests(unittest.TestCase):
@@ -60,9 +60,12 @@ class WorkbenchASGITests(unittest.TestCase):
     def test_schema_can_be_exported_without_runtime_or_authentication(self):
         with (
             patch(
-                "reposteward.github.resolve_token", side_effect=AssertionError("auth")
+                "reposteward.github.client.resolve_token",
+                side_effect=AssertionError("auth"),
             ),
-            patch("reposteward.store.Store", side_effect=AssertionError("store")),
+            patch(
+                "reposteward.storage.store.Store", side_effect=AssertionError("store")
+            ),
         ):
             schema = create_app().openapi()
         self.assertEqual(schema["openapi"], "3.1.0")

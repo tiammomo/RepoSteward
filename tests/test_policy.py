@@ -4,17 +4,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from reposteward.config import RepositoryPolicy, load_config
-from reposteward.models import AgentResult, VerificationResult
-from reposteward.pipeline import Pipeline
-from reposteward.policy import (
+from reposteward.core.config import RepositoryPolicy, load_config
+from reposteward.core.models import AgentResult, VerificationResult
+from reposteward.storage.workspace import sanitized_environment, slugify
+from reposteward.verification.verifier import DockerVerifier, VerificationError
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import (
     DiffSummary,
     PolicyError,
     conventional_scope,
     enforce_change_policy,
 )
-from reposteward.verifier import DockerVerifier, VerificationError
-from reposteward.workspace import sanitized_environment, slugify
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -103,10 +103,11 @@ class PolicyTests(unittest.TestCase):
 
         with (
             patch(
-                "reposteward.policy.subprocess.run", return_value=successful_diff_check
+                "reposteward.workflows.policy.subprocess.run",
+                return_value=successful_diff_check,
             ),
             patch(
-                "reposteward.policy.summarize_diff",
+                "reposteward.workflows.policy.summarize_diff",
                 return_value=DiffSummary(tuple(f"file-{i}" for i in range(41)), 1, 0),
             ),
             self.assertRaisesRegex(PolicyError, "policy limit is 40"),
@@ -115,10 +116,11 @@ class PolicyTests(unittest.TestCase):
 
         with (
             patch(
-                "reposteward.policy.subprocess.run", return_value=successful_diff_check
+                "reposteward.workflows.policy.subprocess.run",
+                return_value=successful_diff_check,
             ),
             patch(
-                "reposteward.policy.summarize_diff",
+                "reposteward.workflows.policy.summarize_diff",
                 return_value=DiffSummary(("file",), 2_001, 0),
             ),
             self.assertRaisesRegex(PolicyError, "policy limit is 2000"),
@@ -136,9 +138,10 @@ class PolicyTests(unittest.TestCase):
 
         with (
             patch(
-                "reposteward.policy.subprocess.run", return_value=successful_diff_check
+                "reposteward.workflows.policy.subprocess.run",
+                return_value=successful_diff_check,
             ),
-            patch("reposteward.policy.summarize_diff", return_value=summary),
+            patch("reposteward.workflows.policy.summarize_diff", return_value=summary),
         ):
             accepted = enforce_change_policy(
                 Path("."), verification, repository, self.config

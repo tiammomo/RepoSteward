@@ -11,9 +11,14 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from reposteward.agent import CodexCliHarness, build_harness_prompt
-from reposteward.config import AgentConfig, ConfigError, RepositoryPolicy, load_config
-from reposteward.context import (
+from reposteward.agents.agent import CodexCliHarness, build_harness_prompt
+from reposteward.agents.harness import SUPPORTED, HarnessCapabilities, create_harness
+from reposteward.context.budget import (
+    ContextBudgetError,
+    build_follow_up_context,
+    estimate_tokens,
+)
+from reposteward.context.pack import (
     MAX_HANDOFF_ITEM_CHARS,
     MAX_PROJECT_SKILLS,
     MAX_SKILL_FILE_BYTES,
@@ -25,13 +30,14 @@ from reposteward.context import (
     repository_policy_digest,
     review_checkpoint,
 )
-from reposteward.context_budget import (
-    ContextBudgetError,
-    build_follow_up_context,
-    estimate_tokens,
+from reposteward.context.repair_prompt import build_budgeted_repair_context_pack
+from reposteward.core.config import (
+    AgentConfig,
+    ConfigError,
+    RepositoryPolicy,
+    load_config,
 )
-from reposteward.harness import SUPPORTED, HarnessCapabilities, create_harness
-from reposteward.models import (
+from reposteward.core.models import (
     AgentExecution,
     AgentMetrics,
     AgentResult,
@@ -40,11 +46,10 @@ from reposteward.models import (
     RepositoryInfo,
     VerificationResult,
 )
-from reposteward.pipeline import Pipeline
-from reposteward.policy import DiffSummary
-from reposteward.protocol import validate_context_pack
-from reposteward.repair_prompt import build_budgeted_repair_context_pack
-from reposteward.task_contract import issue_digest, review_contract
+from reposteward.core.protocol import validate_context_pack
+from reposteward.tasks.contract import issue_digest, review_contract
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import DiffSummary
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -805,7 +810,7 @@ class HarnessContractTests(unittest.TestCase):
             pipeline.verifier.verify.return_value = VerificationResult(True, ())
 
             with patch(
-                "reposteward.pipeline.enforce_change_policy",
+                "reposteward.workflows.pipeline.enforce_change_policy",
                 return_value=DiffSummary(("src/example.py",), 3, 1),
             ):
                 first_packet = pipeline.prepare("skillnerds/xskill", 7)

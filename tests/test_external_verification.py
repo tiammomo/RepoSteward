@@ -18,11 +18,11 @@ from test_env_template_booleans import DECLARATION, TEMPLATE, configuration
 from test_projects import git
 
 from reposteward.cli import main
-from reposteward.config import ConfigError, VerificationProfile, load_config
-from reposteward.external_tasks import TaskConflict
-from reposteward.external_verification import ExternalVerification
-from reposteward.models import CommandResult
-from reposteward.verifier import (
+from reposteward.core.config import ConfigError, VerificationProfile, load_config
+from reposteward.core.models import CommandResult
+from reposteward.tasks.external import TaskConflict
+from reposteward.verification.external import ExternalVerification
+from reposteward.verification.verifier import (
     DockerVerifier,
     VerificationCancelled,
     VerificationError,
@@ -390,7 +390,7 @@ class ExternalVerificationTests(unittest.TestCase):
         timeout = subprocess.TimeoutExpired(["docker"], 1, output=b"partial")
         with (
             patch(
-                "reposteward.verifier.subprocess.run",
+                "reposteward.verification.verifier.subprocess.run",
                 side_effect=[timeout, subprocess.CompletedProcess([], 0)],
             ) as run,
             patch.dict(os.environ, {"GITHUB_TOKEN": "sentinel-never-forward"}),

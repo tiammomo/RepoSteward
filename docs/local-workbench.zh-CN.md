@@ -64,7 +64,7 @@ API 没有 CORS 授权或写操作，拒绝任意文件路径和跨项目任务�
 
 ## 接口与验证
 
-`workbench.Workbench` 组合现有只读应用服务；`web_api` 提供 FastAPI 查询与 Pydantic
+`web.workbench.Workbench` 组合现有只读应用服务；`web.api` 提供 FastAPI 查询与 Pydantic
 契约，`web_server` 管理本机 socket 与服务生命周期。React 前端调用 `/api/v1/overview`、
 `projects`、`workspace`、`code`、`tasks`、`task`、`review` 和 `settings`。
 旧 `/api/*` 读取入口保留兼容；新接口使用 `data/meta` 响应。

@@ -11,10 +11,10 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from reposteward.config import RepositoryPolicy
-from reposteward.pipeline import BatchConflictError, BatchDeferred, Pipeline
-from reposteward.policy import PolicyError
-from reposteward.store import SCHEMA_VERSION, QueueLease, Store, StoreError
+from reposteward.core.config import RepositoryPolicy
+from reposteward.storage.store import SCHEMA_VERSION, QueueLease, Store, StoreError
+from reposteward.workflows.pipeline import BatchConflictError, BatchDeferred, Pipeline
+from reposteward.workflows.policy import PolicyError
 
 
 class QueueStoreTests(unittest.TestCase):

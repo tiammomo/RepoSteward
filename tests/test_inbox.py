@@ -4,9 +4,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from reposteward.github import GitHubError
-from reposteward.inbox import build_maintainer_inbox, render_inbox_text
-from reposteward.pipeline import Pipeline
+from reposteward.github.client import GitHubError
+from reposteward.web.inbox import build_maintainer_inbox, render_inbox_text
+from reposteward.workflows.pipeline import Pipeline
 
 
 def _pull(

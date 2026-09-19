@@ -4,9 +4,9 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from reposteward.config import load_config
-from reposteward.discovery import score_issue
-from reposteward.models import Issue, RepositoryInfo
+from reposteward.core.config import load_config
+from reposteward.core.models import Issue, RepositoryInfo
+from reposteward.github.discovery import score_issue
 
 ROOT = Path(__file__).resolve().parents[1]
 

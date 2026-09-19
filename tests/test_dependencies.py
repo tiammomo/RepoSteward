@@ -8,17 +8,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from reposteward.config import RepositoryPolicy
-from reposteward.dependencies import (
+from reposteward.core.config import RepositoryPolicy
+from reposteward.github.client import PullRequest
+from reposteward.maintenance.dependencies import (
     build_dependency_plan,
     direct_dependency_requirements,
     parse_dependency_declarations,
     render_dependency_plan_text,
 )
-from reposteward.github import PullRequest
-from reposteward.pipeline import Pipeline
-from reposteward.policy import PolicyError
-from reposteward.store import Store
+from reposteward.storage.store import Store
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import PolicyError
 
 
 def _snapshot(numbers: list[int]) -> dict:

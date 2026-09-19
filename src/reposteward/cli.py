@@ -8,31 +8,31 @@ import sys
 from contextvars import ContextVar
 from pathlib import Path
 
-from . import __version__
-from .api_contract import envelope, error_details
-from .batch import render_batch_plan_text
-from .benchmark import (
+from reposteward import __version__
+from reposteward.core.api_contract import envelope, error_details
+from reposteward.core.config import ConfigError, load_config
+from reposteward.core.doctor import run_doctor
+from reposteward.core.setup import add_repository, initialize_user_config
+from reposteward.evaluation.benchmark import (
     BENCHMARK_CATEGORIES,
     load_benchmark_report,
     run_benchmark,
     write_benchmark_report,
 )
-from .branch_cleanup import render_branch_cleanup_text
-from .config import ConfigError, load_config
-from .dependencies import render_dependency_plan_text
-from .discovery import DiscoveryService
-from .doctor import run_doctor
-from .inbox import render_inbox_text
-from .issues import read_details
-from .lifecycle import (
+from reposteward.github.discovery import DiscoveryService
+from reposteward.github.issues import read_details
+from reposteward.maintenance.batch import render_batch_plan_text
+from reposteward.maintenance.branch_cleanup import render_branch_cleanup_text
+from reposteward.maintenance.dependencies import render_dependency_plan_text
+from reposteward.maintenance.portfolio import render_portfolio_text
+from reposteward.web.inbox import render_inbox_text
+from reposteward.workflows.lifecycle import (
     DEFAULT_EVENT_LIMIT,
     build_lifecycle_trace,
     render_lifecycle_text,
 )
-from .pipeline import Pipeline
-from .policy import PolicyError
-from .portfolio import render_portfolio_text
-from .setup import add_repository, initialize_user_config
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import PolicyError
 
 _MACHINE_OUTPUT = ContextVar("cli_machine_output", default=False)
 
@@ -873,17 +873,17 @@ def _main(argv: list[str]) -> int:
             if hasattr(args, "format"):
                 args.format = "json"
         if args.command == "capabilities":
-            from .capabilities import capabilities
+            from reposteward.core.capabilities import capabilities
 
             _json(capabilities(_command_paths(parser)))
             return 0
         if args.command == "version":
-            from .runtime import installation_info
+            from reposteward.core.runtime import installation_info
 
             _json(installation_info())
             return 0
         if args.command == "web":
-            from .web_server import serve
+            from reposteward.web.server import serve
 
             web_config = load_config(args.config, include_user=True)
             if args.expect_state_dir is not None and (
@@ -896,7 +896,11 @@ def _main(argv: list[str]) -> int:
             serve(web_config, port=args.port)
             return 0
         if args.command == "state":
-            from .state_upgrade import inspect_backup, upgrade_plan, upgrade_state
+            from reposteward.storage.state_upgrade import (
+                inspect_backup,
+                upgrade_plan,
+                upgrade_state,
+            )
 
             if args.state_command == "inspect-backup":
                 _json(inspect_backup(args.directory))
@@ -918,7 +922,7 @@ def _main(argv: list[str]) -> int:
                     )
             return 0
         if args.command == "doctor" and args.local:
-            from .runtime import local_diagnostics
+            from reposteward.core.runtime import local_diagnostics
 
             if bool(args.workspace) != bool(args.bundle) or (
                 (args.marketplace or args.codex_home) and not args.bundle
@@ -932,7 +936,7 @@ def _main(argv: list[str]) -> int:
             except ConfigError:
                 local_config = None
             if args.bundle:
-                from .runtime_alignment import alignment_report
+                from reposteward.core.runtime_alignment import alignment_report
 
                 report, ok = alignment_report(
                     local_config,
@@ -1007,12 +1011,12 @@ def _main(argv: list[str]) -> int:
                 f"unhandled benchmark command: {args.benchmark_command}"
             )
         if args.command == "understand":
-            from .config import (
+            from reposteward.core.config import (
                 default_state_dir,
                 default_user_config_path,
                 discover_project_config,
             )
-            from .understanding import Understanding, render_guide
+            from reposteward.projects.understanding import Understanding, render_guide
 
             cache_dir = args.cache_dir
             if cache_dir is None:
@@ -1053,7 +1057,7 @@ def _main(argv: list[str]) -> int:
             "collect",
             "external-report",
         }:
-            from .external_usage import ExternalUsage
+            from reposteward.tasks.usage import ExternalUsage
 
             usage_service = ExternalUsage(config)
             if args.usage_command == "collect":
@@ -1073,7 +1077,7 @@ def _main(argv: list[str]) -> int:
             return 0
         if args.command == "plugin":
             if args.plugin_command in {"doctor", "install-plan"}:
-                from .plugin_diagnostics import PluginDiagnostics
+                from reposteward.plugins.diagnostics import PluginDiagnostics
 
                 diagnostics = PluginDiagnostics(config)
                 method = (
@@ -1096,7 +1100,7 @@ def _main(argv: list[str]) -> int:
                     else 2
                 )
 
-            from .plugin_bundle import PluginBundle
+            from reposteward.plugins.bundle import PluginBundle
 
             service = PluginBundle(config)
             if args.plugin_command == "plan":
@@ -1108,7 +1112,7 @@ def _main(argv: list[str]) -> int:
             _json(result)
             return 0
         if args.command == "integration":
-            from .integrations import AgentIntegration
+            from reposteward.integrations.clients import AgentIntegration
 
             service = AgentIntegration(config.state_dir)
             if args.integration_command == "inspect":
@@ -1125,7 +1129,7 @@ def _main(argv: list[str]) -> int:
             _json(result)
             return 0
         if args.command == "overview":
-            from .overview import ProjectOverview, render_overview
+            from reposteward.web.overview import ProjectOverview, render_overview
 
             service = ProjectOverview(config)
             if args.overview_command == "refresh":
@@ -1144,7 +1148,7 @@ def _main(argv: list[str]) -> int:
                 _json(result)
             return 0
         if args.command == "knowledge":
-            from .knowledge import ProjectKnowledge
+            from reposteward.projects.knowledge import ProjectKnowledge
 
             service = ProjectKnowledge(config)
             if args.knowledge_command == "propose":
@@ -1175,11 +1179,11 @@ def _main(argv: list[str]) -> int:
             return 0
         if args.command == "mcp":
             if args.mcp_command == "serve":
-                from .mcp_bridge import serve
+                from reposteward.integrations.mcp import serve
 
                 serve(config, args.path, expected_scope=args.expected_scope)
             else:
-                from .mcp_config import client_config
+                from reposteward.integrations.mcp_config import client_config
 
                 _json(client_config(config, args.path, client=args.client))
             return 0
@@ -1187,7 +1191,7 @@ def _main(argv: list[str]) -> int:
             "reconcile-plan",
             "reconcile",
         }:
-            from .verification_recovery import VerificationRecovery
+            from reposteward.verification.recovery import VerificationRecovery
 
             recovery = VerificationRecovery(config)
             if args.verification_command == "reconcile-plan":
@@ -1208,7 +1212,7 @@ def _main(argv: list[str]) -> int:
             )
             return 0
         if args.command == "verification":
-            from .external_verification import ExternalVerification
+            from reposteward.verification.external import ExternalVerification
 
             service = ExternalVerification(config)
             if args.verification_command == "profiles":
@@ -1242,7 +1246,7 @@ def _main(argv: list[str]) -> int:
                 else 0
             )
         if args.command == "task":
-            from .external_tasks import ExternalTasks
+            from reposteward.tasks.external import ExternalTasks
 
             service = ExternalTasks(config)
 
@@ -1264,7 +1268,7 @@ def _main(argv: list[str]) -> int:
                     else None,
                 )
             elif args.task_command in {"resolve-plan", "resolve"}:
-                from .task_lifecycle import TaskLifecycle
+                from reposteward.tasks.lifecycle import TaskLifecycle
 
                 lifecycle = TaskLifecycle(config)
                 options = {
@@ -1318,7 +1322,7 @@ def _main(argv: list[str]) -> int:
                 _json(result)
             return 0
         if args.command == "project":
-            from .projects import ProjectRegistry
+            from reposteward.projects.registry import ProjectRegistry
 
             registry = ProjectRegistry(config.state_dir / "projects.sqlite3")
             if args.project_command == "link":
