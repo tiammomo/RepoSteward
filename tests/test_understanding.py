@@ -13,10 +13,10 @@ from unittest.mock import patch
 from test_projects import git, repository
 
 from reposteward.cli import main
-from reposteward.code_facts import parse_code
-from reposteward.code_index import Unreadable, read_source
-from reposteward.projects import ProjectError, workspace_metadata
-from reposteward.understanding import Understanding, render_guide
+from reposteward.projects.code_facts import parse_code
+from reposteward.projects.code_index import Unreadable, read_source
+from reposteward.projects.registry import ProjectError, workspace_metadata
+from reposteward.projects.understanding import Understanding, render_guide
 
 
 class UnderstandingTests(unittest.TestCase):
@@ -142,7 +142,7 @@ class UnderstandingTests(unittest.TestCase):
             p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.cache.iterdir()
         }
         with patch(
-            "reposteward.code_index.parse_code",
+            "reposteward.projects.code_index.parse_code",
             side_effect=AssertionError("query parsed source"),
         ):
             self.service.guide(self.repo)
@@ -160,7 +160,9 @@ class UnderstandingTests(unittest.TestCase):
             {"reused_files": first["coverage"]["indexed_files"], "parsed_files": 0},
         )
         self.write("src/parcel/invoices.py", "def settle():\n    return 8\n")
-        with patch("reposteward.code_index.parse_code", wraps=parse_code) as parse:
+        with patch(
+            "reposteward.projects.code_index.parse_code", wraps=parse_code
+        ) as parse:
             third = self.service.scan(self.repo)
         self.assertEqual(parse.call_count, 1)
         self.assertEqual(third["changes"]["counts"]["changed"], 1)
@@ -226,7 +228,7 @@ class UnderstandingTests(unittest.TestCase):
                 side_effect=AssertionError("configuration required"),
             ),
             patch(
-                "reposteward.github.GitHubClient.__init__",
+                "reposteward.github.client.GitHubClient.__init__",
                 side_effect=AssertionError("GitHub initialized"),
             ),
             redirect_stdout(output),
@@ -267,13 +269,14 @@ class UnderstandingTests(unittest.TestCase):
     def test_default_cache_without_any_configuration(self):
         output = io.StringIO()
         with (
-            patch("reposteward.config.discover_project_config", return_value=None),
+            patch("reposteward.core.config.discover_project_config", return_value=None),
             patch(
-                "reposteward.config.default_user_config_path",
+                "reposteward.core.config.default_user_config_path",
                 return_value=self.root / "absent.toml",
             ),
             patch(
-                "reposteward.config.default_state_dir", return_value=self.root / "state"
+                "reposteward.core.config.default_state_dir",
+                return_value=self.root / "state",
             ),
             patch(
                 "reposteward.cli.load_config",
@@ -331,10 +334,10 @@ class UnderstandingTests(unittest.TestCase):
         self.assertEqual(result["coverage"]["languages"]["typescript"], 1)
         self.assertEqual(result["coverage"]["capabilities"]["parse_failed"], 1)
         self.assertEqual(self.record("src/new.ts")["facts"]["status"], "inventory_only")
-        with patch("reposteward.code_index.MAX_FILES", 2):
+        with patch("reposteward.projects.code_index.MAX_FILES", 2):
             limited = self.service.scan(self.repo)
         self.assertGreater(limited["coverage"]["excluded"]["file_count_limit"], 0)
-        with patch("reposteward.code_index.MAX_TOTAL_BYTES", 60):
+        with patch("reposteward.projects.code_index.MAX_TOTAL_BYTES", 60):
             small = self.service.scan(self.repo)
         self.assertLessEqual(small["coverage"]["read_bytes"], 60)
         self.assertGreater(small["coverage"]["excluded"]["total_bytes_limit"], 0)
@@ -344,7 +347,7 @@ class UnderstandingTests(unittest.TestCase):
         cache = next(self.cache.glob("*.json"))
         original = cache.read_bytes()
         with (
-            patch("reposteward.code_index.MAX_CACHE_BYTES", 10),
+            patch("reposteward.projects.code_index.MAX_CACHE_BYTES", 10),
             self.assertRaises(ProjectError),
         ):
             self.service.scan(self.repo, rebuild=True)
@@ -400,7 +403,10 @@ class UnderstandingTests(unittest.TestCase):
             return parse_code(path, text)
 
         with (
-            patch("reposteward.code_index.parse_code", side_effect=modifying_parser),
+            patch(
+                "reposteward.projects.code_index.parse_code",
+                side_effect=modifying_parser,
+            ),
             self.assertRaisesRegex(ProjectError, "changed during scan"),
         ):
             self.service.scan(self.repo)

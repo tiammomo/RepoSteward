@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from reposteward.config import GitHubConfig
-from reposteward.github import GitHubClient, GitHubError, resolve_authentication
+from reposteward.core.config import GitHubConfig
+from reposteward.github.client import GitHubClient, GitHubError, resolve_authentication
 
 
 class StubGitHubClient(GitHubClient):
@@ -48,8 +48,8 @@ class GitHubApprovalTests(unittest.TestCase):
 
 
 class GitHubAuthenticationTests(unittest.TestCase):
-    @patch("reposteward.github.shutil.which", return_value="/usr/bin/gh")
-    @patch("reposteward.github.subprocess.run")
+    @patch("reposteward.github.client.shutil.which", return_value="/usr/bin/gh")
+    @patch("reposteward.github.client.subprocess.run")
     def test_gh_oauth_is_used_when_environment_token_is_absent(
         self, run: Any, _which: Any
     ) -> None:

@@ -6,12 +6,12 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from reposteward.config import RepositoryPolicy
-from reposteward.context import repository_policy_digest
-from reposteward.github import GitHubError, PullRequest
-from reposteward.pipeline import Pipeline
-from reposteward.policy import PolicyError
-from reposteward.store import RunLease, StoreError
+from reposteward.context.pack import repository_policy_digest
+from reposteward.core.config import RepositoryPolicy
+from reposteward.github.client import GitHubError, PullRequest
+from reposteward.storage.store import RunLease, StoreError
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import PolicyError
 
 
 class StubStore:

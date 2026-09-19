@@ -8,11 +8,11 @@ from unittest.mock import patch
 
 from jsonschema import Draft202012Validator
 
-from reposteward.api_contract import error_details, tool_output_schema
 from reposteward.cli import main
-from reposteward.config import ConfigError
-from reposteward.external_tasks import TaskConflict
-from reposteward.policy import PolicyError
+from reposteward.core.api_contract import error_details, tool_output_schema
+from reposteward.core.config import ConfigError
+from reposteward.tasks.external import TaskConflict
+from reposteward.workflows.policy import PolicyError
 
 
 class MachineContractTests(unittest.TestCase):
@@ -26,7 +26,8 @@ class MachineContractTests(unittest.TestCase):
         with (
             patch("reposteward.cli.load_config", side_effect=AssertionError("config")),
             patch(
-                "reposteward.store.Store.__init__", side_effect=AssertionError("store")
+                "reposteward.storage.store.Store.__init__",
+                side_effect=AssertionError("store"),
             ),
         ):
             code, output, errors = self.invoke("--json-envelope", "capabilities")

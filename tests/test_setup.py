@@ -7,8 +7,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from reposteward.config import ConfigError, load_config
-from reposteward.setup import add_repository, initialize_user_config
+from reposteward.core.config import ConfigError, load_config
+from reposteward.core.setup import add_repository, initialize_user_config
 
 
 class SetupTests(unittest.TestCase):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from reposteward.ci import (
+from reposteward.maintenance.ci import (
     classify_failure,
     fingerprint_failure,
     redact_ci_log,

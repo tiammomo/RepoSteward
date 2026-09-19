@@ -8,8 +8,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from reposteward.local_queue import enqueue
-from reposteward.store import Store, StoreError, apply_migration
+from reposteward.storage.local_queue import enqueue
+from reposteward.storage.store import Store, StoreError, apply_migration
 
 
 class LocalQueueTests(unittest.TestCase):
