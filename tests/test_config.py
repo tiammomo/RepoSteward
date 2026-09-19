@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from reposteward.config import ConfigError, load_config
+from reposteward.core.config import ConfigError, load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 

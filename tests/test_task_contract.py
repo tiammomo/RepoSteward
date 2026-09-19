@@ -7,13 +7,13 @@ from pathlib import Path
 
 from test_context import _candidate
 
-from reposteward.agent import build_harness_prompt
-from reposteward.config import RepositoryPolicy
-from reposteward.context import build_context_pack
-from reposteward.context_budget import ContextBudgetError, estimate_tokens
-from reposteward.prompt_budget import fit_context
-from reposteward.protocol import ProtocolValidationError, validate_context_pack
-from reposteward.task_contract import digest, issue_digest, review_contract
+from reposteward.agents.agent import build_harness_prompt
+from reposteward.context.budget import ContextBudgetError, estimate_tokens
+from reposteward.context.pack import build_context_pack
+from reposteward.context.prompt_budget import fit_context
+from reposteward.core.config import RepositoryPolicy
+from reposteward.core.protocol import ProtocolValidationError, validate_context_pack
+from reposteward.tasks.contract import digest, issue_digest, review_contract
 
 
 class TaskContractTests(unittest.TestCase):

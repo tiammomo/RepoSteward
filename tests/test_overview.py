@@ -11,10 +11,10 @@ import test_external_verification
 from test_projects import repository
 
 from reposteward.cli import main
-from reposteward.github import GitHubError
-from reposteward.merge import MergeSnapshot, evaluate_merge
-from reposteward.overview import ProjectOverview, render_overview
-from reposteward.store import utc_now
+from reposteward.github.client import GitHubError
+from reposteward.maintenance.merge import MergeSnapshot, evaluate_merge
+from reposteward.storage.store import utc_now
+from reposteward.web.overview import ProjectOverview, render_overview
 
 
 class OverviewTests(unittest.TestCase):
@@ -60,7 +60,7 @@ class OverviewTests(unittest.TestCase):
         (self.repo / "source.txt").write_text("dirty work\n")
         with (
             patch(
-                "reposteward.overview.GitHubClient",
+                "reposteward.web.overview.GitHubClient",
                 side_effect=AssertionError("authentication"),
             ),
             patch("reposteward.cli.Pipeline", side_effect=AssertionError("Pipeline")),

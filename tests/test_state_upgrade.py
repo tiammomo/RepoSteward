@@ -13,15 +13,15 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from reposteward.cli import main
-from reposteward.config import load_config
-from reposteward.state_upgrade import (
+from reposteward.core.config import load_config
+from reposteward.storage.state_upgrade import (
     StateUpgradeError,
     _write_manifest,
     inspect_backup,
     upgrade_plan,
     upgrade_state,
 )
-from reposteward.store import MIGRATIONS, SCHEMA_VERSION, apply_migration
+from reposteward.storage.store import MIGRATIONS, SCHEMA_VERSION, apply_migration
 
 
 class StateUpgradeTests(unittest.TestCase):
@@ -73,11 +73,11 @@ class StateUpgradeTests(unittest.TestCase):
             config = self.fixture(Path(directory), version=None)
             with (
                 patch(
-                    "reposteward.store.Store.__init__",
+                    "reposteward.storage.store.Store.__init__",
                     side_effect=AssertionError("no Store"),
                 ),
                 patch(
-                    "reposteward.github.resolve_token",
+                    "reposteward.github.client.resolve_token",
                     side_effect=AssertionError("no auth"),
                 ),
             ):
@@ -190,7 +190,7 @@ class StateUpgradeTests(unittest.TestCase):
             config = self.fixture(Path(directory))
             with (
                 patch(
-                    "reposteward.state_upgrade._backup",
+                    "reposteward.storage.state_upgrade._backup",
                     side_effect=OSError("disk full"),
                 ),
                 self.assertRaisesRegex(StateUpgradeError, "did not commit"),
@@ -214,7 +214,7 @@ class StateUpgradeTests(unittest.TestCase):
 
             with (
                 patch(
-                    "reposteward.state_upgrade.apply_migration",
+                    "reposteward.storage.state_upgrade.apply_migration",
                     side_effect=fail_after_first,
                 ),
                 self.assertRaisesRegex(StateUpgradeError, "did not commit"),
@@ -248,7 +248,8 @@ class StateUpgradeTests(unittest.TestCase):
             config = self.fixture(Path(directory))
             with (
                 patch(
-                    "reposteward.state_upgrade.sqlite3.connect", side_effect=intercepted
+                    "reposteward.storage.state_upgrade.sqlite3.connect",
+                    side_effect=intercepted,
                 ),
                 self.assertRaisesRegex(StateUpgradeError, "outcome is unknown"),
             ):
@@ -272,7 +273,7 @@ class StateUpgradeTests(unittest.TestCase):
             config = self.fixture(Path(directory))
             with (
                 patch(
-                    "reposteward.state_upgrade._write_manifest",
+                    "reposteward.storage.state_upgrade._write_manifest",
                     side_effect=fail_final_record,
                 ),
                 self.assertRaisesRegex(StateUpgradeError, "upgrade committed"),

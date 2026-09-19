@@ -5,36 +5,47 @@ import importlib.resources
 import json
 import subprocess
 import sys
+from contextvars import ContextVar
 from pathlib import Path
 
-from . import __version__
-from .batch import render_batch_plan_text
-from .benchmark import (
+from reposteward import __version__
+from reposteward.core.api_contract import envelope, error_details
+from reposteward.core.config import ConfigError, load_config
+from reposteward.core.doctor import run_doctor
+from reposteward.core.setup import add_repository, initialize_user_config
+from reposteward.evaluation.benchmark import (
     BENCHMARK_CATEGORIES,
     load_benchmark_report,
     run_benchmark,
     write_benchmark_report,
 )
-from .branch_cleanup import render_branch_cleanup_text
-from .config import ConfigError, load_config
-from .dependencies import render_dependency_plan_text
-from .discovery import DiscoveryService
-from .doctor import run_doctor
-from .inbox import render_inbox_text
-from .issues import read_details
-from .lifecycle import (
+from reposteward.github.discovery import DiscoveryService
+from reposteward.github.issues import read_details
+from reposteward.maintenance.batch import render_batch_plan_text
+from reposteward.maintenance.branch_cleanup import render_branch_cleanup_text
+from reposteward.maintenance.dependencies import render_dependency_plan_text
+from reposteward.maintenance.portfolio import render_portfolio_text
+from reposteward.web.inbox import render_inbox_text
+from reposteward.workflows.lifecycle import (
     DEFAULT_EVENT_LIMIT,
     build_lifecycle_trace,
     render_lifecycle_text,
 )
-from .pipeline import Pipeline
-from .policy import PolicyError
-from .portfolio import render_portfolio_text
-from .setup import add_repository, initialize_user_config
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import PolicyError
+
+_MACHINE_OUTPUT = ContextVar("cli_machine_output", default=False)
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        if _MACHINE_OUTPUT.get():
+            raise ValueError("invalid command arguments")
+        super().error(message)
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _ArgumentParser(
         prog="reposteward",
         description=(
             "Local-first, policy-gated control plane for turning GitHub issues into "
@@ -49,8 +60,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version", action="version", version=f"reposteward {__version__}"
     )
+    parser.add_argument(
+        "--json-envelope",
+        action="store_true",
+        help="emit a versioned machine response; place before the command",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("version", help="show offline installation metadata as JSON")
+    subparsers.add_parser(
+        "capabilities", help="discover implemented interfaces offline"
+    )
     web = subparsers.add_parser(
         "web", help="open the read-only local maintainer workbench"
     )
@@ -180,7 +199,8 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--plan-digest", required=True)
 
     plugin = subparsers.add_parser(
-        "plugin", help="plan and export a local workspace-bound Codex plugin"
+        "plugin",
+        help="export, diagnose and preview installation of scoped Codex plugins",
     )
     plugin_commands = plugin.add_subparsers(dest="plugin_command", required=True)
     for action in ("plan", "export"):
@@ -189,6 +209,13 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--output", type=Path, required=True)
         if action == "export":
             command.add_argument("--plan-digest", required=True)
+
+    for action in ("doctor", "install-plan"):
+        command = plugin_commands.add_parser(action)
+        command.add_argument("path", type=Path)
+        command.add_argument("--bundle", type=Path, required=True)
+        command.add_argument("--marketplace", type=Path)
+        command.add_argument("--codex-home", type=Path)
 
     overview = subparsers.add_parser(
         "overview", help="read local attention across linked projects"
@@ -286,12 +313,36 @@ def _parser() -> argparse.ArgumentParser:
     task_checkpoint.add_argument("--idempotency-key", required=True)
     task_checkpoint.add_argument("--input", type=Path, required=True)
 
+    for action in ("resolve-plan", "resolve"):
+        command = task_commands.add_parser(
+            action, help="review or record an external attempt outcome"
+        )
+        command.add_argument("run_id")
+        command.add_argument(
+            "--outcome", choices=("completed", "cancelled", "superseded"), required=True
+        )
+        command.add_argument("--reason", required=True)
+        command.add_argument("--target-run-id", default="")
+        if action == "resolve":
+            command.add_argument("--plan-digest", required=True)
+            command.add_argument("--reviewed-by", required=True)
+            command.add_argument("--idempotency-key", required=True)
+
     verification = subparsers.add_parser(
         "verification", help="verify and query exact external task snapshots"
     )
     verification_commands = verification.add_subparsers(
         dest="verification_command", required=True
     )
+    for action in ("reconcile-plan", "reconcile"):
+        command = verification_commands.add_parser(action)
+        command.add_argument("run_id")
+        command.add_argument("verification_id")
+        command.add_argument("--reason", required=True)
+        if action == "reconcile":
+            command.add_argument("--plan-digest", required=True)
+            command.add_argument("--reviewed-by", required=True)
+            command.add_argument("--idempotency-key", required=True)
     for action in ("profiles", "request", "inspect", "list", "evidence"):
         command = verification_commands.add_parser(action)
         command.add_argument("run_id")
@@ -373,6 +424,14 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="require this effective state directory in local mode",
     )
+    doctor.add_argument(
+        "--workspace",
+        type=Path,
+        help="explicit workspace for combined local plugin diagnosis",
+    )
+    doctor.add_argument("--bundle", type=Path, help="explicit exported plugin bundle")
+    doctor.add_argument("--marketplace", type=Path)
+    doctor.add_argument("--codex-home", type=Path)
     image = subparsers.add_parser("image", help="manage the isolated verifier image")
     image.add_argument("action", choices=("build",))
 
@@ -759,6 +818,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _json(value: object) -> None:
+    if _MACHINE_OUTPUT.get():
+        value = envelope(value)
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
@@ -775,15 +836,54 @@ def _runner_dockerfile() -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    token = _MACHINE_OUTPUT.set("--json-envelope" in arguments)
     try:
+        return _main(arguments)
+    finally:
+        _MACHINE_OUTPUT.reset(token)
+
+
+def _command_paths(parser: argparse.ArgumentParser, prefix: str = "") -> list[str]:
+    paths = []
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for name, child in action.choices.items():
+                path = (prefix + " " + name).strip()
+                children = _command_paths(child, path)
+                paths.extend(children or [path])
+    return paths
+
+
+def _main(argv: list[str]) -> int:
+    try:
+        if _MACHINE_OUTPUT.get() and any(
+            x in argv for x in ("--help", "-h", "--version")
+        ):
+            raise ValueError("use capabilities or version in machine mode")
+        parser = _parser()
+        args = parser.parse_args(argv)
+        if _MACHINE_OUTPUT.get():
+            if args.command in {"web", "image"} or (
+                args.command == "mcp" and args.mcp_command == "serve"
+            ):
+                raise ValueError(
+                    "long-lived or subprocess output has no response envelope"
+                )
+            if hasattr(args, "format"):
+                args.format = "json"
+        if args.command == "capabilities":
+            from reposteward.core.capabilities import capabilities
+
+            _json(capabilities(_command_paths(parser)))
+            return 0
         if args.command == "version":
-            from .runtime import installation_info
+            from reposteward.core.runtime import installation_info
 
             _json(installation_info())
             return 0
         if args.command == "web":
-            from .web_server import serve
+            from reposteward.web.server import serve
 
             web_config = load_config(args.config, include_user=True)
             if args.expect_state_dir is not None and (
@@ -796,7 +896,11 @@ def main(argv: list[str] | None = None) -> int:
             serve(web_config, port=args.port)
             return 0
         if args.command == "state":
-            from .state_upgrade import inspect_backup, upgrade_plan, upgrade_state
+            from reposteward.storage.state_upgrade import (
+                inspect_backup,
+                upgrade_plan,
+                upgrade_state,
+            )
 
             if args.state_command == "inspect-backup":
                 _json(inspect_backup(args.directory))
@@ -818,23 +922,50 @@ def main(argv: list[str] | None = None) -> int:
                     )
             return 0
         if args.command == "doctor" and args.local:
-            from .runtime import local_diagnostics
+            from reposteward.core.runtime import local_diagnostics
+
+            if bool(args.workspace) != bool(args.bundle) or (
+                (args.marketplace or args.codex_home) and not args.bundle
+            ):
+                raise ConfigError(
+                    "combined diagnosis requires both --workspace and --bundle"
+                )
 
             try:
                 local_config = load_config(args.config, include_user=True)
             except ConfigError:
                 local_config = None
-            report, ok = local_diagnostics(
-                local_config, expected_state_dir=args.expect_state_dir
-            )
+            if args.bundle:
+                from reposteward.core.runtime_alignment import alignment_report
+
+                report, ok = alignment_report(
+                    local_config,
+                    workspace=args.workspace,
+                    bundle=args.bundle,
+                    expected_state_dir=args.expect_state_dir,
+                    marketplace=args.marketplace,
+                    codex_home=args.codex_home,
+                )
+            else:
+                report, ok = local_diagnostics(
+                    local_config, expected_state_dir=args.expect_state_dir
+                )
             if local_config is None and args.config:
                 report["configuration"]["selected_path"] = str(
                     Path(args.config).expanduser().resolve()
                 )
             _json(report)
             return 0 if ok else 1
-        if args.command == "doctor" and args.expect_state_dir:
-            raise ConfigError("--expect-state-dir requires doctor --local")
+        if args.command == "doctor" and any(
+            (
+                args.expect_state_dir,
+                args.workspace,
+                args.bundle,
+                args.marketplace,
+                args.codex_home,
+            )
+        ):
+            raise ConfigError("local diagnostic options require doctor --local")
         if args.command == "init":
             _json(
                 initialize_user_config(
@@ -880,12 +1011,12 @@ def main(argv: list[str] | None = None) -> int:
                 f"unhandled benchmark command: {args.benchmark_command}"
             )
         if args.command == "understand":
-            from .config import (
+            from reposteward.core.config import (
                 default_state_dir,
                 default_user_config_path,
                 discover_project_config,
             )
-            from .understanding import Understanding, render_guide
+            from reposteward.projects.understanding import Understanding, render_guide
 
             cache_dir = args.cache_dir
             if cache_dir is None:
@@ -926,7 +1057,7 @@ def main(argv: list[str] | None = None) -> int:
             "collect",
             "external-report",
         }:
-            from .external_usage import ExternalUsage
+            from reposteward.tasks.usage import ExternalUsage
 
             usage_service = ExternalUsage(config)
             if args.usage_command == "collect":
@@ -945,7 +1076,31 @@ def main(argv: list[str] | None = None) -> int:
             _json(result)
             return 0
         if args.command == "plugin":
-            from .plugin_bundle import PluginBundle
+            if args.plugin_command in {"doctor", "install-plan"}:
+                from reposteward.plugins.diagnostics import PluginDiagnostics
+
+                diagnostics = PluginDiagnostics(config)
+                method = (
+                    diagnostics.doctor
+                    if args.plugin_command == "doctor"
+                    else diagnostics.install_plan
+                )
+                result = method(
+                    args.path,
+                    bundle=args.bundle,
+                    marketplace=args.marketplace,
+                    codex_home=args.codex_home,
+                )
+                _json(result)
+                return (
+                    0
+                    if result.get(
+                        "bundle_compatible", result.get("ready_for_client_install")
+                    )
+                    else 2
+                )
+
+            from reposteward.plugins.bundle import PluginBundle
 
             service = PluginBundle(config)
             if args.plugin_command == "plan":
@@ -957,7 +1112,7 @@ def main(argv: list[str] | None = None) -> int:
             _json(result)
             return 0
         if args.command == "integration":
-            from .integrations import AgentIntegration
+            from reposteward.integrations.clients import AgentIntegration
 
             service = AgentIntegration(config.state_dir)
             if args.integration_command == "inspect":
@@ -974,7 +1129,7 @@ def main(argv: list[str] | None = None) -> int:
             _json(result)
             return 0
         if args.command == "overview":
-            from .overview import ProjectOverview, render_overview
+            from reposteward.web.overview import ProjectOverview, render_overview
 
             service = ProjectOverview(config)
             if args.overview_command == "refresh":
@@ -993,7 +1148,7 @@ def main(argv: list[str] | None = None) -> int:
                 _json(result)
             return 0
         if args.command == "knowledge":
-            from .knowledge import ProjectKnowledge
+            from reposteward.projects.knowledge import ProjectKnowledge
 
             service = ProjectKnowledge(config)
             if args.knowledge_command == "propose":
@@ -1024,16 +1179,40 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "mcp":
             if args.mcp_command == "serve":
-                from .mcp_bridge import serve
+                from reposteward.integrations.mcp import serve
 
                 serve(config, args.path, expected_scope=args.expected_scope)
             else:
-                from .mcp_config import client_config
+                from reposteward.integrations.mcp_config import client_config
 
                 _json(client_config(config, args.path, client=args.client))
             return 0
+        if args.command == "verification" and args.verification_command in {
+            "reconcile-plan",
+            "reconcile",
+        }:
+            from reposteward.verification.recovery import VerificationRecovery
+
+            recovery = VerificationRecovery(config)
+            if args.verification_command == "reconcile-plan":
+                result = recovery.plan(
+                    args.run_id, args.verification_id, reason=args.reason
+                )
+                _json(result)
+                return 0 if result["eligible"] else 2
+            _json(
+                recovery.reconcile(
+                    args.run_id,
+                    args.verification_id,
+                    reason=args.reason,
+                    plan_digest=args.plan_digest,
+                    reviewed_by=args.reviewed_by,
+                    idempotency_key=args.idempotency_key,
+                )
+            )
+            return 0
         if args.command == "verification":
-            from .external_verification import ExternalVerification
+            from reposteward.verification.external import ExternalVerification
 
             service = ExternalVerification(config)
             if args.verification_command == "profiles":
@@ -1067,7 +1246,7 @@ def main(argv: list[str] | None = None) -> int:
                 else 0
             )
         if args.command == "task":
-            from .external_tasks import ExternalTasks
+            from reposteward.tasks.external import ExternalTasks
 
             service = ExternalTasks(config)
 
@@ -1088,6 +1267,27 @@ def main(argv: list[str] | None = None) -> int:
                     if args.contract
                     else None,
                 )
+            elif args.task_command in {"resolve-plan", "resolve"}:
+                from reposteward.tasks.lifecycle import TaskLifecycle
+
+                lifecycle = TaskLifecycle(config)
+                options = {
+                    "outcome": args.outcome,
+                    "reason": args.reason,
+                    "target_run_id": args.target_run_id,
+                }
+                if args.task_command == "resolve":
+                    result = lifecycle.resolve(
+                        args.run_id,
+                        **options,
+                        plan_digest=args.plan_digest,
+                        reviewed_by=args.reviewed_by,
+                        idempotency_key=args.idempotency_key,
+                    )
+                else:
+                    result = lifecycle.plan(args.run_id, **options)
+                _json(result)
+                return 0 if result.get("eligible", True) else 2
             elif args.task_command == "inspect":
                 result = service.inspect(args.run_id, live=args.live)
             elif args.task_command == "current":
@@ -1122,7 +1322,7 @@ def main(argv: list[str] | None = None) -> int:
                 _json(result)
             return 0
         if args.command == "project":
-            from .projects import ProjectRegistry
+            from reposteward.projects.registry import ProjectRegistry
 
             registry = ProjectRegistry(config.state_dir / "projects.sqlite3")
             if args.project_command == "link":
@@ -1547,7 +1747,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         raise AssertionError(f"unhandled command: {args.command}")
     except (ConfigError, OSError, RuntimeError, ValueError, KeyError) as exc:
-        print(f"reposteward: {exc}", file=sys.stderr)
+        if _MACHINE_OUTPUT.get():
+            print(json.dumps(envelope(error=error_details(exc)), ensure_ascii=False))
+        else:
+            print(f"reposteward: {exc}", file=sys.stderr)
         return 2
 
 

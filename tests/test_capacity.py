@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from reposteward.capacity import (
+from reposteward.github.client import PullRequest
+from reposteward.maintenance.capacity import (
     effective_capacity_limit,
     effective_diff_line_limit,
     pull_request_capacity,
 )
-from reposteward.github import PullRequest
 
 
 def _pull(

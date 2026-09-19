@@ -10,11 +10,11 @@ from unittest.mock import patch
 import test_external_verification
 
 from reposteward.cli import main
-from reposteward.config import load_config
-from reposteward.external_tasks import TaskConflict
-from reposteward.knowledge import ProjectKnowledge
-from reposteward.mcp_bridge import ScopedBridge
-from reposteward.policy import PolicyError
+from reposteward.core.config import load_config
+from reposteward.integrations.mcp import ScopedBridge
+from reposteward.projects.knowledge import ProjectKnowledge
+from reposteward.tasks.external import TaskConflict
+from reposteward.workflows.policy import PolicyError
 
 
 class KnowledgeTests(unittest.TestCase):

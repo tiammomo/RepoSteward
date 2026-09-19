@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import replace
 
-from reposteward.merge import MergeCheck, MergeSnapshot, evaluate_merge
+from reposteward.maintenance.merge import MergeCheck, MergeSnapshot, evaluate_merge
 
 
 class MergeDecisionTests(unittest.TestCase):

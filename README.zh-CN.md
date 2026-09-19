@@ -8,7 +8,7 @@ RepoSteward 帮助个人维护者和小团队管理多个 GitHub 项目：理解
 接续 Agent 会话、验证修改，并跟进 Issue 和 PR。你继续使用 Codex、Claude Code 或
 Copilot 编码；RepoSteward 在会话之外保存项目事实、决定、验证证据与维护规则。
 
-[快速开始](#快速开始) · [Codex 插件](#接入-codex-插件) · [多项目管理](#管理多个已有项目) · [文档导航](#文档导航)
+[快速开始](#快速开始) · [Codex 插件](#接入-codex-插件) · [MCP / Skills / A2A](#mcpskills-与-a2a) · [多项目管理](#管理多个已有项目) · [文档导航](#文档导航)
 
 ## 它能帮你做什么
 
@@ -102,6 +102,75 @@ codex plugin list --json
 完整的[改名、升级与回退说明](docs/agent-plugin.zh-CN.md)也适用于原先的 `reposteward-local`。
 生成包包含本机路径；换机器时重新安装、关联和导出。
 
+## MCP、Skills 与 A2A
+
+按要完成的工作选择入口。**Skills 是工作指导，MCP 和 A2A 是通信协议，插件负责打包技能与连接。**
+这些入口复用 RepoSteward 的任务和证据服务，各自有明确的作用范围。
+
+| 入口 | 用来做什么 | 当前交付状态 |
+| --- | --- | --- |
+| CLI / JSON | 人工操作和脚本自动化；`--json-envelope` 选择版本化响应 | 已实现；详见[机器接口契约](docs/machine-interfaces.zh-CN.md) |
+| MCP | 让已有 Agent 通过本地 STDIO 调用一个关联工作区的工具 | 已实现六类工具，需要可选 `mcp` 依赖 |
+| Skills | 指导代码阅读、任务接续、验证改动和 PR 跟进 | Codex 插件导出四类技能，名称见下表 |
+| 插件 | 打包绑定工作区的技能和 MCP 连接 | 已有 Codex 本机导出、诊断和安装预览；见[插件指南](docs/agent-plugin.zh-CN.md) |
+| 指令文件 | 向 AGENTS.md、CLAUDE.md 和 Copilot 指令添加经过审阅的片段 | `integration plan/apply/revert`，保留已有指令 |
+| HTTP 工作台 / OpenAPI | 在浏览器查看项目、任务和证据 | 本地只读 HTTP 已实现；FastAPI/React 及其 OpenAPI 契约待 [PR #132](https://github.com/tiammomo/RepoSteward/pull/132) 合入 |
+| 持久异步操作 | 用 operation ID 查询进度、请求取消和恢复 | [Issue #165](https://github.com/tiammomo/RepoSteward/issues/165) 待交付；当前 MCP 未实现持久 Tasks |
+| A2A | 向另一个 Agent 端点委派限定范围的项目理解报告 | [Issue #166](https://github.com/tiammomo/RepoSteward/issues/166) 待交付，当前主线未启用 |
+
+### 直接接入 MCP
+
+已有 MCP 客户端也可以直接连接，无需先安装 Codex 插件。先在运行服务的 Python 环境安装
+RepoSteward 的 `mcp` extra，并按上文关联工作区。在目标项目目录选择对应客户端的预览：
+
+```bash
+reposteward mcp config . --client codex
+reposteward mcp config . --client claude-code
+reposteward mcp config . --client copilot-vscode
+```
+
+这些命令只输出配置，不安装或启用客户端连接。通过客户端自己的配置流程应用所选预览后，
+客户端以 STDIO 启动 `reposteward mcp serve PATH`，服务限定在该工作区内。
+详细步骤见[Agent 接续指南](docs/coding-agent-assistance.zh-CN.md#文件与-mcp-接入)。
+
+六类工具为 `project`、`understanding`、`context`、`evidence`、`checkpoint`、`verification`，
+用于读取项目和任务事实、保存进展、执行可信验证 profile。MCP 不提供 GitHub 发布和合并工具。
+修改用户策略或验证 profile 后需要重启服务；保存检查点不代表测试已经通过。
+
+### 四类 Skills 怎么用
+
+| Skill | 适用场景 |
+| --- | --- |
+| `understand-project` | 阅读项目导览，按来源取回实现和测试证据 |
+| `resume-task` | 中断或换客户端后恢复要求、决定、未完成工作与下一步 |
+| `verify-change` | 执行可信验证 profile，核对证据是否仍适用于当前代码 |
+| `maintain-pr` | 检查 RepoSteward 管理的 PR 的 CI、评审反馈和合并阻塞 |
+
+向 Agent 描述对应任务即可，具体技能名称或命名空间由客户端提供。
+例如：“使用 `understand-project`，带源码引用解释这个仓库的主要入口。”
+导出的技能负责指导工具使用，安装技能不会增加公开写入权限。
+仓库内 `.agents/skills/` 则是另一组面向贡献者和维护者的工作指导。
+
+### A2A 与跨客户端接续
+
+计划中的 A2A 服务委派的是**项目理解报告**。报告完成不表示代码已修改、验证或发布。
+该能力交付前，跨客户端继续工作使用 CLI/MCP 配合 Context Pack 和 Checkpoint。
+Context Pack/Bundle 当前写出 v3，Checkpoint 写出 v1；这些持久文档版本与 MCP 协商版本、
+A2A 协议版本分别管理。
+
+接入前用实际运行的可执行文件检查安装：
+
+```bash
+reposteward version
+reposteward capabilities
+reposteward --json-envelope capabilities
+reposteward doctor --local
+```
+
+当前主线报告 `a2a.implemented=false`、`mcp.durable_async_tasks=false`。
+源码合入、安装包升级、客户端实际连接成功是三个不同阶段。
+各协议的版本依据、实现边界和交付跟进见[协议与兼容性索引](docs/protocol-map.zh-CN.md)。
+
 ## 管理多个已有项目
 
 项目可以保持原有目录结构。先按项目自己的方式 clone，再用 `project link` 登记：
@@ -183,7 +252,8 @@ Agent 报告的“完成”和“测试通过”会与独立验证证据分开�
 | 插件接入与会话接续 | [Codex 插件](docs/agent-plugin.zh-CN.md) · [已有 Agent](docs/coding-agent-assistance.zh-CN.md) |
 | 代码理解与项目浏览 | [阅读导览](docs/project-understanding.zh-CN.md) · [工作台](docs/local-workbench.zh-CN.md) |
 | GitHub 维护、队列、组合视图与清理 | [操作手册](docs/operator-guide.zh-CN.md) · [配置示例](reposteward.example.toml) |
-| 系统结构、持久化与验证边界 | [架构](docs/architecture.md) · [Project Draft Actions](docs/github-actions.md) |
+| 接口、Schema 与协议交付范围 | [协议索引](docs/protocol-map.zh-CN.md) · [CLI/MCP 契约](docs/machine-interfaces.zh-CN.md) |
+| 系统结构、源码位置与验证边界 | [架构](docs/architecture.md) · [源码指南](docs/source-layout.zh-CN.md) · [Project Draft Actions](docs/github-actions.md) |
 | 用量、版本与发布 | [用量采集](docs/external-usage.md) · [变更日志](CHANGELOG.md) · [发布与回退](docs/releases.md) |
 
 ## 版本与参与开发

@@ -13,13 +13,13 @@ import test_external_tasks
 from test_projects import repository
 
 from reposteward.cli import main
-from reposteward.external_tasks import TaskConflict
-from reposteward.lifecycle import build_lifecycle_trace
-from reposteward.mcp_bridge import ScopedBridge
-from reposteward.overview import ProjectOverview
-from reposteward.projects import ProjectError
-from reposteward.store import Store, StoreError
-from reposteward.workbench import Workbench
+from reposteward.integrations.mcp import ScopedBridge
+from reposteward.projects.registry import ProjectError
+from reposteward.storage.store import Store, StoreError
+from reposteward.tasks.external import TaskConflict
+from reposteward.web.overview import ProjectOverview
+from reposteward.web.workbench import Workbench
+from reposteward.workflows.lifecycle import build_lifecycle_trace
 
 
 class WorkbenchTests(unittest.TestCase):
@@ -91,11 +91,12 @@ class WorkbenchTests(unittest.TestCase):
         with (
             patch.object(Store, "__init__", guarded),
             patch(
-                "reposteward.github.resolve_token", side_effect=AssertionError("auth")
+                "reposteward.github.client.resolve_token",
+                side_effect=AssertionError("auth"),
             ),
             patch("reposteward.cli.Pipeline", side_effect=AssertionError("Pipeline")),
             patch(
-                "reposteward.overview.GitHubClient",
+                "reposteward.web.overview.GitHubClient",
                 side_effect=AssertionError("network"),
             ),
         ):
@@ -225,7 +226,7 @@ class WorkbenchTests(unittest.TestCase):
         with (
             patch("reposteward.cli.load_config", return_value=self.config),
             patch("reposteward.cli.Pipeline", side_effect=AssertionError("Pipeline")),
-            patch("reposteward.web_server.serve") as serve,
+            patch("reposteward.web.server.serve") as serve,
         ):
             self.assertEqual(
                 main(

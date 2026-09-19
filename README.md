@@ -9,7 +9,7 @@ understand code, preserve task progress, resume agent sessions, verify changes, 
 Issues and pull requests. Keep coding with Codex, Claude Code or Copilot; RepoSteward
 stores project facts, decisions, verification evidence and maintenance rules outside the session.
 
-[Quick start](#quick-start) · [Codex plugin](#connect-the-codex-plugin) · [Multiple projects](#manage-existing-projects) · [Documentation](#documentation)
+[Quick start](#quick-start) · [Codex plugin](#connect-the-codex-plugin) · [MCP / Skills / A2A](#mcp-skills-and-a2a) · [Multiple projects](#manage-existing-projects) · [Documentation](#documentation)
 
 ## What it helps you do
 
@@ -112,6 +112,81 @@ The [rename, upgrade and rollback guide (中文)](docs/agent-plugin.zh-CN.md) al
 existing `reposteward-local` installation. Generated bundles contain local paths; install,
 link and export again on another machine.
 
+## MCP, Skills and A2A
+
+Choose an entry point for the work you want to do. **Skills are workflow instructions;
+MCP and A2A are communication protocols; a plugin packages the skills and connection.**
+They share RepoSteward's task and evidence services, with different scopes.
+
+| Entry point | What it provides | Current delivery status |
+| --- | --- | --- |
+| CLI / JSON | Human commands and automation; `--json-envelope` selects versioned responses | Implemented; [machine interface contract](docs/machine-interfaces.zh-CN.md) |
+| MCP | An existing agent calls tools for one linked workspace over local STDIO | Implemented; six tools, optional `mcp` dependency |
+| Skills | Guidance for reading code, resuming tasks, verifying changes and following PRs | Four skills exported in the Codex plugin; names below |
+| Plugin | Workspace-bound skills plus an MCP connection | Local Codex export, diagnostics and installation preview; [plugin guide](docs/agent-plugin.zh-CN.md) |
+| Instruction files | Reviewed additions to AGENTS.md, CLAUDE.md and Copilot instructions | `integration plan/apply/revert`; preserves existing instructions |
+| HTTP workbench / OpenAPI | Browser views of projects, tasks and evidence | Local read-only HTTP is implemented; FastAPI/React and its OpenAPI contract await [PR #132](https://github.com/tiammomo/RepoSteward/pull/132) |
+| Durable asynchronous operations | Operation IDs, progress, cancellation requests and recovery | Pending delivery in [Issue #165](https://github.com/tiammomo/RepoSteward/issues/165); current MCP does not implement durable Tasks |
+| A2A | Delegate scoped project-understanding reports to another agent endpoint | Pending delivery in [Issue #166](https://github.com/tiammomo/RepoSteward/issues/166); not enabled in the current mainline |
+
+### Connect MCP directly
+
+Use this path when connecting an existing MCP client without the Codex plugin. Install
+RepoSteward's `mcp` extra in the Python environment that will run the server, and link the
+workspace as shown above. From that project's directory, select the preview for your client:
+
+```bash
+reposteward mcp config . --client codex
+reposteward mcp config . --client claude-code
+reposteward mcp config . --client copilot-vscode
+```
+
+These commands print configuration; they do not install or enable a client connection.
+Apply the chosen preview through the client's configuration workflow. It starts
+`reposteward mcp serve PATH` over STDIO, scoped to that workspace. For details, see
+[agent assistance](docs/coding-agent-assistance.zh-CN.md#文件与-mcp-接入).
+
+The six tools are `project`, `understanding`, `context`, `evidence`, `checkpoint` and
+`verification`. They read project/task facts, save progress and run trusted verification
+profiles. MCP exposes no GitHub publication or merge tools. Restart the server after
+changing user policy or verification profiles; a saved checkpoint is not proof that tests passed.
+
+### Use the four skills
+
+| Skill | When to use it |
+| --- | --- |
+| `understand-project` | Read the project guide and retrieve cited implementation and test evidence |
+| `resume-task` | Recover requirements, decisions, remaining work and the next step after a break or client change |
+| `verify-change` | Run a trusted verification profile and check whether its evidence still applies to the code |
+| `maintain-pr` | Inspect CI, review feedback and merge blockers for a RepoSteward-managed PR |
+
+Ask your agent for the matching workflow; the client supplies its skill name or namespace.
+For example: “Use `understand-project` to explain this repository's entry points with sources.”
+The exported skills guide tool use; installing them does not grant new write permissions.
+The repository's `.agents/skills/` contains separate contributor/maintainer guidance.
+
+### A2A and cross-client handoff
+
+The planned A2A service delegates a **project-understanding report**, not an entire
+Issue-to-PR workflow. Completing a report does not mean code was changed, verified or published.
+Until that capability is delivered, use CLI/MCP with Context Packs and Checkpoints to continue
+work across clients. Context Pack/Bundle currently write v3 and Checkpoint writes v1; these
+persisted document versions are independent of MCP negotiation and A2A protocol versions.
+
+Check the executable you actually use before configuring an integration:
+
+```bash
+reposteward version
+reposteward capabilities
+reposteward --json-envelope capabilities
+reposteward doctor --local
+```
+
+The current mainline reports `a2a.implemented=false` and `mcp.durable_async_tasks=false`.
+Source merged, package installed and client successfully connected are separate milestones.
+See the [protocol and compatibility map](docs/protocol-map.zh-CN.md) for version authorities,
+implementation boundaries and delivery follow-up.
+
 ## Manage existing projects
 
 Keep your projects where they are. Clone them through their usual workflow, then register them:
@@ -204,7 +279,8 @@ Most operational guides are currently in Chinese.
 | Plugins and session continuity | [Codex plugin](docs/agent-plugin.zh-CN.md) · [Existing agents](docs/coding-agent-assistance.zh-CN.md) |
 | Code understanding and project browsing | [Reading guide](docs/project-understanding.zh-CN.md) · [Workbench](docs/local-workbench.zh-CN.md) |
 | GitHub maintenance, queues, portfolio and cleanup | [Operator guide](docs/operator-guide.zh-CN.md) · [Configuration example](reposteward.example.toml) |
-| Architecture, persistence and verification boundaries | [Architecture](docs/architecture.md) · [Project Draft Actions](docs/github-actions.md) |
+| Interfaces, schemas and protocol delivery | [Protocol map](docs/protocol-map.zh-CN.md) · [CLI/MCP contracts](docs/machine-interfaces.zh-CN.md) |
+| Architecture, source layout and verification boundaries | [Architecture](docs/architecture.md) · [Source structure](docs/source-layout.zh-CN.md) · [Project Draft Actions](docs/github-actions.md) |
 | Usage, versions and releases | [Usage collection](docs/external-usage.md) · [Changelog](CHANGELOG.md) · [Release and rollback policy](docs/releases.md) |
 
 ## Version and contributing
