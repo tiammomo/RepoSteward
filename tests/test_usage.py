@@ -4,15 +4,15 @@ import unittest
 from decimal import Decimal
 from types import SimpleNamespace
 
-from reposteward.config import RepositoryPolicy, UsagePrice
-from reposteward.models import AgentMetrics
-from reposteward.pipeline import Pipeline
-from reposteward.usage import (
+from reposteward.core.config import RepositoryPolicy, UsagePrice
+from reposteward.core.models import AgentMetrics
+from reposteward.telemetry.usage import (
     build_usage_report,
     compact_usage_budget,
     compact_usage_metrics,
     session_resume_outcome,
 )
+from reposteward.workflows.pipeline import Pipeline
 
 
 def _row(

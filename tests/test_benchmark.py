@@ -10,14 +10,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from reposteward.benchmark import (
+from reposteward.cli import main
+from reposteward.evaluation.benchmark import (
     BENCHMARK_CATEGORIES,
     benchmark_manifest,
     run_benchmark,
     validate_benchmark_report,
 )
-from reposteward.cli import main
-from reposteward.handoff_benchmark import handoff_gold, observe_handoff
+from reposteward.evaluation.handoff_benchmark import handoff_gold, observe_handoff
 
 
 class RepoStewardBenchTests(unittest.TestCase):
@@ -124,7 +124,7 @@ class RepoStewardBenchTests(unittest.TestCase):
         wrong["open_work"] = []
         with (
             patch.dict(
-                "reposteward.handoff_benchmark.OBSERVERS",
+                "reposteward.evaluation.handoff_benchmark.OBSERVERS",
                 {"late_bundle": lambda: wrong},
             ),
             self.assertRaisesRegex(AssertionError, "open_work"),

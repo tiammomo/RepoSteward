@@ -22,7 +22,7 @@ def frontend_digest(root):
         "test-results",
         "playwright-report",
     }
-    for folder in ("frontend", "src/reposteward/web_api"):
+    for folder in ("frontend", "src/reposteward/web/api"):
         for parent, directories, files in os.walk(root / folder):
             directories[:] = sorted(
                 name for name in directories if name not in excluded
@@ -104,7 +104,7 @@ class CustomBuildHook(BuildHookInterface):
         env = build_environment()
         sys.path.insert(0, str(root / "src"))
         try:
-            from reposteward.web_api.app import create_app
+            from reposteward.web.api.app import create_app
 
             schema = create_app().openapi()
         finally:

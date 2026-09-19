@@ -12,12 +12,12 @@ from unittest.mock import patch
 import test_external_verification
 from test_projects import git
 
-from reposteward.assistance_operations import AssistanceOperations
 from reposteward.cli import main
-from reposteward.local_operations import OperationError
-from reposteward.mcp_bridge import ScopedBridge
-from reposteward.projects import ProjectError
-from reposteward.verification_recovery import VerificationRecovery
+from reposteward.integrations.mcp import ScopedBridge
+from reposteward.projects.registry import ProjectError
+from reposteward.tasks.assistance_operations import AssistanceOperations
+from reposteward.tasks.local_operations import OperationError
+from reposteward.verification.recovery import VerificationRecovery
 
 
 class AssistanceOperationTests(unittest.TestCase):

@@ -10,12 +10,12 @@ from unittest.mock import patch
 
 from test_projects import git, repository
 
-from reposteward.config import ConfigError, load_config
-from reposteward.context import repository_policy_digest
-from reposteward.models import AgentResult, CommandResult
-from reposteward.projects import ProjectError, canonical_digest
-from reposteward.snapshots import verify_snapshot_copy, workspace_snapshot
-from reposteward.verifier import (
+from reposteward.context.pack import repository_policy_digest
+from reposteward.core.config import ConfigError, load_config
+from reposteward.core.models import AgentResult, CommandResult
+from reposteward.projects.registry import ProjectError, canonical_digest
+from reposteward.storage.snapshots import verify_snapshot_copy, workspace_snapshot
+from reposteward.verification.verifier import (
     MAX_ENV_TEMPLATE_BYTES,
     DockerVerifier,
     VerificationError,
