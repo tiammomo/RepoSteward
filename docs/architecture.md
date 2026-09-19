@@ -29,6 +29,8 @@ Harness 仍然可以保留自己的原生 session，作为命中缓存或继续�
 
 源码按职责分包，入口和各类模块的位置见[源码目录指南](source-layout.zh-CN.md)。
 子包是代码导航边界，当前不代表可以独立部署的服务，也不宣称已经消除所有跨域依赖。
+CLI、MCP、HTTP、A2A 的交付范围、持久文档版本与验证入口见
+[协议与兼容性索引](protocol-map.zh-CN.md)。
 
 ```text
 GitHub facts + repository policy
@@ -264,7 +266,7 @@ Issue、阶段、Harness 和模型，只包含规范化资源计数、原生会�
 不会调用 Harness，也不会存储或重新加载原始提示。
 
 三类协议文档都使用 Draft 2020-12 JSON Schema，schema 随 Python 包发布。协议按文档类型独立
-分派版本：新 Context Pack/Bundle 使用 v2，Checkpoint 仍使用 v1；历史 Context Pack/Bundle v1
+分派版本：新 Context Pack/Bundle 使用 v3，Checkpoint 仍使用 v1；历史 Context Pack/Bundle v1/v2
 继续严格可读，未知未来版本失败关闭。持久化和导入边界会拒绝未知字段、跨 work item/run 的关联
 错配及不一致摘要。Bundle digest 只能检测意外损坏或内容变化，不是数字签名；导入数据仍保留其
 原始信任级别。
@@ -276,6 +278,10 @@ Context Pack v2 包含一个技能目录 v1。RepoSteward 按稳定相对路径�
 Context Pack 的 source digest。越界链接、超限、坏 UTF-8 和不支持的 frontmatter 都只形成无效
 条目，不会把原始内容送入 Prompt。Harness 对语义相关性作最终选择，只读取选中技能的完整正文；
 目录被截断时再检查工作区剩余候选。
+
+Context Pack v3 保留技能目录，并加入绑定精确 Issue 来源的任务契约和修复反馈关联。
+当前写出版本与可读历史版本由 `core/protocol.py` 分派；协议版本、CLI/MCP 传输版本和
+SQLite 版本互相独立，不能仅凭某个数字相同判断兼容。
 
 ## 跨会话与跨账号恢复
 

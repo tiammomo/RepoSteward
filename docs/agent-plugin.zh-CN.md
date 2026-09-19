@@ -1,8 +1,17 @@
-# 导出本机 Agent 插件
+# 使用 RepoSteward Agent 插件
 
 RepoSteward 可以把一个已关联工作区的 MCP 连接和四类 skills 导出成 Codex
 插件目录。CLI、MCP 和插件共用项目、任务与验证服务。导出不修改客户端设置、
 不联网安装插件，也不代表真实模型已经完成接续。
+
+## 名称与适用范围
+
+默认名称用 **`reposteward`**，不需要 `-local`。名称来自导出目录的最后一段；
+本机运行是连接方式，不是必须写进名称的后缀。`reposteward-local` 等旧名称仍有效。
+
+一个实例固定关联一个工作区，不会随 Codex 的当前目录自动切换。若同时使用多个项目，
+分别关联并导出为 `reposteward-project-a`、`reposteward-project-b`，调用前核对项目身份。
+不要把同名插件覆盖到另一个项目上。
 
 ## 准备和预览
 
@@ -14,7 +23,7 @@ RepoSteward 可以把一个已关联工作区的 MCP 连接和四类 skills 导�
 reposteward project inspect /absolute/path/project
 mkdir -p "$HOME/plugins"
 reposteward plugin plan /absolute/path/project \
-  --output "$HOME/plugins/reposteward-my-project"
+  --output "$HOME/plugins/reposteward"
 ```
 
 输出包括每个文件的内容和摘要、绑定身份、运行时源码摘要、配置摘要及 MCP
@@ -25,7 +34,7 @@ reposteward plugin plan /absolute/path/project \
 
 ```sh
 reposteward plugin export /absolute/path/project \
-  --output "$HOME/plugins/reposteward-my-project" \
+  --output "$HOME/plugins/reposteward" \
   --plan-digest REVIEWED_PLAN_DIGEST
 ```
 
@@ -47,7 +56,61 @@ reposteward plugin export /absolute/path/project \
 原有 `mcp config` 和未设置 `--expected-scope` 的 `mcp serve` 配置仍可使用。
 生成包内的 MCP 额外设置了预期 scope；它不是发布/合并凭证，也不让 Agent 绕过仓库规则。
 
-## 客户端安装与升级
+## 在 Codex 安装
+
+导出与注册 marketplace 是独立步骤。让 Codex 的 `$plugin-creator` 将已导出的
+`$HOME/plugins/reposteward` 注册到个人 marketplace，保留原有插件条目；不要重新生成
+或覆盖已审阅的包。个人目录是 `~/.agents/plugins/marketplace.json`，默认市场名为
+`personal`，其中本例的 `source.path` 为 `./plugins/reposteward`。
+如果你已有的市场采用其他名称，以实际文件中的名称为准。
+
+本机支持 `codex plugin add` 的版本中，注册完成后执行：
+
+```sh
+codex plugin add reposteward@personal
+codex plugin list --json
+```
+
+确认该项为 `installed: true`、`enabled: true`，然后新开会话发送：
+
+> 使用 reposteward 插件，先确认绑定项目，再读取项目导览与已有任务上下文，给出下一步建议。
+
+客户端没有此命令时，先查看 `codex plugin --help`，在支持个人 marketplace 的插件界面
+选择对应插件。不要把导出成功当成安装成功。具体客户端流程以
+[官方插件文档](https://developers.openai.com/plugins/build/plugins)及当前版本帮助为准。
+
+## 从 reposteward-local 改名
+
+1. 对同一已关联工作区重新预览、导出到尚不存在的 `$HOME/plugins/reposteward`。
+2. 注册新条目并安装 `reposteward@personal`，确认其 project 和原实例一致。
+3. 从客户端卸载旧实例 `codex plugin remove reposteward-local@personal`，避免两个实例
+   同时提供重复工具。保留旧导出目录与解释器，必要时可重新安装回退。
+4. 新开会话。只改目录名或 manifest 不会完成迁移，还会破坏已有文件摘要。
+
+## 升级与回退
+
+插件实例名称保持不变，版本通过清单中的 `version` 及摘要辨认。再次导出时，
+使用新的父目录，例如：
+
+```sh
+mkdir -p "$HOME/plugin-builds/upgrade-001"
+reposteward plugin plan /absolute/path/project \
+  --output "$HOME/plugin-builds/upgrade-001/reposteward"
+reposteward plugin export /absolute/path/project \
+  --output "$HOME/plugin-builds/upgrade-001/reposteward" \
+  --plan-digest REVIEWED_PLAN_DIGEST
+```
+
+检查新包后，通过客户端支持的市场管理流程更新同一条目的来源，或将个人市场已登记的
+`$HOME/plugins/reposteward` 目录归档到私有备份位置，再放入已核验的新包。先停止旧客户端
+连接，保留原包，不覆盖合并文件；切换后核对 `export.json` 中的每个文件摘要，再运行
+`codex plugin add reposteward@personal`。`connection.json` 中的工作区和解释器路径
+不会因为移动插件目录而自动更新，必须仍然存在并通过绑定检查。
+
+回退时恢复旧来源、重新安装并新开会话。不要对审阅过的导出包手工修改版本号来刷新缓存；
+重新导出会生成反映内容的新摘要。项目版本与正式发布规则见[版本管理指南](releases.md)。
+
+## 安装状态与本机限制
 
 通过本机 Codex 支持的本地插件/marketplace 流程安装该目录。不同客户端版本的
 安装命令和配置能力应分别核对；导出结果明确标记 `client_installation: not_attempted`
