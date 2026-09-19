@@ -20,6 +20,7 @@ from .snapshots import snapshot_summary, workspace_snapshot
 from .store import Store, utc_now
 from .task_contract import review_contract
 from .task_intake import contribution_gate
+from .task_lifecycle_store import TaskLifecycleRecords
 
 MAX_CHECKPOINT_BYTES = 100_000
 
@@ -327,6 +328,7 @@ class ExternalTasks:
             "binding_id": record["binding_id"],
             "revision": record["checkpoint_revision"],
             "status": run["status"],
+            "resolution": TaskLifecycleRecords(store).get(run_id),
             "snapshot": snapshot_summary(record["snapshot"]),
             "current_snapshot": snapshot_summary(current) if current else None,
             "validity": validity,
@@ -610,6 +612,11 @@ class ExternalTasks:
             "budget": budget,
             "estimated_tokens": 0,
         }
+        if report["resolution"] is not None:
+            mandatory["open_work"] = []
+            mandatory["next_action"] = (
+                "Attempt ended; inspect resolution and historical evidence."
+            )
         for _ in range(8):
             size = estimate_tokens(mandatory)
             if mandatory["estimated_tokens"] == size:

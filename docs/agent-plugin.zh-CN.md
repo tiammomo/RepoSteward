@@ -62,6 +62,40 @@ reposteward plugin export /absolute/path/project \
 先从客户端卸载，再移除自己创建的导出目录；导出器不修改已有 AGENTS.md、
 CLAUDE.md、Copilot 指令或 marketplace。
 
+## 检查已有包和预览安装
+
+使用预期的 CLI 安装环境，检查导出包与当前工作区是否仍匹配：
+
+```sh
+reposteward plugin doctor /absolute/path/project \
+  --bundle "$HOME/plugins/reposteward-my-project"
+reposteward plugin install-plan /absolute/path/project \
+  --bundle "$HOME/plugins/reposteward-my-project"
+```
+
+这两个命令只读、离线，不启动包中的 MCP 命令，不调用 Codex，不修改客户端
+设置或迁移数据库。检查涵盖文件完整性、可信导出模板、工作区与账号绑定、
+Python 运行环境和配置文件摘要。符号链接、非普通文件、超大文件、额外文件和
+不完整导出会被拒绝。摘要本身不是来源签名，因此还会与当前 CLI 的模板核对。
+
+默认观察 `~/.agents/plugins/marketplace.json` 与 `CODEX_HOME`（未设置时为
+`~/.codex`）。可用 `--marketplace /absolute/path/.agents/plugins/marketplace.json`
+和 `--codex-home /absolute/path/codex-home` 显式选择。仅检查所选插件的本地来源、
+用户级启用设置，以及所选 marketplace 下对应版本的缓存；其他缓存布局、仓库级
+或托管配置可能改变客户端有效状态，因此 `effective_installation`、`mcp_health`
+仍为 `not_probed`。用户配置的其他内容不会写入报告。
+
+`doctor` 返回码 0 表示包与当前环境兼容，客户端观察仍可能有 warning；返回码 2
+表示包检查失败。`install-plan` 只有在包兼容、所选 marketplace 已指向该包且
+允许安装、用户未显式禁用该插件时，才给出安装命令参数数组和 `CODEX_HOME`；
+否则返回码 2 并保留诊断原因。非默认 marketplace 的计划先列出注册步骤。
+计划及其摘要是当时状态下的建议，不是自动执行授权；执行前应重新检查。
+
+遇到运行时不一致，先核对是否用了另一套 CLI；这不证明原有安装已损坏。
+配置或绑定变化后，审阅新导出再安装。新版导出回执记录配置摘要；旧回执仍可
+检查，但会提示无法确认导出时的配置字节。安装、更新、回退和新会话试用仍由
+各自流程完成，诊断通过不计为实际任务成功或 token 节省证据。
+
 ## 中断与恢复
 
 导出使用独占的新目录，文件权限默认仅当前用户可访问。客户端 manifest 最后写入。

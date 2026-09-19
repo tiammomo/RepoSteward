@@ -10,6 +10,7 @@ from threading import Event
 from unittest.mock import patch
 
 import test_external_verification
+from jsonschema import Draft202012Validator
 from test_projects import git, repository
 
 from reposteward.mcp_bridge import SCHEMAS, ScopedBridge, create_server
@@ -161,6 +162,9 @@ class BridgeTests(unittest.TestCase):
             async with Client(create_server(self.config, self.repo)) as client:
                 listing = await client.list_tools()
                 self.assertEqual({tool.name for tool in listing.tools}, set(SCHEMAS))
+                for tool in listing.tools:
+                    self.assertIsNotNone(tool.output_schema)
+                    Draft202012Validator.check_schema(tool.output_schema)
                 project = await client.call_tool("project", {})
                 self.assertEqual(
                     project.structured_content["project"]["id"], self.task["project_id"]
@@ -197,6 +201,21 @@ class BridgeTests(unittest.TestCase):
                 )
                 self.assertEqual(verified.structured_content["outcome"], "passed")
                 self.assertFalse(verified.structured_content["publication_eligible"])
+                for name, response in (
+                    ("project", project),
+                    ("context", context),
+                    ("evidence", evidence),
+                    ("understanding", understanding),
+                    ("checkpoint", cp),
+                    ("verification", verified),
+                ):
+                    schema = next(
+                        t.output_schema for t in listing.tools if t.name == name
+                    )
+                    Draft202012Validator(schema).validate(response.structured_content)
+                error = await client.call_tool("context", {"run_id": "0" * 32})
+                self.assertTrue(error.is_error)
+                self.assertEqual(error.structured_content["error"]["code"], "not_found")
 
         with (
             patch.object(DockerVerifier, "image_available", return_value=True),
@@ -205,6 +224,25 @@ class BridgeTests(unittest.TestCase):
             ),
         ):
             asyncio.run(run())
+
+    @unittest.skipUnless(HAS_MCP, "install reposteward[mcp] for SDK protocol tests")
+    def test_invalid_application_output_becomes_a_safe_structured_error(self):
+        from mcp import Client
+
+        async def run():
+            async with Client(create_server(self.config, self.repo)) as client:
+                with patch.object(
+                    ScopedBridge, "call", return_value={"secret": "bad-result"}
+                ):
+                    response = await client.call_tool("project", {})
+                self.assertTrue(response.is_error)
+                self.assertEqual(
+                    response.structured_content["error"]["code"],
+                    "result_contract_error",
+                )
+                self.assertNotIn("bad-result", response.content[0].text)
+
+        asyncio.run(run())
 
     def stdio_environment(self) -> tuple[dict, list[str]]:
         user_root = self.root / "client-config"

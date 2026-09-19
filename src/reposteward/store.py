@@ -27,13 +27,17 @@ from .local_queue import hex_id
 from .models import Candidate
 from .overview_ledger import OVERVIEW_MIGRATION
 from .protocol import validate_checkpoint, validate_context_pack
+from .task_lifecycle_store import TASK_RESOLUTION_MIGRATION
+from .verification_recovery_store import VERIFICATION_RECOVERY_MIGRATION
 from .workbench_ledger import IMPORT_MIGRATION, WORKBENCH_MIGRATION
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 26
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
-    24: IMPORT_MIGRATION,
-    23: WORKBENCH_MIGRATION,
+    26: IMPORT_MIGRATION,
+    25: WORKBENCH_MIGRATION,
+    24: VERIFICATION_RECOVERY_MIGRATION,
+    23: TASK_RESOLUTION_MIGRATION,
     22: OVERVIEW_MIGRATION,
     21: KNOWLEDGE_MIGRATION,
     20: EXTERNAL_VERIFICATION_MIGRATION,
@@ -652,7 +656,7 @@ def apply_migration(connection: sqlite3.Connection, version: int) -> None:
     if statements is None:
         raise StoreError(f"missing database migration {version}")
     for statement in statements:
-        if version == 23 and statement.startswith("ALTER TABLE queue_tasks ADD COLUMN"):
+        if version == 25 and statement.startswith("ALTER TABLE queue_tasks ADD COLUMN"):
             column = statement.split("ADD COLUMN", 1)[1].split()[0]
             existing = {
                 str(row[1])
