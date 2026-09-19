@@ -3,7 +3,7 @@
 目录位置见[源码指南](source-layout.zh-CN.md)，端到端职责见[架构说明](architecture.md)。
 本页回答：从哪个入口调用、由谁执行、使用哪个版本、哪些能力已经交付。
 
-本文以 2026-09-19 的主线 `16de14c` 为基线。源码、某个功能分支、安装包和客户端实际加载的
+本页随主线能力交付更新；以实际安装的 `capabilities` 输出核对可用范围。源码、某个功能分支、安装包和客户端实际加载的
 插件可能处于不同版本；分支通过测试不能证明当前安装已提供该能力。
 
 ## 先识别正在使用的安装
@@ -24,12 +24,12 @@ CLI、MCP 和插件固定的解释器可能不同，检查时须使用实际启�
 
 ## 传输与调用边界
 
-| 入口 | 基线主线状态 | 负责什么 | 代码与契约入口 |
+| 入口 | 当前源码状态 | 负责什么 | 代码与契约入口 |
 | --- | --- | --- | --- |
 | CLI | 已实现 | 参数解析、同步结果及显式维护命令；公开写入使用独立门禁 | [cli.py](../src/reposteward/cli.py)、[机器接口](machine-interfaces.zh-CN.md) |
 | MCP | 已实现本地 STDIO | 绑定一个工作区，为 Agent 提供项目、上下文、证据、理解、检查点和验证六类工具 | [integrations/mcp.py](../src/reposteward/integrations/mcp.py)、[core/api_contract.py](../src/reposteward/core/api_contract.py) |
-| 工作台 HTTP | 已实现本地只读工作台 | 同源会话、项目阅读、任务和维护信息；现有实现使用标准库 HTTP 服务 | [web/server.py](../src/reposteward/web/server.py)、[web/workbench.py](../src/reposteward/web/workbench.py) |
-| FastAPI / React / OpenAPI | 待交付 | 工作台服务与前端的类型契约和构建分发 | [Issue #131](https://github.com/tiammomo/RepoSteward/issues/131)、[PR #132](https://github.com/tiammomo/RepoSteward/pull/132)；合入后代码位于 `web/api/` 与 `frontend/` |
+| 工作台 HTTP | 已实现本地只读工作台 | 同源会话、项目阅读、任务和维护信息；由 FastAPI 提供 HTTP 服务 | [web/server.py](../src/reposteward/web/server.py)、[web/workbench.py](../src/reposteward/web/workbench.py) |
+| FastAPI / React / OpenAPI | 已实现 | 工作台服务与前端的类型契约和构建分发 | [web/api](../src/reposteward/web/api)、[frontend](../frontend)、[工作台指南](local-workbench.zh-CN.md) |
 | 持久异步操作 | 待交付 | 持久 operation ID、进度、取消请求和恢复，由 CLI/MCP 复用应用服务 | [Issue #165](https://github.com/tiammomo/RepoSteward/issues/165)；不是已实现 MCP Tasks 的声明 |
 | A2A | 本主线未实现 | 待交付实现面向限定工作区的项目理解报告委派 | [Issue #166](https://github.com/tiammomo/RepoSteward/issues/166)；检查当前安装的 `a2a.implemented` |
 
@@ -43,7 +43,7 @@ A2A 报告委派、开发任务、验证 attempt 和 GitHub PR 是不同对象�
 
 ## 持久文档与版本
 
-以下数值描述基线源码。运行时权威是 [CURRENT_SCHEMA_VERSIONS](../src/reposteward/core/protocol.py)
+以下数值描述当前源码。运行时权威是 [CURRENT_SCHEMA_VERSIONS](../src/reposteward/core/protocol.py)
 和 `capabilities.schemas`；改变版本时应同步维护本表及对应兼容测试。
 
 | 契约 | 当前写出/目标版本 | 兼容规则与用途 |
@@ -84,7 +84,7 @@ Checkpoint 的 `evidence` 上限仍为 128。原生 ready/failed 检查点超限
 
 ## 接下来如何收敛
 
-先完成工作台前置交付，再逐项发布 GitHub 同步、项目导入、扫描、持久操作与 A2A，
+工作台前置能力已交付，继续逐项发布 GitHub 同步、项目导入、扫描、持久操作与 A2A，
 每项使用自己的 Issue、差异审阅和实际发布 HEAD 验证。合入时补齐本页对应的状态、
 源码位置和契约，不将组合验收分支当作一个发布单元。
 新增入口的薄适配层应把身份、输入和传输结果交给共享应用服务；业务规则、验证证据和
