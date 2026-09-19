@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 from reposteward.cli import main
-from reposteward.config import load_config
+from reposteward.core.config import load_config
 
 
 class CliSetupTests(unittest.TestCase):

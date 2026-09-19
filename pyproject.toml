@@ -44,7 +44,7 @@ cache-keys = [
   { file = "frontend/*.mjs" },
   { file = "frontend/index.html" },
   { file = "frontend/src/**" },
-  { file = "src/reposteward/web_api/*.py" },
+  { file = "src/reposteward/web/api/*.py" },
 ]
 
 [tool.hatch.build]

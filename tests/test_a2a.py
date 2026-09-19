@@ -18,11 +18,11 @@ from fastapi.testclient import TestClient
 from google.protobuf.json_format import ParseDict
 from test_projects import git
 
-from reposteward.a2a_cli import create_token, read_token
-from reposteward.a2a_server import create_app
-from reposteward.assistance_operations import AssistanceOperations
-from reposteward.local_queue import enqueue
-from reposteward.mcp_bridge import ScopedBridge
+from reposteward.integrations.a2a.cli import create_token, read_token
+from reposteward.integrations.a2a.server import create_app
+from reposteward.integrations.mcp import ScopedBridge
+from reposteward.storage.local_queue import enqueue
+from reposteward.tasks.assistance_operations import AssistanceOperations
 
 
 class A2ATests(unittest.TestCase):
@@ -59,7 +59,7 @@ class A2ATests(unittest.TestCase):
         with (
             self.client() as client,
             patch(
-                "reposteward.github.resolve_token",
+                "reposteward.github.client.resolve_token",
                 side_effect=AssertionError("no GitHub credential"),
             ),
         ):

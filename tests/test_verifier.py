@@ -9,9 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from reposteward.config import RepositoryPolicy, RunnerConfig, SafetyConfig
-from reposteward.models import AgentResult, CommandResult
-from reposteward.verifier import DockerVerifier, VerificationError
+from reposteward.core.config import RepositoryPolicy, RunnerConfig, SafetyConfig
+from reposteward.core.models import AgentResult, CommandResult
+from reposteward.verification.verifier import DockerVerifier, VerificationError
 
 
 def _repository(root: Path) -> None:
@@ -577,7 +577,8 @@ class VerificationSandboxTests(unittest.TestCase):
             for path in (workspace, environment, git_dir):
                 path.mkdir()
             with patch(
-                "reposteward.verifier.subprocess.run", return_value=completed
+                "reposteward.verification.verifier.subprocess.run",
+                return_value=completed,
             ) as run:
                 verifier._run_container(
                     workspace,

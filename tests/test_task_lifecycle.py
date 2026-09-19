@@ -14,14 +14,14 @@ import test_external_verification
 from test_projects import git, repository
 
 from reposteward.cli import main
-from reposteward.external_tasks import TaskConflict
-from reposteward.mcp_bridge import ScopedBridge
-from reposteward.policy import PolicyError
-from reposteward.projects import canonical_digest
-from reposteward.store import Store, StoreError
-from reposteward.task_lifecycle import TaskLifecycle
-from reposteward.task_lifecycle_store import TaskLifecycleRecords
-from reposteward.workbench import Workbench
+from reposteward.integrations.mcp import ScopedBridge
+from reposteward.projects.registry import canonical_digest
+from reposteward.storage.store import Store, StoreError
+from reposteward.tasks.external import TaskConflict
+from reposteward.tasks.lifecycle import TaskLifecycle
+from reposteward.tasks.lifecycle_store import TaskLifecycleRecords
+from reposteward.web.workbench import Workbench
+from reposteward.workflows.policy import PolicyError
 
 
 class TaskLifecycleTests(unittest.TestCase):
@@ -93,7 +93,8 @@ class TaskLifecycleTests(unittest.TestCase):
         before = self.service.inspect(self.task["run_id"])
         raw = self.service.path.read_bytes()
         with patch(
-            "reposteward.github.GitHubClient", side_effect=AssertionError("offline")
+            "reposteward.github.client.GitHubClient",
+            side_effect=AssertionError("offline"),
         ):
             plan = self.plan()
             self.assertEqual(raw, self.service.path.read_bytes())
@@ -266,7 +267,7 @@ class TaskLifecycleTests(unittest.TestCase):
         plan = self.plan()
         with (
             patch(
-                "reposteward.store.Store.update_run",
+                "reposteward.storage.store.Store.update_run",
                 side_effect=RuntimeError("interrupted"),
             ),
             self.assertRaises(RuntimeError),

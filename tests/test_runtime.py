@@ -11,9 +11,13 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from reposteward.cli import main
-from reposteward.config import load_config
-from reposteward.runtime import inspect_database, installation_info, local_diagnostics
-from reposteward.store import SCHEMA_VERSION, Store
+from reposteward.core.config import load_config
+from reposteward.core.runtime import (
+    inspect_database,
+    installation_info,
+    local_diagnostics,
+)
+from reposteward.storage.store import SCHEMA_VERSION, Store
 
 
 class RuntimeTests(unittest.TestCase):
@@ -33,11 +37,11 @@ class RuntimeTests(unittest.TestCase):
             with (
                 patch("subprocess.run", side_effect=AssertionError("no processes")),
                 patch(
-                    "reposteward.store.Store.__init__",
+                    "reposteward.storage.store.Store.__init__",
                     side_effect=AssertionError("no Store"),
                 ),
                 patch(
-                    "reposteward.github.resolve_token",
+                    "reposteward.github.client.resolve_token",
                     side_effect=AssertionError("no credentials"),
                 ),
             ):
@@ -119,7 +123,7 @@ class RuntimeTests(unittest.TestCase):
                 writer.commit()
                 before = {p.name: p.read_bytes() for p in path.parent.iterdir()}
                 with patch(
-                    "reposteward.runtime.sqlite3.connect",
+                    "reposteward.core.runtime.sqlite3.connect",
                     side_effect=AssertionError("no stale immutable read"),
                 ):
                     result = inspect_database(path, supported=22, required_tables=())
@@ -203,13 +207,13 @@ class RuntimeTests(unittest.TestCase):
             }
         )
         with patch(
-            "reposteward.runtime.metadata.distribution", return_value=distribution
+            "reposteward.core.runtime.metadata.distribution", return_value=distribution
         ):
             report = installation_info()
         self.assertEqual(report["source_revision"], "a" * 40)
         self.assertNotIn("SECRET", json.dumps(report))
         with patch(
-            "reposteward.runtime.metadata.distribution",
+            "reposteward.core.runtime.metadata.distribution",
             side_effect=metadata.PackageNotFoundError,
         ):
             self.assertFalse(installation_info()["metadata_available"])
@@ -231,7 +235,7 @@ class RuntimeTests(unittest.TestCase):
         with (
             TemporaryDirectory() as directory,
             patch(
-                "reposteward.config.default_user_config_path",
+                "reposteward.core.config.default_user_config_path",
                 return_value=Path(directory) / "user.toml",
             ),
         ):

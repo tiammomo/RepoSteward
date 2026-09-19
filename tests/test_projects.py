@@ -13,9 +13,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from reposteward.cli import main
-from reposteward.config import load_config
-from reposteward.projects import ProjectError, ProjectRegistry, normalize_remote
-from reposteward.setup import add_repository, initialize_user_config
+from reposteward.core.config import load_config
+from reposteward.core.setup import add_repository, initialize_user_config
+from reposteward.projects.registry import (
+    ProjectError,
+    ProjectRegistry,
+    normalize_remote,
+)
 
 
 def git(root: Path, *args: str) -> str:

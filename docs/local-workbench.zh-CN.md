@@ -70,7 +70,7 @@ API 没有 CORS 授权。只有声明的本地命令接受带同源信息和幂�
 
 ## 接口与验证
 
-`workbench.Workbench` 组合现有只读应用服务；`web_api` 提供 FastAPI 查询与 Pydantic
+`web.workbench.Workbench` 组合现有只读应用服务；`web.api` 提供 FastAPI 查询与 Pydantic
 契约，`web_server` 管理本机 socket 与服务生命周期。React 前端调用 `/api/v1/overview`、
 `projects`、`workspace`、`code`、`tasks`、`task`、`review` 和 `settings`。
 `local_operations` 使用现有队列执行显式本地操作，GitHub 查询与命令见同步说明。
