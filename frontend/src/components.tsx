@@ -27,6 +27,7 @@ const names: Record<string, string> = {
   blocked: "有阻塞",
   complete: "完成",
   partial: "部分完成",
+  superseded: "已由其他尝试接替",
   cached: "GitHub 缓存",
   not_refreshed: "尚未同步",
   refresh_failed: "同步失败",
