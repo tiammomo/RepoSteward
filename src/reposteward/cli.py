@@ -294,6 +294,21 @@ def _parser() -> argparse.ArgumentParser:
     task_checkpoint.add_argument("--idempotency-key", required=True)
     task_checkpoint.add_argument("--input", type=Path, required=True)
 
+    for action in ("resolve-plan", "resolve"):
+        command = task_commands.add_parser(
+            action, help="review or record an external attempt outcome"
+        )
+        command.add_argument("run_id")
+        command.add_argument(
+            "--outcome", choices=("completed", "cancelled", "superseded"), required=True
+        )
+        command.add_argument("--reason", required=True)
+        command.add_argument("--target-run-id", default="")
+        if action == "resolve":
+            command.add_argument("--plan-digest", required=True)
+            command.add_argument("--reviewed-by", required=True)
+            command.add_argument("--idempotency-key", required=True)
+
     verification = subparsers.add_parser(
         "verification", help="verify and query exact external task snapshots"
     )
@@ -1120,6 +1135,27 @@ def main(argv: list[str] | None = None) -> int:
                     if args.contract
                     else None,
                 )
+            elif args.task_command in {"resolve-plan", "resolve"}:
+                from .task_lifecycle import TaskLifecycle
+
+                lifecycle = TaskLifecycle(config)
+                options = {
+                    "outcome": args.outcome,
+                    "reason": args.reason,
+                    "target_run_id": args.target_run_id,
+                }
+                if args.task_command == "resolve":
+                    result = lifecycle.resolve(
+                        args.run_id,
+                        **options,
+                        plan_digest=args.plan_digest,
+                        reviewed_by=args.reviewed_by,
+                        idempotency_key=args.idempotency_key,
+                    )
+                else:
+                    result = lifecycle.plan(args.run_id, **options)
+                _json(result)
+                return 0 if result.get("eligible", True) else 2
             elif args.task_command == "inspect":
                 result = service.inspect(args.run_id, live=args.live)
             elif args.task_command == "current":

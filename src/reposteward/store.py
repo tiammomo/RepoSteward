@@ -25,10 +25,12 @@ from .knowledge_ledger import KNOWLEDGE_MIGRATION
 from .models import Candidate
 from .overview_ledger import OVERVIEW_MIGRATION
 from .protocol import validate_checkpoint, validate_context_pack
+from .task_lifecycle_store import TASK_RESOLUTION_MIGRATION
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
+    23: TASK_RESOLUTION_MIGRATION,
     22: OVERVIEW_MIGRATION,
     21: KNOWLEDGE_MIGRATION,
     20: EXTERNAL_VERIFICATION_MIGRATION,

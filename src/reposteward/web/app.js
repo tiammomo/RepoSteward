@@ -6,6 +6,7 @@
   const labels = {today: "今日待处理", projects: "项目空间", tasks: "任务接续", review: "审阅依据", settings: "设置与诊断"};
   const statusNames = {current: "当前有效", stale: "已过期", not_scanned: "尚未扫描", compatible: "兼容", missing: "尚未创建", migration_required: "需要升级", newer_than_supported: "安装版本过旧", snapshot_required: "等待稳定快照", unavailable: "暂不可用", not_checked: "未核对当前适用性", matches: "匹配当前快照", not_verified: "当前未验证", passed: "历史验证通过", failed: "验证失败", running: "进行中", ready: "准备完成", submitted: "已提交", merged: "已合入", blocked: "有阻塞", complete: "完成", cached: "线上缓存", not_refreshed: "未刷新线上状态", refresh_failed: "线上刷新失败", maintainer: "维护者", contributor: "贡献者", unconfigured: "未配置策略", unknown: "未知"};
   const storageKey = "reposteward-local-session";
+  Object.assign(statusNames, {completed: "已完成", cancelled: "已取消", superseded: "已由新尝试接替"});
   let token = "";
   try { token = sessionStorage.getItem(storageKey) || ""; } catch { /* Storage can be disabled. */ }
   if (location.hash.startsWith("#session=")) {
@@ -236,6 +237,10 @@
     host.append(node("section", "panel panel-pad", section(task.title || c.work_item?.title || "任务目标"), task.url ? link("查看原始 Issue", task.url) : document.createDocumentFragment(), node("p", "meta", external ? `检查点版本 ${c.revision} · ${name(c.remote_freshness)}` : `上下文保存于 ${date(c.context_metadata?.created_at)}`)));
     if (!external) host.append(node("div", "callout", "这是已保存的维护上下文，当前工作区适用性尚未重新核对。"));
     if (external && values(c.validity).length) host.append(node("div", "callout", "当前基线存在变化：", list(c.validity)));
+    if (external && c.resolution) {
+      const resolution = c.resolution.payload;
+      host.append(node("section", "panel panel-pad", section("本次尝试已结束"), pairs([["结果", name(c.status)], ["原因", resolution.operation.reason], ["记录时间", date(c.resolution.created_at)], ["关联尝试", resolution.operation.target_run_id || "无"]]), details("结束依据", resolution)));
+    }
     if (!checkpoint) host.append(empty("尚无检查点", "当前仍可阅读任务目标与原始上下文。"));
     const left = node("div", "", node("section", "panel panel-pad", section("未完成工作"), list(external ? c.open_work : checkpoint?.remaining)), node("section", "panel panel-pad", section("已经做出的决定"), list(checkpoint?.decisions)));
     const right = node("div", "", node("section", "panel panel-pad", section("下一步"), node("p", "", checkpoint?.next_action || "尚未记录"), section("阻塞"), list(checkpoint?.blockers, "尚未记录阻塞。")), node("section", "panel panel-pad", section("接续入口"), command(result.command)));
