@@ -593,6 +593,13 @@ class DockerVerifier:
             docker_command.extend(["-v", f"{git_dir.resolve()}:/reposteward-git:ro"])
         for hostname, address in host_aliases:
             docker_command.extend(["--add-host", f"{hostname}:{address}"])
+        from .verification_execution import record_container
+
+        execution_token = record_container(log_path, container_name)
+        if execution_token:
+            docker_command.extend(
+                ["--label", "reposteward.execution=" + execution_token]
+            )
         docker_command.extend([runner.image, "bash", "-lc", shell_command])
         start = time.monotonic()
         try:

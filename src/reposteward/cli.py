@@ -5,9 +5,11 @@ import importlib.resources
 import json
 import subprocess
 import sys
+from contextvars import ContextVar
 from pathlib import Path
 
 from . import __version__
+from .api_contract import envelope, error_details
 from .batch import render_batch_plan_text
 from .benchmark import (
     BENCHMARK_CATEGORIES,
@@ -32,9 +34,18 @@ from .policy import PolicyError
 from .portfolio import render_portfolio_text
 from .setup import add_repository, initialize_user_config
 
+_MACHINE_OUTPUT = ContextVar("cli_machine_output", default=False)
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        if _MACHINE_OUTPUT.get():
+            raise ValueError("invalid command arguments")
+        super().error(message)
+
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _ArgumentParser(
         prog="reposteward",
         description=(
             "Local-first, policy-gated control plane for turning GitHub issues into "
@@ -49,8 +60,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version", action="version", version=f"reposteward {__version__}"
     )
+    parser.add_argument(
+        "--json-envelope",
+        action="store_true",
+        help="emit a versioned machine response; place before the command",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("version", help="show offline installation metadata as JSON")
+    subparsers.add_parser(
+        "capabilities", help="discover implemented interfaces offline"
+    )
     web = subparsers.add_parser(
         "web", help="open the read-only local maintainer workbench"
     )
@@ -180,7 +199,8 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--plan-digest", required=True)
 
     plugin = subparsers.add_parser(
-        "plugin", help="plan and export a local workspace-bound Codex plugin"
+        "plugin",
+        help="export, diagnose and preview installation of scoped Codex plugins",
     )
     plugin_commands = plugin.add_subparsers(dest="plugin_command", required=True)
     for action in ("plan", "export"):
@@ -189,6 +209,13 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--output", type=Path, required=True)
         if action == "export":
             command.add_argument("--plan-digest", required=True)
+
+    for action in ("doctor", "install-plan"):
+        command = plugin_commands.add_parser(action)
+        command.add_argument("path", type=Path)
+        command.add_argument("--bundle", type=Path, required=True)
+        command.add_argument("--marketplace", type=Path)
+        command.add_argument("--codex-home", type=Path)
 
     overview = subparsers.add_parser(
         "overview", help="read local attention across linked projects"
@@ -286,12 +313,36 @@ def _parser() -> argparse.ArgumentParser:
     task_checkpoint.add_argument("--idempotency-key", required=True)
     task_checkpoint.add_argument("--input", type=Path, required=True)
 
+    for action in ("resolve-plan", "resolve"):
+        command = task_commands.add_parser(
+            action, help="review or record an external attempt outcome"
+        )
+        command.add_argument("run_id")
+        command.add_argument(
+            "--outcome", choices=("completed", "cancelled", "superseded"), required=True
+        )
+        command.add_argument("--reason", required=True)
+        command.add_argument("--target-run-id", default="")
+        if action == "resolve":
+            command.add_argument("--plan-digest", required=True)
+            command.add_argument("--reviewed-by", required=True)
+            command.add_argument("--idempotency-key", required=True)
+
     verification = subparsers.add_parser(
         "verification", help="verify and query exact external task snapshots"
     )
     verification_commands = verification.add_subparsers(
         dest="verification_command", required=True
     )
+    for action in ("reconcile-plan", "reconcile"):
+        command = verification_commands.add_parser(action)
+        command.add_argument("run_id")
+        command.add_argument("verification_id")
+        command.add_argument("--reason", required=True)
+        if action == "reconcile":
+            command.add_argument("--plan-digest", required=True)
+            command.add_argument("--reviewed-by", required=True)
+            command.add_argument("--idempotency-key", required=True)
     for action in ("profiles", "request", "inspect", "list", "evidence"):
         command = verification_commands.add_parser(action)
         command.add_argument("run_id")
@@ -759,6 +810,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _json(value: object) -> None:
+    if _MACHINE_OUTPUT.get():
+        value = envelope(value)
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
@@ -775,8 +828,47 @@ def _runner_dockerfile() -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    token = _MACHINE_OUTPUT.set("--json-envelope" in arguments)
     try:
+        return _main(arguments)
+    finally:
+        _MACHINE_OUTPUT.reset(token)
+
+
+def _command_paths(parser: argparse.ArgumentParser, prefix: str = "") -> list[str]:
+    paths = []
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for name, child in action.choices.items():
+                path = (prefix + " " + name).strip()
+                children = _command_paths(child, path)
+                paths.extend(children or [path])
+    return paths
+
+
+def _main(argv: list[str]) -> int:
+    try:
+        if _MACHINE_OUTPUT.get() and any(
+            x in argv for x in ("--help", "-h", "--version")
+        ):
+            raise ValueError("use capabilities or version in machine mode")
+        parser = _parser()
+        args = parser.parse_args(argv)
+        if _MACHINE_OUTPUT.get():
+            if args.command in {"web", "image"} or (
+                args.command == "mcp" and args.mcp_command == "serve"
+            ):
+                raise ValueError(
+                    "long-lived or subprocess output has no response envelope"
+                )
+            if hasattr(args, "format"):
+                args.format = "json"
+        if args.command == "capabilities":
+            from .capabilities import capabilities
+
+            _json(capabilities(_command_paths(parser)))
+            return 0
         if args.command == "version":
             from .runtime import installation_info
 
@@ -945,6 +1037,30 @@ def main(argv: list[str] | None = None) -> int:
             _json(result)
             return 0
         if args.command == "plugin":
+            if args.plugin_command in {"doctor", "install-plan"}:
+                from .plugin_diagnostics import PluginDiagnostics
+
+                diagnostics = PluginDiagnostics(config)
+                method = (
+                    diagnostics.doctor
+                    if args.plugin_command == "doctor"
+                    else diagnostics.install_plan
+                )
+                result = method(
+                    args.path,
+                    bundle=args.bundle,
+                    marketplace=args.marketplace,
+                    codex_home=args.codex_home,
+                )
+                _json(result)
+                return (
+                    0
+                    if result.get(
+                        "bundle_compatible", result.get("ready_for_client_install")
+                    )
+                    else 2
+                )
+
             from .plugin_bundle import PluginBundle
 
             service = PluginBundle(config)
@@ -1032,6 +1148,30 @@ def main(argv: list[str] | None = None) -> int:
 
                 _json(client_config(config, args.path, client=args.client))
             return 0
+        if args.command == "verification" and args.verification_command in {
+            "reconcile-plan",
+            "reconcile",
+        }:
+            from .verification_recovery import VerificationRecovery
+
+            recovery = VerificationRecovery(config)
+            if args.verification_command == "reconcile-plan":
+                result = recovery.plan(
+                    args.run_id, args.verification_id, reason=args.reason
+                )
+                _json(result)
+                return 0 if result["eligible"] else 2
+            _json(
+                recovery.reconcile(
+                    args.run_id,
+                    args.verification_id,
+                    reason=args.reason,
+                    plan_digest=args.plan_digest,
+                    reviewed_by=args.reviewed_by,
+                    idempotency_key=args.idempotency_key,
+                )
+            )
+            return 0
         if args.command == "verification":
             from .external_verification import ExternalVerification
 
@@ -1088,6 +1228,27 @@ def main(argv: list[str] | None = None) -> int:
                     if args.contract
                     else None,
                 )
+            elif args.task_command in {"resolve-plan", "resolve"}:
+                from .task_lifecycle import TaskLifecycle
+
+                lifecycle = TaskLifecycle(config)
+                options = {
+                    "outcome": args.outcome,
+                    "reason": args.reason,
+                    "target_run_id": args.target_run_id,
+                }
+                if args.task_command == "resolve":
+                    result = lifecycle.resolve(
+                        args.run_id,
+                        **options,
+                        plan_digest=args.plan_digest,
+                        reviewed_by=args.reviewed_by,
+                        idempotency_key=args.idempotency_key,
+                    )
+                else:
+                    result = lifecycle.plan(args.run_id, **options)
+                _json(result)
+                return 0 if result.get("eligible", True) else 2
             elif args.task_command == "inspect":
                 result = service.inspect(args.run_id, live=args.live)
             elif args.task_command == "current":
@@ -1547,7 +1708,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         raise AssertionError(f"unhandled command: {args.command}")
     except (ConfigError, OSError, RuntimeError, ValueError, KeyError) as exc:
-        print(f"reposteward: {exc}", file=sys.stderr)
+        if _MACHINE_OUTPUT.get():
+            print(json.dumps(envelope(error=error_details(exc)), ensure_ascii=False))
+        else:
+            print(f"reposteward: {exc}", file=sys.stderr)
         return 2
 
 

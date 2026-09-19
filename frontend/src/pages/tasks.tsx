@@ -152,6 +152,8 @@ function ContextView({
   const checkpoint = external ? context : obj(context.checkpoint);
   const task = obj(pack.task);
   const contract = obj(external ? context.contract : pack.task_contract);
+  const resolution = obj(context.resolution);
+  const operation = obj(obj(resolution.payload).operation);
   return (
     <>
       <section className="panel">
@@ -175,6 +177,20 @@ function ContextView({
           当前基线存在变化：
           <List items={context.validity} />
         </Notice>
+      )}
+      {external && Boolean(context.resolution) && (
+        <section className="panel">
+          <h2>本次尝试已结束</h2>
+          <Pairs
+            values={[
+              ["结果", statusName(str(context.status))],
+              ["原因", str(operation.reason)],
+              ["记录时间", when(resolution.created_at)],
+              ["关联尝试", str(operation.target_run_id) || "无"],
+            ]}
+          />
+          <Detail title="结束依据" value={resolution.payload} />
+        </section>
       )}
       {!external && !context.checkpoint && (
         <Empty title="尚无检查点">仍可阅读任务目标与原始上下文。</Empty>
