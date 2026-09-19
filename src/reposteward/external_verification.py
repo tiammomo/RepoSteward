@@ -128,8 +128,19 @@ class ExternalVerification:
                     validity.append("verification_profile_changed")
             except VerificationError:
                 validity.append("verification_profile_unavailable")
+        with store._connection() as db:
+            receipt = db.execute(
+                "SELECT payload,created_at FROM verification_reconciliations WHERE verification_id=?",
+                (identifier,),
+            ).fetchone()
         return {
             "evidence_id": f"verification:{identifier}",
+            "reconciliation": {
+                "plan": json.loads(receipt["payload"]),
+                "created_at": receipt["created_at"],
+            }
+            if receipt
+            else None,
             "run_id": run_id,
             "project_id": row["project_id"],
             "revision": row["revision"],
@@ -231,6 +242,9 @@ class ExternalVerification:
                 raise TaskConflict(
                     "verification request is already starting; query its evidence ID"
                 ) from exc
+            from .verification_execution import begin
+
+            begin(directory)
             with store.atomic():
                 with store._connection() as db:
                     if db.execute(

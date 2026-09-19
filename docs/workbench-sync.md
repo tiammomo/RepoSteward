@@ -72,7 +72,8 @@ write. This capability performs no remote writes.
 
 ## Upgrade and packaging
 
-This capability adds state schema 23. The browser and worker refuse an old database
+This capability adds state schema 25, after task lifecycle and verification recovery.
+The browser and worker refuse an old database
 rather than migrating it implicitly. Stop processes using the state, inspect
 `reposteward state plan --expect-state-dir /absolute/state/directory`, then run
 `reposteward state upgrade` with that exact directory and the plan digest printed by

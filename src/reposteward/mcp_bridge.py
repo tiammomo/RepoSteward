@@ -10,8 +10,9 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
+from .api_contract import ResultContractError, error_details, tool_output_schema
 from .config import AppConfig
-from .external_tasks import ExternalTasks, TaskConflict
+from .external_tasks import ExternalTasks
 from .projects import ProjectError, canonical_digest
 
 MAX_REQUEST_BYTES = 120_000
@@ -334,19 +335,8 @@ class ScopedBridge:
 
 
 def error_result(exc: BaseException) -> dict:
-    code = (
-        "conflict"
-        if isinstance(exc, TaskConflict)
-        else "scope_or_policy"
-        if isinstance(exc, ProjectError)
-        else "not_found"
-        if isinstance(exc, KeyError)
-        else "invalid_request"
-        if isinstance(exc, ValueError)
-        else "unavailable"
-    )
     return {
-        "error": {"code": code, "message": str(exc)[:1000], "cli_exit_code": 2},
+        "error": error_details(exc),
         "public_write": False,
     }
 
@@ -376,6 +366,7 @@ def create_server(config: AppConfig, workspace: Path, *, expected_scope: str = "
                     name=name,
                     description=DESCRIPTIONS[name],
                     input_schema=schema,
+                    output_schema=tool_output_schema(name),
                     annotations=types.ToolAnnotations(
                         read_only_hint=name
                         in {"project", "context", "evidence", "understanding"},
@@ -403,6 +394,10 @@ def create_server(config: AppConfig, workspace: Path, *, expected_scope: str = "
             result = await anyio.to_thread.run_sync(
                 work, abandon_on_cancel=True, limiter=limiter
             )
+            try:
+                Draft202012Validator(tool_output_schema(params.name)).validate(result)
+            except ValidationError as exc:
+                raise ResultContractError("invalid application result") from exc
         except anyio.get_cancelled_exc_class():
             cancelled.set()
             if started.is_set():
@@ -417,6 +412,7 @@ def create_server(config: AppConfig, workspace: Path, *, expected_scope: str = "
                         type="text", text=json.dumps(error, ensure_ascii=False)
                     )
                 ],
+                structured_content=error,
                 is_error=True,
             )
         return types.CallToolResult(
