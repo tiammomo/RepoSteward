@@ -334,6 +334,15 @@ def _parser() -> argparse.ArgumentParser:
     verification_commands = verification.add_subparsers(
         dest="verification_command", required=True
     )
+    for action in ("reconcile-plan", "reconcile"):
+        command = verification_commands.add_parser(action)
+        command.add_argument("run_id")
+        command.add_argument("verification_id")
+        command.add_argument("--reason", required=True)
+        if action == "reconcile":
+            command.add_argument("--plan-digest", required=True)
+            command.add_argument("--reviewed-by", required=True)
+            command.add_argument("--idempotency-key", required=True)
     for action in ("profiles", "request", "inspect", "list", "evidence"):
         command = verification_commands.add_parser(action)
         command.add_argument("run_id")
@@ -1138,6 +1147,30 @@ def _main(argv: list[str]) -> int:
                 from .mcp_config import client_config
 
                 _json(client_config(config, args.path, client=args.client))
+            return 0
+        if args.command == "verification" and args.verification_command in {
+            "reconcile-plan",
+            "reconcile",
+        }:
+            from .verification_recovery import VerificationRecovery
+
+            recovery = VerificationRecovery(config)
+            if args.verification_command == "reconcile-plan":
+                result = recovery.plan(
+                    args.run_id, args.verification_id, reason=args.reason
+                )
+                _json(result)
+                return 0 if result["eligible"] else 2
+            _json(
+                recovery.reconcile(
+                    args.run_id,
+                    args.verification_id,
+                    reason=args.reason,
+                    plan_digest=args.plan_digest,
+                    reviewed_by=args.reviewed_by,
+                    idempotency_key=args.idempotency_key,
+                )
+            )
             return 0
         if args.command == "verification":
             from .external_verification import ExternalVerification

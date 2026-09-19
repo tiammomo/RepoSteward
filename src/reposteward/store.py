@@ -26,10 +26,12 @@ from .models import Candidate
 from .overview_ledger import OVERVIEW_MIGRATION
 from .protocol import validate_checkpoint, validate_context_pack
 from .task_lifecycle_store import TASK_RESOLUTION_MIGRATION
+from .verification_recovery_store import VERIFICATION_RECOVERY_MIGRATION
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
+    24: VERIFICATION_RECOVERY_MIGRATION,
     23: TASK_RESOLUTION_MIGRATION,
     22: OVERVIEW_MIGRATION,
     21: KNOWLEDGE_MIGRATION,
