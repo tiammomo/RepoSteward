@@ -66,6 +66,9 @@ def _parser() -> argparse.ArgumentParser:
         help="emit a versioned machine response; place before the command",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    from .operation_api import add_parser
+
+    add_parser(subparsers)
     subparsers.add_parser("version", help="show offline installation metadata as JSON")
     subparsers.add_parser(
         "capabilities", help="discover implemented interfaces offline"
@@ -1175,6 +1178,11 @@ def _main(argv: list[str]) -> int:
                     include_inactive=args.all,
                 )
             _json(result)
+            return 0
+        if args.command == "operation":
+            from .operation_api import cli
+
+            _json(cli(config, args))
             return 0
         if args.command == "mcp":
             if args.mcp_command == "serve":

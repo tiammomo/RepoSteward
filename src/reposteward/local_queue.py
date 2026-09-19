@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .store import Store
 
-LOCAL_ACTIONS = frozenset({"github.sync"})
+ASSISTANCE_ACTIONS = frozenset({"assistance.verification", "assistance.understanding"})
+LOCAL_ACTIONS = frozenset({"github.sync"}) | ASSISTANCE_ACTIONS
 
 
 def encoded(value: object) -> str:

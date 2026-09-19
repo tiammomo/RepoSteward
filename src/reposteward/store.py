@@ -3831,7 +3831,15 @@ class Store:
         now: datetime | None = None,
         operation_family: str = "native",
         account_digest: str = "",
+        task_id: str = "",
+        actions: tuple[str, ...] = (),
     ) -> list[dict[str, Any]]:
+        if task_id and not hex_id(task_id):
+            raise ValueError("invalid queue task selector")
+        if len(actions) > 20 or any(
+            not re.fullmatch(r"[a-z][a-z_.]{0,63}", a) for a in actions
+        ):
+            raise ValueError("invalid queue action selector")
         if operation_family not in {"native", "local"}:
             raise ValueError("queue claims require one explicit operation family")
         if (operation_family == "local" and not hex_id(account_digest, 64)) or (
@@ -3858,6 +3866,8 @@ class Store:
                   AND attempt_count>=max_attempts
                   AND (?='' OR repository=?)
                   AND operation_family=? AND account_digest=?
+                  AND (?='' OR id=?)
+                  AND (?='[]' OR action IN (SELECT value FROM json_each(?)))
                 ORDER BY sequence ASC
                 LIMIT ?
                 """,
@@ -3867,6 +3877,10 @@ class Store:
                     normalized_repository,
                     operation_family,
                     account_digest,
+                    task_id,
+                    task_id,
+                    json.dumps(actions),
+                    json.dumps(actions),
                     limit,
                 ),
             ).fetchall()
@@ -3905,6 +3919,8 @@ class Store:
                   AND tasks.attempt_count<tasks.max_attempts
                   AND (?='' OR tasks.repository=?)
                   AND tasks.operation_family=? AND tasks.account_digest=?
+                  AND (?='' OR tasks.id=?)
+                  AND (?='[]' OR tasks.action IN (SELECT value FROM json_each(?)))
                   AND (
                     (tasks.state IN ('pending', 'failed') AND tasks.available_at<=?)
                     OR (tasks.state='running' AND tasks.lease_expires_at<=?)
@@ -3920,6 +3936,10 @@ class Store:
                     normalized_repository,
                     operation_family,
                     account_digest,
+                    task_id,
+                    task_id,
+                    json.dumps(actions),
+                    json.dumps(actions),
                     current_text,
                     current_text,
                     limit,
@@ -4026,8 +4046,8 @@ class Store:
         error_code: str,
         now: datetime | None,
     ) -> dict[str, Any]:
-        if state not in {"completed", "failed"}:
-            raise ValueError("queue finish state must be completed or failed")
+        if state not in {"completed", "failed", "cancelled"}:
+            raise ValueError("invalid queue finish state")
         if error_code and not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error_code):
             raise ValueError("queue error_code has an invalid format")
         current, current_text = self._queue_timestamp(now)
@@ -4127,6 +4147,18 @@ class Store:
             manual_required=None,
             error_code=error_code,
             now=now,
+        )
+
+    def acknowledge_queue_cancellation(self, lease: QueueLease) -> dict[str, Any]:
+        """A live lease holder confirms that execution actually stopped."""
+        return self._finish_queue_task(
+            lease,
+            state="cancelled",
+            event="cancelled",
+            payload={"status": "cancelled", "public_write": False},
+            manual_required=False,
+            error_code="operator_cancelled",
+            now=None,
         )
 
     def cancel_queue_task(

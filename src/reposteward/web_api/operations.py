@@ -44,6 +44,8 @@ class Operation(Record):
     last_error_code: str
     can_cancel: bool
     can_retry: bool
+    cancel_requested: bool = False
+    stages_omitted: int = 0
     stages: list[dict[str, JsonValue]]
     attempts: list[dict[str, JsonValue]]
 

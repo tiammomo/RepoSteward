@@ -100,6 +100,7 @@ def tool_output_schema(name: str) -> dict:
         "evidence": [],
         "verification": ["run_id", "public_write"],
         "understanding": ["status", "public_write"],
+        "operation": ["schema_version", "public_write"],
     }[name]
     fields.update(
         {
@@ -128,6 +129,23 @@ def tool_output_schema(name: str) -> dict:
                 "availability": {"enum": ["available", "unknown"]},
             }
         )
+    if name == "operation":
+        fields.pop("revision")
+        fields.update(
+            {
+                "schema_version": {"const": 1},
+                "revision": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                "id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+                "state": {
+                    "enum": ["pending", "running", "completed", "failed", "cancelled"]
+                },
+                "items": {"type": "array"},
+            }
+        )
+        success["oneOf"] = [
+            {"required": ["id", "state", "revision"]},
+            {"required": ["items", "next_before"]},
+        ]
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",

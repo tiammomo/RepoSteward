@@ -290,6 +290,9 @@ class BridgeTests(unittest.TestCase):
         from mcp import Client, StdioServerParameters
 
         environment, arguments = self.stdio_environment()
+        from reposteward.understanding import Understanding
+
+        Understanding(self.config.state_dir / "understanding").scan(self.repo)
 
         async def run():
             for mode in ("legacy", "2026-07-28"):
@@ -304,6 +307,19 @@ class BridgeTests(unittest.TestCase):
                     self.assertEqual(
                         {tool.name for tool in listing.tools}, set(SCHEMAS)
                     )
+                    operation = await client.call_tool(
+                        "operation",
+                        {
+                            "action": "start_understanding",
+                            "idempotency_key": "stdio-report",
+                        },
+                    )
+                    self.assertFalse(operation.is_error)
+                    identifier = operation.structured_content["id"]
+                    observed = await client.call_tool(
+                        "operation", {"action": "get", "operation_id": identifier}
+                    )
+                    self.assertEqual(observed.structured_content["state"], "pending")
                     result = await client.call_tool(
                         "context", {"run_id": self.task["run_id"]}
                     )

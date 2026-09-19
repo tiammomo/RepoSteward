@@ -410,6 +410,11 @@
             "title": "Can Retry",
             "type": "boolean"
           },
+          "cancel_requested": {
+            "default": false,
+            "title": "Cancel Requested",
+            "type": "boolean"
+          },
           "created_at": {
             "title": "Created At",
             "type": "string"
@@ -447,6 +452,11 @@
             },
             "title": "Stages",
             "type": "array"
+          },
+          "stages_omitted": {
+            "default": 0,
+            "title": "Stages Omitted",
+            "type": "integer"
           },
           "state": {
             "enum": [

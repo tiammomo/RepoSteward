@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from .github import GitHubClient, GitHubReadError
 from .github_sync import GitHubSync, account_key, observations
-from .local_queue import digest, enqueue, hex_id, plan_for
+from .local_queue import ASSISTANCE_ACTIONS, digest, enqueue, hex_id, plan_for
 from .store import SCHEMA_VERSION, Store, StoreError, utc_now
 from .workbench import Workbench
 
@@ -111,6 +111,13 @@ class LocalOperations:
         task = self._task(store, task_id)
         attempts = store.queue_attempts(task_id, limit=50) if history else []
         with store._connection() as db:
+            cancel_requested = (
+                db.execute(
+                    "SELECT 1 FROM local_operation_requests WHERE account_digest=? AND action=? AND task_id=? LIMIT 1",
+                    (self.account, "cancel:" + task_id, task_id),
+                ).fetchone()
+                is not None
+            )
             rows = (
                 db.execute(
                     "SELECT * FROM local_operation_results WHERE task_id=? ORDER BY generation DESC,created_at DESC LIMIT 100",
@@ -132,6 +139,11 @@ class LocalOperations:
                     "result": body,
                 }
             )
+        stages_omitted = (
+            max(0, len(stages) - 1) if task["action"] in ASSISTANCE_ACTIONS else 0
+        )
+        if stages_omitted:
+            stages = stages[-1:]
         return {
             key: task[key]
             for key in (
@@ -151,11 +163,18 @@ class LocalOperations:
         } | {
             "project_id": task["scope_key"],
             "revision": revision(task),
-            "can_cancel": task["state"] == "pending",
-            "can_retry": task["state"] in {"failed", "cancelled"},
+            "can_cancel": not cancel_requested
+            and (
+                task["state"] == "pending"
+                or (task["action"] in ASSISTANCE_ACTIONS and task["state"] == "running")
+            ),
+            "cancel_requested": cancel_requested,
+            "can_retry": task["action"] == "github.sync"
+            and task["state"] in {"failed", "cancelled"},
             "lease_expired": task["lease_expired"],
             "attempts": attempts,
             "stages": stages,
+            "stages_omitted": stages_omitted,
             "public_write": False,
         }
 
@@ -220,17 +239,31 @@ class LocalOperations:
                         "revision_changed", "操作状态已变化，请刷新后重试。"
                     )
                 if action == "cancel":
-                    if task["state"] != "pending":
+                    if (
+                        task["state"] == "running"
+                        and task["action"] in ASSISTANCE_ACTIONS
+                    ):
+                        db.execute(
+                            "UPDATE queue_tasks SET updated_at=? WHERE id=?",
+                            (utc_now(), task_id),
+                        )
+                    elif task["state"] != "pending":
                         raise OperationError(
                             "not_cancellable", "只有尚未开始的操作可以取消。"
                         )
-                    store.cancel_queue_task(
-                        task_id,
-                        cancelled_by=self.config.github.login,
-                        operation_family="local",
-                        account_digest=self.account,
-                    )
+                    else:
+                        store.cancel_queue_task(
+                            task_id,
+                            cancelled_by=self.config.github.login,
+                            operation_family="local",
+                            account_digest=self.account,
+                        )
                 else:
+                    if task["action"] in ASSISTANCE_ACTIONS:
+                        raise OperationError(
+                            "reconciliation_required",
+                            "请先核对原始验证依据，再通过作用域内的 operation reconcile 接续记录。",
+                        )
                     if task["state"] not in {"failed", "cancelled"}:
                         raise OperationError("not_retryable", "当前操作尚不需要重试。")
                     store.requeue_queue_task(
@@ -412,6 +445,7 @@ class LocalOperations:
                 operation_family="local",
                 account_digest=self.account,
                 lease_seconds=120,
+                actions=("github.sync",),
             )
             if not claimed:
                 return False

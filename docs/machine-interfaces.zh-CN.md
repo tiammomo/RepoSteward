@@ -28,11 +28,12 @@ reposteward --json-envelope task inspect RUN_ID
 所有错误默认 `retryable=false`。客户端先根据 `next_action` 读取当前事实。
 错误码不授予重放写操作的权限；已有幂等键、审阅摘要和独立发布门禁继续生效。
 
-MCP 保留六类工具的既有成功结果，同时声明输出 JSON Schema，并在服务端检查
+MCP 保留既有工具的成功结果，同时声明输出 JSON Schema，并在服务端检查
 返回结构。错误同时提供 `isError`、结构化错误和旧客户端可读取的文本。
 输出 schema 保证稳定的路由字段并允许追加业务字段；不是整个持久化模型的冻结。
 Context Pack/Checkpoint 使用自己的版本；MCP 协议版本由 SDK 协商，不能用 CLI
 envelope 版本或数据库版本替代。
 
 官方依据：[MCP 工具与输出 schema](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)。
-这项交付不提供持久异步 MCP Tasks 或 A2A；后续接入将复用应用服务，分别声明能力。
+持久异步操作使用普通 `operation` 工具，见[异步操作](assistance-operations.zh-CN.md)。
+它不声明实验性 MCP Tasks 协议能力；A2A 由独立适配器提供。

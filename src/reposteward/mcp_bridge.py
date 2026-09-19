@@ -13,6 +13,7 @@ from jsonschema.exceptions import ValidationError
 from .api_contract import ResultContractError, error_details, tool_output_schema
 from .config import AppConfig
 from .external_tasks import ExternalTasks
+from .operation_api import OPERATION_SCHEMA
 from .projects import ProjectError, canonical_digest
 
 MAX_REQUEST_BYTES = 120_000
@@ -35,6 +36,7 @@ def _object(properties: dict, required: tuple[str, ...] = ()) -> dict:
 
 
 SCHEMAS = {
+    "operation": OPERATION_SCHEMA,
     "project": _object({}),
     "context": _object(
         {
@@ -178,6 +180,7 @@ SCHEMAS = {
     },
 }
 DESCRIPTIONS = {
+    "operation": "Enqueue or inspect durable verification and project-report jobs in this workspace. Poll by operation ID after reconnecting. Execution requires an explicit CLI worker; cancellation requests do not imply execution stopped. This ordinary tool does not implement experimental MCP Tasks.",
     "understanding": "Read project overview, question-focused implementation/test reading routes and cited source lines. Static facts and repository declarations are distinct. Requires an explicit CLI scan; never scans, executes project code or writes from MCP.",
     "project": "Inspect the one workspace explicitly bound to this local server.",
     "context": "Read the current task contract, open work, decisions and verification references within a budget.",
@@ -245,7 +248,11 @@ class ScopedBridge:
             # Do not echo arbitrary rejected input back into another context.
             raise ValueError("tool arguments do not match the declared schema") from exc
         linked = self._scope(arguments.get("run_id"))
-        if name == "project":
+        if name == "operation":
+            from .operation_api import call
+
+            result = call(self, arguments, cancel_event=cancel_event)
+        elif name == "project":
             result = {
                 "project": linked["project"],
                 "binding_id": linked["binding"]["id"],

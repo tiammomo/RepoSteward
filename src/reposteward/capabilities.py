@@ -45,6 +45,8 @@ def capabilities(command_paths: list[str]) -> dict:
                 for name, schema in SCHEMAS.items()
             },
             "durable_async_tasks": False,
+            "durable_operations": True,
+            "operation_worker": "explicit_cli",
             "public_write_tools": False,
             "client_health": "not_probed",
         },
