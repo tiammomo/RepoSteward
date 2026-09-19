@@ -21,7 +21,8 @@ reposteward --json-envelope doctor --local --workspace /path/to/project \
 
 选择已审阅提交构建的 wheel，并保存提交 SHA 与 wheel 的 SHA256。当前包版本为
 `0.1.0`，多个开发提交可能使用相同版本号，单独比较版本字符串不足以确认代码相同。
-这里不假定 PyPI 已发布包含本文命令的版本。
+这里不假定 PyPI 已发布包含本文命令的版本。版本来源、构建摘要校验、正式发布与回退规则
+见[版本管理指南](releases.md)，功能变更见[CHANGELOG](../CHANGELOG.md)。
 
 在构建源码的目录执行 `uv build` 后，从绝对 wheel 路径安装到 uv 的独立工具环境：
 
