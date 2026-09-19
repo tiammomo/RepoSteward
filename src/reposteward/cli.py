@@ -424,6 +424,14 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="require this effective state directory in local mode",
     )
+    doctor.add_argument(
+        "--workspace",
+        type=Path,
+        help="explicit workspace for combined local plugin diagnosis",
+    )
+    doctor.add_argument("--bundle", type=Path, help="explicit exported plugin bundle")
+    doctor.add_argument("--marketplace", type=Path)
+    doctor.add_argument("--codex-home", type=Path)
     image = subparsers.add_parser("image", help="manage the isolated verifier image")
     image.add_argument("action", choices=("build",))
 
@@ -912,21 +920,48 @@ def _main(argv: list[str]) -> int:
         if args.command == "doctor" and args.local:
             from .runtime import local_diagnostics
 
+            if bool(args.workspace) != bool(args.bundle) or (
+                (args.marketplace or args.codex_home) and not args.bundle
+            ):
+                raise ConfigError(
+                    "combined diagnosis requires both --workspace and --bundle"
+                )
+
             try:
                 local_config = load_config(args.config, include_user=True)
             except ConfigError:
                 local_config = None
-            report, ok = local_diagnostics(
-                local_config, expected_state_dir=args.expect_state_dir
-            )
+            if args.bundle:
+                from .runtime_alignment import alignment_report
+
+                report, ok = alignment_report(
+                    local_config,
+                    workspace=args.workspace,
+                    bundle=args.bundle,
+                    expected_state_dir=args.expect_state_dir,
+                    marketplace=args.marketplace,
+                    codex_home=args.codex_home,
+                )
+            else:
+                report, ok = local_diagnostics(
+                    local_config, expected_state_dir=args.expect_state_dir
+                )
             if local_config is None and args.config:
                 report["configuration"]["selected_path"] = str(
                     Path(args.config).expanduser().resolve()
                 )
             _json(report)
             return 0 if ok else 1
-        if args.command == "doctor" and args.expect_state_dir:
-            raise ConfigError("--expect-state-dir requires doctor --local")
+        if args.command == "doctor" and any(
+            (
+                args.expect_state_dir,
+                args.workspace,
+                args.bundle,
+                args.marketplace,
+                args.codex_home,
+            )
+        ):
+            raise ConfigError("local diagnostic options require doctor --local")
         if args.command == "init":
             _json(
                 initialize_user_config(
