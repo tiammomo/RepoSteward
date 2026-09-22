@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 from pathlib import Path
@@ -47,6 +49,45 @@ def _dependencies(snapshot: dict, paths: tuple[str, ...]) -> str:
             if any(_matches(entry["path"], path) for path in paths)
         ]
     )
+
+
+def _cursor_after(cursor: str, query: str) -> tuple[str, str] | None:
+    if not isinstance(cursor, str) or len(cursor) > 2048:
+        raise ValueError("invalid knowledge cursor")
+    if not cursor:
+        return None
+    try:
+        value = json.loads(base64.b64decode(cursor, altchars=b"-_", validate=True))
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"version", "query", "after"}
+            or type(value["version"]) is not int
+            or value["version"] != 1
+            or value["query"] != query
+            or not isinstance(value["after"], list)
+            or len(value["after"]) != 2
+        ):
+            raise ValueError("invalid cursor binding")
+        updated, identifier = value["after"]
+        if (
+            not isinstance(updated, str)
+            or not 1 <= len(updated) <= 64
+            or not isinstance(identifier, str)
+            or not re.fullmatch(r"[0-9a-f]{32}", identifier)
+        ):
+            raise ValueError("invalid cursor position")
+        return updated, identifier
+    except (ValueError, binascii.Error, UnicodeError) as exc:
+        raise ValueError("invalid knowledge cursor or changed query scope") from exc
+
+
+def _next_cursor(query: str, row: dict) -> str:
+    return base64.urlsafe_b64encode(
+        json.dumps(
+            {"version": 1, "query": query, "after": [row["updated_at"], row["id"]]},
+            separators=(",", ":"),
+        ).encode()
+    ).decode()
 
 
 class ProjectKnowledge:
@@ -371,28 +412,55 @@ class ProjectKnowledge:
         scope_paths: tuple[str, ...] = (".",),
         limit: int = 5,
         include_inactive: bool = False,
+        cursor: str = "",
     ) -> dict:
         paths = _paths(scope_paths)
         if type(limit) is not int or not 1 <= limit <= 50:
             raise ValueError("knowledge limit must be between 1 and 50")
         store, record = self._task(run_id)
+        query = canonical_digest(
+            {
+                "project_id": record["project_id"],
+                "binding_id": record["binding_id"],
+                "scope_paths": paths,
+                "include_inactive": include_inactive,
+            }
+        )
+        after = _cursor_after(cursor, query)
         repository = store.run(run_id)["repository"]
         snapshot = self.tasks._snapshot(Path(record["workspace_root"]), repository)
+        clauses, parameters = ["project_id=?"], [record["project_id"]]
+        if not include_inactive:
+            clauses.append("status='reviewed'")
+        if "." not in paths:
+            overlaps = []
+            for path in paths:
+                overlaps.append(
+                    "(scope.value='.' OR scope.value=? OR substr(scope.value,1,?)=? "
+                    "OR substr(?,1,length(scope.value)+1)=scope.value||'/')"
+                )
+                parameters.extend((path, len(path) + 1, path + "/", path))
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(scope_paths) AS scope WHERE "
+                + " OR ".join(overlaps)
+                + ")"
+            )
+        if after:
+            clauses.append("(updated_at<? OR (updated_at=? AND id<?))")
+            parameters.extend((after[0], after[0], after[1]))
         with store._connection() as db:
             rows = db.execute(
-                "SELECT id FROM project_knowledge WHERE project_id=? ORDER BY updated_at DESC,id LIMIT 201",
-                (record["project_id"],),
+                "SELECT * FROM project_knowledge WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY updated_at DESC,id DESC LIMIT 201",
+                parameters,
             ).fetchall()
-        entries, suppressed = [], 0
-        for row in rows[:200]:
-            entry = self._row(store, record["project_id"], row["id"])
-            if not any(
-                _matches(left, right) or _matches(right, left)
-                for left in paths
-                for right in entry["scope_paths"]
-            ):
-                suppressed += 1
-                continue
+        entries, suppressed, continuation = [], 0, ""
+        # Bound live evidence checks, even if all matching records are stale.
+        for index, row in enumerate(rows[:200]):
+            entry = dict(row)
+            for field in ("scope_paths", "conditions", "evidence", "review"):
+                entry[field] = json.loads(entry[field])
             reasons = self._validity(entry, snapshot, repository)
             entry["effective_status"] = (
                 "stale"
@@ -404,12 +472,18 @@ class ProjectKnowledge:
                 suppressed += 1
                 continue
             entries.append(entry)
+            if len(entries) == limit and index + 1 < len(rows):
+                continuation = _next_cursor(query, entry)
+        if not continuation and len(entries) < limit and len(rows) > 200:
+            continuation = _next_cursor(query, rows[199])
         return {
             "project_id": record["project_id"],
             "entries": entries[:limit],
             "omitted": max(0, len(entries) - limit),
             "suppressed": suppressed,
             "scan_incomplete": len(rows) > 200,
+            "scanned": min(len(rows), 200),
+            "next_cursor": continuation,
             "scope_paths": list(paths),
             "remote_freshness": "not_refreshed",
             "public_write": False,

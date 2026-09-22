@@ -1090,6 +1090,21 @@ reposteward task context <run-id> --scope-path src --format markdown
 声明路径也承担重验范围，需要审阅人确认依赖范围完整。查询只核对本地证据，线上
 来源是否更新仍需明确刷新。`--all` 可查看候选、过期与被替代条目。
 
+查询先筛选状态与路径范围，再按更新时间及 ID 降序核对最多 200 条匹配记录。
+新增候选和无关路径不会挤出范围内的已审阅知识。`scanned` 是本次核对数量，
+`suppressed` 是其中未通过有效性检查的数量，`omitted` 只统计本次窗口内超过返回
+上限的有效结果，不是整个项目的遗漏总数。`scan_incomplete` 表示还有未核对记录。
+只要 `next_cursor` 非空，即可沿用同一范围和 `--all` 设置继续查询；即使当前页为空也应如此：
+
+```bash
+reposteward knowledge list <run-id> --scope-path src --cursor <next-cursor>
+```
+
+游标绑定项目、工作区和查询范围；它只定位下一页，不授予访问或审阅权限。
+分页是实时视图，期间条目被审阅或替代会改变排序；需要最新完整视图时从首重新查询，
+并按 ID 去重。task context 的 `knowledge` 保留同样的继续线索，Agent 可以通过 CLI
+按需取回，避免一次把全部历史知识送入提示。
+
 更新经验时在新提案中设置 `supersedes`，新提案审阅通过后才原子替代旧条目，保留
 历史关系。重复提案和相同审阅幂等。跨项目查询隔离，不自动把业务经验升级为通用
 偏好，不复制原生聊天或改写项目的 AGENTS/CLAUDE/skills 文件。

@@ -277,3 +277,139 @@ class KnowledgeTests(unittest.TestCase):
         )
         self.assertEqual(bounded["preferences"]["omitted"], 10)
         self.assertEqual(bounded["contract"], full["contract"])
+
+    def seed_history(
+        self, entry, count, *, offset=0, status="candidate", paths=None, conditions=None
+    ):
+        with self.service._store(write=True)._connection() as db:
+            for index in range(offset + 1, offset + count + 1):
+                db.execute(
+                    """INSERT INTO project_knowledge
+                    SELECT ?,project_id,origin_run_id,?,statement,?,?,evidence,
+                    dependencies_digest,'','',review,created_at,'2099-01-01T00:00:00+00:00'
+                    FROM project_knowledge WHERE id=?""",
+                    (
+                        f"{index:032x}",
+                        status,
+                        json.dumps(paths or ["source.txt"]),
+                        json.dumps(conditions or {}),
+                        entry["id"],
+                    ),
+                )
+
+    def test_new_candidates_and_unrelated_scopes_do_not_hide_reviewed_memory(self):
+        entry = self.propose()
+        self.promote(entry["id"])
+        self.seed_history(entry, 201)
+        self.seed_history(
+            entry, 201, offset=201, status="reviewed", paths=["source.txt-other"]
+        )
+        report = self.knowledge.list(self.run_id, scope_paths=("source.txt",))
+        self.assertEqual([item["id"] for item in report["entries"]], [entry["id"]])
+        self.assertEqual(report["scanned"], 1)
+        self.assertFalse(report["scan_incomplete"])
+        self.assertEqual(report["next_cursor"], "")
+        context = self.service.context(self.run_id, scope_paths=("source.txt",))
+        self.assertEqual(
+            context["knowledge"]["entries"][0]["evidence_id"],
+            "knowledge:" + entry["id"],
+        )
+
+    def test_empty_stale_window_has_a_bounded_continuation(self):
+        entry = self.propose()
+        self.promote(entry["id"])
+        self.seed_history(
+            entry, 201, status="reviewed", conditions={"branch": "not-this-branch"}
+        )
+        with patch.object(
+            self.knowledge, "_validity", wraps=self.knowledge._validity
+        ) as check:
+            first = self.knowledge.list(self.run_id)
+        self.assertEqual(check.call_count, 200)
+        self.assertEqual(first["entries"], [])
+        self.assertTrue(first["scan_incomplete"])
+        self.assertTrue(first["next_cursor"])
+        second = self.knowledge.list(self.run_id, cursor=first["next_cursor"])
+        self.assertEqual([item["id"] for item in second["entries"]], [entry["id"]])
+        self.assertEqual(second["next_cursor"], "")
+        context = self.service.context(self.run_id, scope_paths=("source.txt",))
+        self.assertTrue(context["knowledge"]["next_cursor"])
+        self.assertEqual(context["knowledge"]["entries"], [])
+
+    def test_keyset_pages_do_not_skip_eligible_rows_with_tied_timestamps(self):
+        entry = self.propose()
+        self.promote(entry["id"])
+        self.seed_history(entry, 6, status="reviewed")
+        first = self.knowledge.list(self.run_id, limit=2)
+        second = self.knowledge.list(self.run_id, limit=3, cursor=first["next_cursor"])
+        third = self.knowledge.list(self.run_id, limit=3, cursor=second["next_cursor"])
+        ids = [
+            item["id"] for page in (first, second, third) for item in page["entries"]
+        ]
+        self.assertEqual(ids, [f"{i:032x}" for i in range(6, 0, -1)] + [entry["id"]])
+        self.assertEqual(third["next_cursor"], "")
+        output = io.StringIO()
+        with (
+            patch("reposteward.cli.load_config", return_value=self.config),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(
+                main(
+                    [
+                        "knowledge",
+                        "list",
+                        self.run_id,
+                        "--limit",
+                        "3",
+                        "--cursor",
+                        first["next_cursor"],
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(
+            [item["id"] for item in json.loads(output.getvalue())["entries"]], ids[2:5]
+        )
+
+    def test_cursor_is_bound_to_workspace_and_query_and_validates_shape(self):
+        entry = self.propose()
+        self.promote(entry["id"])
+        self.seed_history(entry, 2, status="reviewed")
+        cursor = self.knowledge.list(self.run_id, limit=1)["next_cursor"]
+        for options in ({"scope_paths": ("source.txt",)}, {"include_inactive": True}):
+            with self.assertRaisesRegex(ValueError, "cursor"):
+                self.knowledge.list(self.run_id, cursor=cursor, **options)
+        store, record = self.knowledge._task(self.run_id)
+        for field in ("binding_id", "project_id"):
+            with (
+                patch.object(
+                    self.knowledge,
+                    "_task",
+                    return_value=(store, {**record, field: "other"}),
+                ),
+                self.assertRaisesRegex(ValueError, "cursor"),
+            ):
+                self.knowledge.list(self.run_id, cursor=cursor)
+        for invalid in ("!", "W10=", "bnVsbA==", "e30=", "x" * 2049, 42):
+            with self.assertRaisesRegex(ValueError, "cursor"):
+                self.knowledge.list(self.run_id, cursor=invalid)
+
+    def test_scope_components_are_literal_and_overlap_in_both_directions(self):
+        entry = self.propose()
+        scopes = ["src/a_b%/child.py", "src/aXbZ/child.py", "src/a_b%-other", "."]
+        for index, path in enumerate(scopes):
+            self.seed_history(entry, 1, offset=index, paths=[path])
+        report = self.knowledge.list(
+            self.run_id, scope_paths=("src/a_b%",), include_inactive=True
+        )
+        self.assertEqual(
+            {item["scope_paths"][0] for item in report["entries"]}, {scopes[0], "."}
+        )
+        report = self.knowledge.list(
+            self.run_id,
+            scope_paths=("src/a_b%/child.py/nested",),
+            include_inactive=True,
+        )
+        self.assertEqual(
+            {item["scope_paths"][0] for item in report["entries"]}, {scopes[0], "."}
+        )

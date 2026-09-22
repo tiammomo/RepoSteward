@@ -265,6 +265,7 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--scope-path", action="append", default=[])
             command.add_argument("--limit", type=int, default=5)
             command.add_argument("--all", action="store_true")
+            command.add_argument("--cursor", default="")
 
     mcp = subparsers.add_parser(
         "mcp", help="serve scoped local task assistance to existing clients"
@@ -1197,6 +1198,7 @@ def _main(argv: list[str]) -> int:
                     scope_paths=tuple(args.scope_path) or (".",),
                     limit=args.limit,
                     include_inactive=args.all,
+                    cursor=args.cursor,
                 )
             _json(result)
             return 0
