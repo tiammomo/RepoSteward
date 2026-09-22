@@ -45,6 +45,100 @@ class TaskContractTests(unittest.TestCase):
         )
         validate_context_pack(fitted.to_dict())
 
+    def test_handoff_budget_trims_claims_but_retains_pending_work_and_evidence(self):
+        previous = {
+            "id": "prior-checkpoint",
+            "remaining": ["Preserve the caller's retry behavior"],
+            "next_action": "Check the failure path before implementing",
+            "blockers": ["The previous fixture did not exercise interrupted writes"],
+            "decisions": [
+                {
+                    "statement": "Reuse the existing queue",
+                    "rationale": "One durable state",
+                    "evidence": [],
+                }
+            ],
+            "risks": ["An interrupted request may already have completed"],
+            "evidence": [
+                {
+                    "kind": "source",
+                    "locator": "worker.py",
+                    "status": "observed",
+                    "digest": "a" * 64,
+                    "summary": "Read the worker",
+                }
+            ],
+            "implementation_notes": "historical detail " * 1000,
+            "completed": ["previous work " * 100],
+            "tests_observed": ["agent-reported test " * 100],
+        }
+        pack = self.pack("Improve retry handling", previous_checkpoint=previous)
+        without = replace(pack, task=replace(pack.task, description=""), handoff=None)
+        budget = estimate_tokens(build_harness_prompt(without)) + 1900
+        self.assertGreater(estimate_tokens(build_harness_prompt(pack)), budget)
+        fitted, stats = fit_context(pack, budget)
+        for field in (
+            "remaining",
+            "next_action",
+            "blockers",
+            "decisions",
+            "risks",
+            "evidence",
+        ):
+            self.assertEqual(fitted.handoff[field], pack.handoff[field])
+        self.assertEqual(fitted.handoff["implementation_notes"], "")
+        self.assertEqual(fitted.handoff["completed"], ())
+        self.assertEqual(fitted.handoff["tests_observed"], ())
+        self.assertLessEqual(stats["estimated_tokens"], budget)
+        source = next(s for s in pack.sources if s.kind == "reposteward_checkpoint")
+        trimmed = [
+            v
+            for v in fitted.coverage
+            if v["reason"] == "complete_prompt_budget"
+            and v["field"].startswith("handoff.")
+        ]
+        self.assertEqual(
+            {v["field"] for v in trimmed},
+            {
+                "handoff.completed",
+                "handoff.tests_observed",
+                "handoff.implementation_notes",
+            },
+        )
+        self.assertTrue(
+            all(
+                v["locator"] == source.locator and v["digest"] == source.digest
+                for v in trimmed
+            )
+        )
+        validate_context_pack(fitted.to_dict())
+
+    def test_mandatory_handoff_that_cannot_fit_fails_instead_of_disappearing(self):
+        pack = self.pack(
+            "Small task",
+            previous_checkpoint={
+                "id": "prior",
+                "remaining": ["Pending requirement " * 80] * 12,
+                "blockers": ["Unresolved condition " * 80] * 12,
+            },
+        )
+        without = replace(pack, task=replace(pack.task, description=""), handoff=None)
+        budget = estimate_tokens(build_harness_prompt(without)) + 500
+        with self.assertRaisesRegex(ContextBudgetError, "pending handoff"):
+            fit_context(pack, budget)
+
+    def test_handoff_with_sufficient_budget_is_preserved(self):
+        pack = self.pack(
+            "Small task",
+            previous_checkpoint={
+                "id": "prior",
+                "remaining": ["Read the failing test"],
+                "implementation_notes": "Useful detail",
+            },
+        )
+        fitted, _ = fit_context(pack, estimate_tokens(build_harness_prompt(pack)) + 1)
+        self.assertEqual(fitted, pack)
+
     def test_mandatory_source_cannot_fit_fails_until_explicit_contract_review(
         self,
     ) -> None:

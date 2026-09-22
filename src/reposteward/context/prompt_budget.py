@@ -56,26 +56,39 @@ def fit_context(
             )
             continue
         if context.handoff is not None:
+            handoff = dict(context.handoff)
+            optional = ("completed", "tests_observed", "implementation_notes")
+            omitted = [field for field in optional if handoff.get(field)]
+            if not omitted:
+                raise ContextBudgetError(
+                    "mandatory task contract and pending handoff work, decisions, "
+                    "blockers and evidence exceed the complete prompt budget; "
+                    "increase the budget or explicitly reconcile the checkpoint"
+                )
             source = next(
                 value
                 for value in context.sources
                 if value.kind == "reposteward_checkpoint"
             )
-            context = replace(
-                context,
-                handoff=None,
-                coverage=(
-                    *context.coverage,
+            coverage = list(context.coverage)
+            for field in omitted:
+                value = handoff[field]
+                coverage.append(
                     {
-                        "field": "handoff",
-                        "unit": "items",
-                        "omitted": 1,
+                        "field": "handoff." + field,
+                        "unit": "characters" if isinstance(value, str) else "items",
+                        "omitted": len(value),
                         "reason": "complete_prompt_budget",
                         "locator": source.locator,
                         "digest": source.digest,
                     },
-                ),
-            )
+                )
+                if field == "implementation_notes":
+                    handoff["implementation_notes_omitted_chars"] = handoff.get(
+                        "implementation_notes_omitted_chars", 0
+                    ) + len(value)
+                handoff[field] = "" if isinstance(value, str) else ()
+            context = replace(context, handoff=handoff, coverage=tuple(coverage))
             continue
         raise ContextBudgetError(
             "mandatory task contract and safety facts exceed the complete prompt budget; "
