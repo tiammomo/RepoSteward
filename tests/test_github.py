@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import io
 import unittest
 import urllib.error
@@ -1069,6 +1070,111 @@ class GitHubActionsEvidenceTests(unittest.TestCase):
             self.assertRaisesRegex(GitHubError, "unsafe redirect"),
         ):
             client.workflow_job_log("owner/repo", 20, max_bytes=12)
+
+    def test_get_request_retries_transient_transport_errors(self) -> None:
+        class FakeResponse(io.BytesIO):
+            def __init__(self, payload: bytes) -> None:
+                super().__init__(payload)
+                self.status = 200
+
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        responses = [
+            http.client.IncompleteRead(b'{"login": "pw', 5),
+            FakeResponse(b'{"login": "pwd11"}'),
+        ]
+        with (
+            patch("urllib.request.urlopen", side_effect=responses) as urlopen_mock,
+            patch("time.sleep", return_value=None) as sleep_mock,
+        ):
+            payload, _ = client._request("GET", "/user")
+
+        self.assertEqual(payload, {"login": "pwd11"})
+        self.assertEqual(urlopen_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(1)
+
+    def test_post_request_does_not_retry_transient_transport_errors(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=http.client.IncompleteRead(b"{}", 1),
+            ),
+            patch("time.sleep") as sleep_mock,
+            self.assertRaisesRegex(GitHubError, "failed after retries"),
+        ):
+            client._request("POST", "/issues", data={"title": "x"})
+
+        sleep_mock.assert_not_called()
+
+    @staticmethod
+    def _truncated_response():
+        class TruncatedResponse(io.BytesIO):
+            status = 200
+
+            def read(self, *args):
+                raise http.client.IncompleteRead(b'{"login":', 10)
+
+        return TruncatedResponse()
+
+    def test_retry_closes_truncated_response_before_next_request(self) -> None:
+        failed = self._truncated_response()
+        success = io.BytesIO(b'{"login":"owner"}')
+        success.status = 200
+        self.addCleanup(failed.close)
+        self.addCleanup(success.close)
+        client = GitHubClient(GitHubConfig(), token="test-token")
+
+        def request(*args, **kwargs):
+            if urlopen_mock.call_count == 1:
+                return failed
+            self.assertTrue(failed.closed)
+            return success
+
+        with (
+            patch("urllib.request.urlopen", side_effect=request) as urlopen_mock,
+            patch("time.sleep") as sleep_mock,
+        ):
+            payload, response = client._request("GET", "/user")
+        self.assertEqual(payload, {"login": "owner"})
+        self.assertIs(response, success)
+        self.assertFalse(success.closed)
+        self.assertEqual(urlopen_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(1)
+
+    def test_exhausted_read_retries_close_every_failed_response(self) -> None:
+        responses = [self._truncated_response() for _ in range(5)]
+        for response in responses:
+            self.addCleanup(response.close)
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        with (
+            patch("urllib.request.urlopen", side_effect=responses) as urlopen_mock,
+            patch("time.sleep") as sleep_mock,
+            self.assertRaises(GitHubError),
+        ):
+            client._request("GET", "/user")
+        self.assertEqual(urlopen_mock.call_count, 5)
+        self.assertEqual(
+            [call.args for call in sleep_mock.call_args_list], [(1,), (4,), (9,), (16,)]
+        )
+        self.assertTrue(all(response.closed for response in responses))
+
+    def test_write_read_failures_are_closed_without_retry(self) -> None:
+        for method in ("POST", "PATCH", "PUT", "DELETE"):
+            with self.subTest(method=method):
+                response = self._truncated_response()
+                self.addCleanup(response.close)
+                client = GitHubClient(GitHubConfig(), token="test-token")
+                with (
+                    patch(
+                        "urllib.request.urlopen", return_value=response
+                    ) as urlopen_mock,
+                    patch("time.sleep") as sleep_mock,
+                    self.assertRaises(GitHubError),
+                ):
+                    client._request(method, "/issues", data={"title": "example"})
+                self.assertEqual(urlopen_mock.call_count, 1)
+                sleep_mock.assert_not_called()
+                self.assertTrue(response.closed)
 
 
 if __name__ == "__main__":

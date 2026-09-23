@@ -311,6 +311,11 @@ Rust 1.96.0（含 rustfmt 与 Clippy）、ShellCheck 0.9.0、Java 8、Maven、Pr
 和 pnpm。最终镜像默认以 UID/GID 1000 的 `reposteward` 用户运行；目标仓库的 bootstrap
 只安装锁定依赖，不挂载或复用宿主机工具链。
 
+Java 默认使用 8；需要 Java 17 的验证命令可以设置 `JAVA_HOME=/opt/java/temurin-17`，
+并把 `$JAVA_HOME/bin` 放在 `PATH` 首位。该兼容路径指向 Debian OpenJDK 17。
+DockerVerifier 将 JVM 的 `user.home` 固定到 `/reposteward-env/home`，使 Maven/JGit
+等依赖缓存可在联网 bootstrap 和断网验证之间复用。
+
 发现和查看候选：
 
 ```bash
