@@ -151,6 +151,10 @@ reposteward mcp config . --client copilot-vscode
 导出的技能负责指导工具使用，安装技能不会增加公开写入权限。
 仓库内 `.agents/skills/` 则是另一组面向贡献者和维护者的工作指导。
 
+技能改进先收集证据：`reposteward skill-usage record` / `report` 按外部任务记录
+显式上报的技能版本、使用阶段和可选验证引用。当前不自动跟踪客户端，也不据此声称
+技能有效或节约 token。用法见[操作指南](docs/operator-guide.zh-CN.md#技能使用事件与效果证据)。
+
 ### A2A 与跨客户端接续
 
 A2A 服务为一个关联工作区委派**项目理解报告**，需要 `a2a` extra 和独立本地 Bearer 令牌，

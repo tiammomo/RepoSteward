@@ -1166,3 +1166,47 @@ reposteward overview show --previous-digest <digest>
 
 此功能需要任务数据库 schema 27。先停止旧写入客户端，按
 [状态升级指南](state-upgrades.zh-CN.md)备份并显式迁移；只读查询不会自动升级。
+
+### 技能使用事件与效果证据
+
+在已创建的外部任务上显式记录技能使用；此入口不读取聊天记录、不安装客户端 hook，
+不会自动捕获所有技能调用。调用方先对实际使用的技能文件计算 SHA256，再提交 JSON：
+
+```json
+{
+  "event_id": "event-001",
+  "attempt_id": "attempt-001",
+  "revision": 0,
+  "skill_name": "verify-change",
+  "skill_digest": "替换为实际技能文件的64位小写SHA256",
+  "phase": "loaded",
+  "client": "codex",
+  "model": "填写实际模型标识或unknown",
+  "trigger": "change_verification"
+}
+```
+
+```sh
+reposteward skill-usage record <run-id> --input skill-event.json
+reposteward skill-usage report <run-id> --limit 50
+reposteward skill-usage report <run-id> --cursor <next-cursor>
+```
+
+`phase` 区分 `visible`、`loaded`、`executed`、`skipped`；`trigger` 支持
+`project_understanding`、`task_resume`、`change_verification`、`pr_maintenance`、`other`。
+标识字段只接受有界、无空白的标识符，不接受命令或聊天正文字段。输入文件最多 8192 字节。
+同一动作尝试使用相同 `attempt_id`；各阶段使用不同 `event_id`，传输重试复用原事件 ID。
+同一尝试、技能名称及摘要、阶段不能以另一个 ID 重复记录。摘要和执行阶段是调用方声明，
+报告标记 `agent_reported` / `caller_reported`，不是服务端自动观察到的执行事实。
+
+执行阶段可附 `verification_id: "verification:<id>"`，必须引用同一任务、同一 revision
+的终态验证。记录只保存引用及摘要，不复制验证正文。报告重新核对证据是否变化，展示
+当时的验证结果；`current_applicability=not_checked` 不代表当前工作区仍通过验证。
+失败验证也能记录；验证通过不能证明某技能导致成功。报告不产生技能成功率或节约比例。
+
+报告每次最多 100 个事件，游标绑定任务、项目与工作区；`page_counts` 只统计当前页，
+跨页的 `attempts` 不可直接相加。完整分析须取完分页并按 run、attempt、技能版本和模型
+去重分组，关联既有 usage 与验证台账，不能重复计入 token。任务 revision 改变后拒绝
+新的旧 revision 事件；完全相同的已存事件重试仍返回原记录。
+此能力仅提供可观测采集，暂不自动生成或应用技能改进规则。需要任务库 schema 28；
+升级前停止旧写入客户端并按状态升级指南保存备份。

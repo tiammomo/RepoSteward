@@ -37,9 +37,20 @@ from reposteward.tasks.lifecycle_store import TASK_RESOLUTION_MIGRATION
 from reposteward.verification.recovery_store import VERIFICATION_RECOVERY_MIGRATION
 from reposteward.web.overview_ledger import OVERVIEW_MIGRATION
 
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
+    28: (
+        """CREATE TABLE IF NOT EXISTS skill_usage_events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL REFERENCES external_task_runs(run_id),
+            project_id TEXT NOT NULL, event_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL, skill_name TEXT NOT NULL, skill_digest TEXT NOT NULL,
+            phase TEXT NOT NULL, request_digest TEXT NOT NULL,
+            payload TEXT NOT NULL, payload_digest TEXT NOT NULL, created_at TEXT NOT NULL,
+            UNIQUE(run_id,event_id), UNIQUE(run_id,attempt_id,skill_name,skill_digest,phase))""",
+        """CREATE INDEX IF NOT EXISTS skill_usage_run ON skill_usage_events(run_id,sequence)""",
+    ),
     27: KNOWLEDGE_DISPOSITION_MIGRATION,
     26: IMPORT_MIGRATION,
     25: WORKBENCH_MIGRATION,

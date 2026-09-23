@@ -237,6 +237,21 @@ def _parser() -> argparse.ArgumentParser:
         if action == "show":
             command.add_argument("--previous-digest", default="")
 
+    skill_usage = subparsers.add_parser(
+        "skill-usage", help="record and inspect explicitly reported skill use"
+    )
+    skill_usage_commands = skill_usage.add_subparsers(
+        dest="skill_usage_command", required=True
+    )
+    for action in ("record", "report"):
+        command = skill_usage_commands.add_parser(action)
+        command.add_argument("run_id")
+        if action == "record":
+            command.add_argument("--input", type=Path, required=True)
+        else:
+            command.add_argument("--limit", type=int, default=50)
+            command.add_argument("--cursor", default="")
+
     knowledge = subparsers.add_parser(
         "knowledge", help="review and query evidence-backed project guidance"
     )
@@ -1174,6 +1189,22 @@ def _main(argv: list[str]) -> int:
                 print(render_overview(result))
             else:
                 _json(result)
+            return 0
+        if args.command == "skill-usage":
+            from reposteward.telemetry.skills import SkillUsage
+
+            service = SkillUsage(config)
+            if args.skill_usage_command == "record":
+                with args.input.open("rb") as handle:
+                    raw = handle.read(8193)
+                if len(raw) > 8192:
+                    raise ValueError("skill usage input exceeds 8192 bytes")
+                result = service.record(args.run_id, json.loads(raw))
+            else:
+                result = service.report(
+                    args.run_id, limit=args.limit, cursor=args.cursor
+                )
+            _json(result)
             return 0
         if args.command == "knowledge":
             from reposteward.projects.knowledge import ProjectKnowledge
