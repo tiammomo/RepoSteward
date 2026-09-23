@@ -30,7 +30,8 @@ from reposteward.web.workbench import Workbench
 
 
 class AssistanceOperations:
-    def __init__(self, bridge):
+    def __init__(self, bridge, *, stop_event: Event | None = None):
+        self.stop_event = stop_event
         self.bridge = bridge
         self.config = bridge.config
         self.local = LocalOperations(Workbench(self.config))
@@ -55,7 +56,14 @@ class AssistanceOperations:
         self.bridge._scope(plan["payload"].get("run_id"))
         return store, task, plan["payload"]
 
-    def start(self, kind: str, *, idempotency_key: str, **parameters) -> dict:
+    def start(
+        self,
+        kind: str,
+        *,
+        idempotency_key: str,
+        web_request_digest: str = "",
+        **parameters,
+    ) -> dict:
         self.bridge._scope(parameters.get("run_id"))
         if kind == "verification":
             if set(parameters) != {
@@ -97,6 +105,12 @@ class AssistanceOperations:
             parameters["index_digest"] = index["digest"]
         else:
             raise ValueError("unknown assistance operation")
+        if web_request_digest:
+            from reposteward.storage.local_queue import hex_id
+
+            if kind != "verification" or not hex_id(web_request_digest, 64):
+                raise ValueError("invalid workbench verification plan")
+            parameters["web_request_digest"] = web_request_digest
         store = self.local.store(write=True)
         task = enqueue(
             store,
@@ -379,6 +393,8 @@ class AssistanceOperations:
         failures = []
 
         def guard():
+            if self.stop_event is not None and self.stop_event.is_set():
+                cancel.set()
             self.bridge._scope(payload.get("run_id"))
             self.local.workbench.check_configuration()
             store.renew_queue_lease(task["lease"], lease_seconds=120)

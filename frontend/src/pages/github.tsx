@@ -333,6 +333,8 @@ function OperationDetail({ id }: { id: string }) {
       void cache.invalidateQueries({ queryKey: ["github"] });
       void cache.invalidateQueries({ queryKey: ["overview"] });
       void cache.invalidateQueries({ queryKey: ["workspace"] });
+      void cache.invalidateQueries({ queryKey: ["review"] });
+      void cache.invalidateQueries({ queryKey: ["task-preview"] });
     }
   }, [data?.state, cache]);
   const mutation = useMutation({
@@ -357,7 +359,7 @@ function OperationDetail({ id }: { id: string }) {
             <span>
               尝试 {data.attempt_count} / {data.max_attempts}
             </span>
-            {data.import_id ? (
+            {data.run_id ? <Link to={`/projects/${data.project_id}/tasks/${data.run_id}/review`}>查看任务验证依据</Link> : data.import_id ? (
               <Link to={`/imports/${data.import_id}`}>查看导入与恢复</Link>
             ) : (
               <Link
@@ -495,7 +497,18 @@ export function OperationsPage() {
           </article>
         ))}
       </div>
-      {query.data && !query.data.items.length && (
+      {!!query.data?.native_items?.length && <section className="panel">
+        <h2>原生维护队列（历史记录）</h2>
+        <p>来源为本地原生队列；旧记录不含账号身份，仅供追溯。执行与恢复继续使用既有 CLI 审阅流程。</p>
+        {query.data.native_items.map(item => <article className="card" key={item.id}>
+          <strong>{item.repository} · {item.action}</strong> <Badge value={item.state} />
+          <p>Issue #{item.issue_number} · PR #{item.pull_number || "—"} · {when(item.updated_at)}</p>
+          {item.run_id && <Link to={`/projects/${item.project_id}/tasks/${item.run_id}/review`}>查看任务依据</Link>}
+          <Command value={item.trace_command} />
+        </article>)}
+        {!!query.data.native_next_before && <button onClick={() => setBefore(String(query.data?.native_next_before))}>更早原生记录</button>}
+      </section>}
+      {query.data && !query.data.items.length && !query.data.native_items?.length && (
         <Empty title="还没有本地操作">
           打开项目的 GitHub 维护页，即可显式同步。
         </Empty>

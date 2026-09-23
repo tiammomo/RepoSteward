@@ -21,6 +21,7 @@ from fastapi.exceptions import RequestValidationError, ResponseValidationError
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
+from reposteward.context.budget import ContextBudgetError
 from reposteward.projects.registry import ProjectError
 from reposteward.tasks.external import TaskConflict
 from reposteward.tasks.local_operations import LocalOperations, OperationError
@@ -29,9 +30,13 @@ from reposteward.web.api.assets import load_assets
 from reposteward.web.api.imports import routes as import_routes
 from reposteward.web.api.operations import routes
 from reposteward.web.api.scans import routes as scan_routes
+from reposteward.web.api.tasks import routes as task_routes
 from reposteward.web.workbench import Workbench
 
 COMMAND_PATHS = {
+    "/api/v1/commands/tasks/handoff",
+    "/api/v1/commands/tasks/acknowledge",
+    "/api/v1/commands/tasks/verify",
     "/api/v1/commands/workspaces/scan",
     "/api/v1/commands/projects/inspect",
     "/api/v1/commands/projects/plan",
@@ -277,6 +282,12 @@ def create_app(
     async def failed(request: Request, exc: Exception):
         if isinstance(exc, OperationError):
             return error(exc.status, exc.code, str(exc))
+        if isinstance(exc, ContextBudgetError):
+            return error(
+                400,
+                "context_budget",
+                "必要任务信息超出预算，请提高上下文预算后重新预览。",
+            )
         if isinstance(exc, TaskConflict):
             return error(409, "changed", "配置或工作区已变化，请核对后重新打开工作台。")
         if isinstance(exc, (ProjectError, OSError)) and (
@@ -426,6 +437,7 @@ def create_app(
     app.include_router(routes(service, manage_local=manage_local))
     app.include_router(import_routes(service, manage_local=manage_local))
     app.include_router(scan_routes(service, manage_local=manage_local))
+    app.include_router(task_routes(service, manage_local=manage_local))
 
     @app.get("/{path:path}", include_in_schema=False)
     async def fallback(request: Request, path: str):
@@ -465,6 +477,9 @@ def create_app(
                     "/api/v1/operations": ("project_id", "before"),
                     "/api/v1/operation": ("operation_id",),
                     "/api/v1/import": ("import_id",),
+                    "/api/v1/task-preview": ("project_id", "run_id", "budget"),
+                    "/api/v1/handoffs": ("project_id", "run_id"),
+                    "/api/v1/handoff": ("project_id", "run_id", "handoff_id"),
                     "/api/v1/scan-plan": ("project_id", "binding_id", "rebuild"),
                 }.get(path, ())
             )

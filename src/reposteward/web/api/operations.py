@@ -33,6 +33,7 @@ class Operation(Record):
     id: str
     project_id: str
     import_id: str = ""
+    run_id: str = ""
     binding_id: str = ""
     action: str
     repository: str
@@ -52,9 +53,27 @@ class Operation(Record):
     attempts: list[dict[str, JsonValue]]
 
 
+class NativeOperation(Record):
+    id: str
+    project_id: str
+    repository: str
+    action: str
+    state: str
+    run_id: str | None
+    issue_number: int
+    pull_number: int
+    updated_at: str
+    last_error_code: str
+    trace_command: str
+    can_retry: Literal[False] = False
+    can_cancel: Literal[False] = False
+
+
 class OperationList(BaseModel):
     items: list[Operation]
     next_before: int
+    native_items: list[NativeOperation] = []
+    native_next_before: int = 0
 
 
 class GitHubItem(Record):

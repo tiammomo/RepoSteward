@@ -170,6 +170,11 @@ Skill improvement starts with evidence: `reposteward skill-usage record` and
 task, with optional verification references. This is opt-in telemetry, not automatic
 client tracking or proof of effectiveness. See the [operator guide](docs/operator-guide.zh-CN.md#技能使用事件与效果证据).
 
+The local workbench groups attempts by WorkItem and connects budgeted context previews,
+immutable handoff packages and queued verification through trusted profiles. Generated
+packages, user-reported receipt, agent claims and isolated verification remain separate
+facts. See the [workbench guide (中文)](docs/local-workbench.zh-CN.md).
+
 ### A2A and cross-client handoff
 
 The A2A service delegates a **project-understanding report** in one linked workspace.

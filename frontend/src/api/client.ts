@@ -11,6 +11,9 @@ export type ReadModels = {
   code: Schemas["Code"];
   tasks: Schemas["Tasks"];
   task: Schemas["Task"];
+  "task-preview": Schemas["TaskPreview"];
+  handoffs: Schemas["HandoffList"];
+  handoff: Schemas["Handoff"];
   review: Schemas["Review"];
   settings: Schemas["Settings"];
   session: Schemas["Session"];
@@ -116,6 +119,9 @@ export function useRead<K extends keyof ReadModels>(
 
 const commandKeys = new Map<string, string>();
 type Commands = {
+  "tasks/handoff": [Schemas["HandoffRequest"], Schemas["Handoff"]];
+  "tasks/acknowledge": [Schemas["ReceiptRequest"], Schemas["Handoff"]];
+  "tasks/verify": [Schemas["TaskVerificationRequest"], Schemas["Operation"]];
   "workspaces/scan": [Schemas["ScanRequest"], Schemas["Operation"]];
   "github/sync": [Schemas["SyncRequest"], Schemas["Operation"]];
   "operations/cancel": [Schemas["ControlRequest"], Schemas["Operation"]];

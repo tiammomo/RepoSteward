@@ -172,6 +172,7 @@ class Workbench:
         if not path.exists():
             return {
                 "tasks": [],
+                "work_items": [],
                 "omitted": 0,
                 "status": "missing",
                 "public_write": False,
@@ -179,19 +180,38 @@ class Workbench:
         store = self._store()
         with store._connection() as db:
             total = db.execute(
-                "SELECT count(*) FROM runs WHERE repository=?",
-                (project["repository"].casefold(),),
+                """SELECT count(*) FROM runs r LEFT JOIN external_task_runs e ON e.run_id=r.id
+                   WHERE r.repository=? AND (r.stage!='external' OR e.project_id=?)""",
+                (project["repository"].casefold(), project_id),
             ).fetchone()[0]
             rows = db.execute(
                 """SELECT r.id,r.issue_number,r.stage,r.status,r.updated_at,
-                    substr(w.title,1,300) AS title FROM runs r
+                    substr(w.title,1,300) AS title, w.id AS work_item_id,
+                    w.status AS work_item_status, e.binding_id
+                    FROM runs r
                     LEFT JOIN harness_runs h ON h.run_id=r.id
                     LEFT JOIN work_items w ON w.id=h.work_item_id
-                    WHERE r.repository=? ORDER BY r.updated_at DESC,r.id LIMIT 50""",
-                (project["repository"].casefold(),),
+                    LEFT JOIN external_task_runs e ON e.run_id=r.id
+                    WHERE r.repository=? AND (r.stage!='external' OR e.project_id=?) ORDER BY r.updated_at DESC,r.id LIMIT 50""",
+                (project["repository"].casefold(), project_id),
             ).fetchall()
+        groups = {}
+        for row in rows:
+            key = row["work_item_id"] or row["id"]
+            group = groups.setdefault(
+                key,
+                {
+                    "id": key,
+                    "title": row["title"],
+                    "issue_number": row["issue_number"],
+                    "recorded_status": row["work_item_status"],
+                    "attempts": [],
+                },
+            )
+            group["attempts"].append(dict(row))
         return {
             "tasks": [dict(row) for row in rows],
+            "work_items": list(groups.values()),
             "omitted": max(0, total - len(rows)),
             "status": "available",
             "selection": "recent_attempts",

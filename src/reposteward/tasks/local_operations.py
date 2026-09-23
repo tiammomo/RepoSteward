@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 from reposteward.github.client import GitHubClient, GitHubReadError
 from reposteward.github.sync import GitHubSync, account_key, observations
 from reposteward.projects.imports import ProjectImports, import_problem
+from reposteward.projects.registry import ProjectError
 from reposteward.projects.scans import WorkspaceScans
 from reposteward.storage.local_queue import (
     ASSISTANCE_ACTIONS,
@@ -26,6 +27,7 @@ from reposteward.storage.local_queue import (
     plan_for,
 )
 from reposteward.storage.store import SCHEMA_VERSION, Store, StoreError, utc_now
+from reposteward.tasks.external import TaskConflict
 from reposteward.web.workbench import Workbench
 
 
@@ -228,6 +230,7 @@ class LocalOperations:
             "binding_id": payload.get("binding_id", "")
             if task["action"] == "workspace.scan"
             else "",
+            **({"run_id": payload["run_id"]} if payload.get("run_id") else {}),
             "revision": revision(task),
             "can_cancel": not cancel_requested
             and (
@@ -251,7 +254,12 @@ class LocalOperations:
             raise ValueError("invalid operation cursor")
         store = self.store()
         if store is None:
-            return {"items": [], "next_before": 0}
+            return {
+                "items": [],
+                "next_before": 0,
+                "native_items": [],
+                "native_next_before": 0,
+            }
         with store._connection() as db:
             rows = db.execute(
                 """SELECT id,sequence FROM queue_tasks WHERE operation_family='local'
@@ -262,6 +270,43 @@ class LocalOperations:
         return {
             "items": [self.operation(row["id"], history=False) for row in rows[:25]],
             "next_before": rows[24]["sequence"] if len(rows) > 25 else 0,
+            **self.native_listing(project_id, before),
+        }
+
+    def native_listing(self, project_id: str = "", before: int = 0) -> dict:
+        """Historical v1 queue projection; its legacy account is not inferred."""
+        projects = self.workbench.projects()["projects"]
+        mapping = {
+            p["repository"].casefold(): p["id"]
+            for p in projects
+            if p["policy"]["task_access"] and (not project_id or p["id"] == project_id)
+        }
+        store = self.store()
+        with store._connection() as db:
+            rows = db.execute(
+                """SELECT id,sequence,repository,action,state,run_id,issue_number,
+                   pull_number,updated_at,last_error_code FROM queue_tasks
+                   WHERE operation_family='native' AND repository IN (SELECT value FROM json_each(?))
+                   AND (?=0 OR sequence<?) ORDER BY sequence DESC LIMIT 26""",
+                (json.dumps(list(mapping)), before, before),
+            ).fetchall()
+        return {
+            "native_items": [
+                {
+                    **dict(row),
+                    "project_id": mapping[row["repository"]],
+                    "operation_family": "native",
+                    "account_scope": "legacy_unrecorded",
+                    "can_retry": False,
+                    "can_cancel": False,
+                    "trace_command": self.workbench._command(
+                        "trace", row["repository"], str(row["issue_number"])
+                    ),
+                    "public_write": False,
+                }
+                for row in rows[:25]
+            ],
+            "native_next_before": rows[24]["sequence"] if len(rows) > 25 else 0,
         }
 
     def control(
@@ -506,7 +551,7 @@ class LocalOperations:
                 (self.account, json.dumps(actions), utc_now(), utc_now()),
             ).fetchone()
         if not ready:
-            return False
+            return self._process_task_verification(store)
         store = self.store(write=True)
         try:
             account_lease = store.acquire_run_lease(
@@ -653,6 +698,53 @@ class LocalOperations:
                 store.release_run_lease(account_lease)
             except StoreError:
                 pass
+
+    def _process_task_verification(self, store: Store) -> bool:
+        from reposteward.tasks.assistance_operations import AssistanceOperations
+        from reposteward.tasks.handoffs import TaskHandoffs
+
+        with store._connection() as db:
+            rows = db.execute(
+                """SELECT id FROM queue_tasks WHERE operation_family='local'
+                   AND account_digest=? AND action='assistance.verification' AND manual_required=0
+                   AND ((state IN ('pending','failed') AND available_at<=?)
+                   OR (state='running' AND lease_expires_at<=?)) ORDER BY sequence LIMIT 25""",
+                (self.account, utc_now(), utc_now()),
+            ).fetchall()
+        for row in rows:
+            if self.stopping.is_set():
+                return False
+            task = self._task(store, row["id"])
+            with store._connection() as db:
+                payload = plan_for(db, task)["payload"]
+            try:
+                bridge = TaskHandoffs(self)._bridge(
+                    task["scope_key"], payload["run_id"]
+                )
+                service = AssistanceOperations(bridge, stop_event=self.stopping)
+                # Verify the saved workspace authority before the scoped worker claims it.
+                service._task(row["id"])
+            except (KeyError, ProjectError, TaskConflict):
+                writer = self.store(write=True)
+                claimed = writer.claim_queue_tasks(
+                    worker=self.worker,
+                    operation_family="local",
+                    account_digest=self.account,
+                    task_id=row["id"],
+                    actions=("assistance.verification",),
+                    lease_seconds=120,
+                )
+                if claimed:
+                    writer.fail_queue_task(
+                        claimed[0]["lease"],
+                        error_code="workspace_scope_changed",
+                        retryable=False,
+                    )
+                    return True
+                continue
+            if service.process_once(actions=("assistance.verification",)):
+                return True
+        return False
 
     def start(self):
         if self.thread is not None:

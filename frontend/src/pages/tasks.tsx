@@ -17,6 +17,7 @@ import {
   str,
   when,
 } from "../components";
+import { TaskActions } from "./task-actions";
 import { ProjectPicker } from "./projects";
 
 export function TasksPage({ review = false }: { review?: boolean }) {
@@ -78,25 +79,22 @@ export function TasksPage({ review = false }: { review?: boolean }) {
         <>
           <ReadState query={listing} />
           <section className="panel">
-            <h2>最近任务尝试</h2>
-            <p className="muted">每次尝试保留自己的上下文和验证记录。</p>
-            {listing.data?.tasks.map((item) => (
-              <article className="attention" key={item.id}>
-                <div>
-                  <Link to={`/projects/${projectId}/tasks/${item.id}`}>
-                    {item.title || `Issue #${item.issue_number}`}
-                  </Link>
-                  <small>
-                    #{item.issue_number} ·{" "}
-                    {item.stage === "external" ? "外部 Agent" : "仓库维护"} ·{" "}
-                    {when(item.updated_at)}
-                  </small>
-                </div>
-                <Badge value={item.status} />
-                <Link to={`/projects/${projectId}/tasks/${item.id}/review`}>
-                  审阅依据
-                </Link>
-              </article>
+            <h2>开发任务与各次尝试</h2>
+            <p className="muted">按 WorkItem 归组；每次尝试保留自己的工作区、状态和验证记录。尝试失败不代表任务或线上 PR 失败。</p>
+            {listing.data?.work_items?.map((group) => (
+              <section key={group.id} className="card">
+                <h3>{group.title || `Issue #${group.issue_number}`}</h3>
+                {group.attempts.map(item => <article className="attention" key={item.id}>
+                  <div>
+                    <Link to={`/projects/${projectId}/tasks/${item.id}`}>
+                      {item.stage === "external" ? "外部 Agent" : "仓库维护"} · {item.id.slice(0, 8)}
+                    </Link>
+                    <small>{when(item.updated_at)}{item.binding_id && ` · 工作区 ${item.binding_id.slice(0, 8)}`}</small>
+                  </div>
+                  <Badge value={item.status} />
+                  <Link to={`/projects/${projectId}/tasks/${item.id}/review`}>审阅依据</Link>
+                </article>)}
+              </section>
             ))}
             {listing.data && !listing.data.tasks.length && (
               <Empty title="这里还没有任务">
@@ -127,7 +125,7 @@ export function TasksPage({ review = false }: { review?: boolean }) {
             </Link>
           </div>
           <ReadState query={review ? evidence : task} />
-          {task.data && !review && <ContextView result={task.data} />}
+          {task.data && !review && <><ContextView result={task.data} /><TaskActions key={runId} projectId={projectId} runId={runId} /></>}
           {evidence.data && review && <ReviewView result={evidence.data} />}
         </>
       )}

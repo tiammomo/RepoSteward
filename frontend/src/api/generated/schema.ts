@@ -123,6 +123,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/commands/tasks/acknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Acknowledge */
+        post: operations["acknowledgeHandoff"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/commands/tasks/handoff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Export */
+        post: operations["exportHandoff"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/commands/tasks/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify */
+        post: operations["verifyTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/commands/workspaces/scan": {
         parameters: {
             query?: never;
@@ -149,6 +200,40 @@ export interface paths {
         };
         /** Github */
         get: operations["github"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/handoff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Handoff */
+        get: operations["handoff"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/handoffs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Handoffs */
+        get: operations["handoffs"];
         put?: never;
         post?: never;
         delete?: never;
@@ -319,6 +404,23 @@ export interface paths {
         };
         /** Task */
         get: operations["task"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/task-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Preview */
+        get: operations["taskPreview"];
         put?: never;
         post?: never;
         delete?: never;
@@ -518,6 +620,62 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** Handoff */
+        Handoff: {
+            /** Acknowledgement */
+            acknowledgement: {
+                [key: string]: components["schemas"]["JsonValue"];
+            } | null;
+            /** Client */
+            client: string;
+            /** Content */
+            content: {
+                [key: string]: components["schemas"]["JsonValue"];
+            } | null;
+            /** Created At */
+            created_at: string;
+            /** Current Applicability */
+            current_applicability: string;
+            /** Digest */
+            digest: string;
+            /** Execution Observed */
+            execution_observed: boolean;
+            /** Id */
+            id: string;
+            /** Package State */
+            package_state: string;
+            /** Project Id */
+            project_id: string;
+            /** Run Id */
+            run_id: string;
+            /** Verification Granted */
+            verification_granted: boolean;
+        } & {
+            [key: string]: components["schemas"]["JsonValue"];
+        };
+        /** HandoffList */
+        HandoffList: {
+            /** Has More */
+            has_more: boolean;
+            /** Items */
+            items: components["schemas"]["Handoff"][];
+        };
+        /** HandoffRequest */
+        HandoffRequest: {
+            /** Budget */
+            budget: number;
+            /**
+             * Client
+             * @enum {string}
+             */
+            client: "codex" | "claude-code" | "copilot-vscode";
+            /** Expected Plan */
+            expected_plan: string;
+            /** Project Id */
+            project_id: string;
+            /** Run Id */
+            run_id: string;
+        };
         /** ImportApplyRequest */
         ImportApplyRequest: {
             /** Expected Digest */
@@ -599,6 +757,45 @@ export interface components {
             /** Request Id */
             request_id: string;
         };
+        /** NativeOperation */
+        NativeOperation: {
+            /** Action */
+            action: string;
+            /**
+             * Can Cancel
+             * @default false
+             * @constant
+             */
+            can_cancel: false;
+            /**
+             * Can Retry
+             * @default false
+             * @constant
+             */
+            can_retry: false;
+            /** Id */
+            id: string;
+            /** Issue Number */
+            issue_number: number;
+            /** Last Error Code */
+            last_error_code: string;
+            /** Project Id */
+            project_id: string;
+            /** Pull Number */
+            pull_number: number;
+            /** Repository */
+            repository: string;
+            /** Run Id */
+            run_id: string | null;
+            /** State */
+            state: string;
+            /** Trace Command */
+            trace_command: string;
+            /** Updated At */
+            updated_at: string;
+        } & {
+            [key: string]: components["schemas"]["JsonValue"];
+        };
         /** Operation */
         Operation: {
             /** Action */
@@ -644,6 +841,11 @@ export interface components {
             repository: string;
             /** Revision */
             revision: string;
+            /**
+             * Run Id
+             * @default
+             */
+            run_id: string;
             /** Stages */
             stages: {
                 [key: string]: components["schemas"]["JsonValue"];
@@ -667,6 +869,16 @@ export interface components {
         OperationList: {
             /** Items */
             items: components["schemas"]["Operation"][];
+            /**
+             * Native Items
+             * @default []
+             */
+            native_items: components["schemas"]["NativeOperation"][];
+            /**
+             * Native Next Before
+             * @default 0
+             */
+            native_next_before: number;
             /** Next Before */
             next_before: number;
         };
@@ -788,6 +1000,17 @@ export interface components {
         } & {
             [key: string]: components["schemas"]["JsonValue"];
         };
+        /** ReceiptRequest */
+        ReceiptRequest: {
+            /** Expected Digest */
+            expected_digest: string;
+            /** Handoff Id */
+            handoff_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Run Id */
+            run_id: string;
+        };
         /** Record */
         Record: {
             [key: string]: components["schemas"]["JsonValue"];
@@ -800,6 +1023,16 @@ export interface components {
         /** Response[GitHubView] */
         Response_GitHubView_: {
             data: components["schemas"]["GitHubView"];
+            meta: components["schemas"]["Meta"];
+        };
+        /** Response[HandoffList] */
+        Response_HandoffList_: {
+            data: components["schemas"]["HandoffList"];
+            meta: components["schemas"]["Meta"];
+        };
+        /** Response[Handoff] */
+        Response_Handoff_: {
+            data: components["schemas"]["Handoff"];
             meta: components["schemas"]["Meta"];
         };
         /** Response[ImportPreview] */
@@ -850,6 +1083,11 @@ export interface components {
         /** Response[Settings] */
         Response_Settings_: {
             data: components["schemas"]["Settings"];
+            meta: components["schemas"]["Meta"];
+        };
+        /** Response[TaskPreview] */
+        Response_TaskPreview_: {
+            data: components["schemas"]["TaskPreview"];
             meta: components["schemas"]["Meta"];
         };
         /** Response[Task] */
@@ -1028,6 +1266,8 @@ export interface components {
         };
         /** TaskAttempt */
         TaskAttempt: {
+            /** Binding Id */
+            binding_id?: string | null;
             /** Id */
             id: string;
             /** Issue Number */
@@ -1040,6 +1280,62 @@ export interface components {
             title: string | null;
             /** Updated At */
             updated_at: string;
+            /** Work Item Id */
+            work_item_id?: string | null;
+            /** Work Item Status */
+            work_item_status?: string | null;
+        };
+        /** TaskPreview */
+        TaskPreview: {
+            /** Authority */
+            authority: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Budget */
+            budget: number;
+            /** Context */
+            context: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Coverage */
+            coverage: {
+                [key: string]: components["schemas"]["JsonValue"];
+            }[];
+            /** Estimated Tokens */
+            estimated_tokens: number;
+            /** Export Available */
+            export_available: boolean;
+            /** Kind */
+            kind: string;
+            /** Plan Digest */
+            plan_digest: string;
+            /** Profiles */
+            profiles: {
+                [key: string]: components["schemas"]["JsonValue"];
+            }[];
+            /** Project Id */
+            project_id: string;
+            /** Run Id */
+            run_id: string;
+            /** Validity */
+            validity: string[];
+            /** Verification Available */
+            verification_available: boolean;
+        } & {
+            [key: string]: components["schemas"]["JsonValue"];
+        };
+        /** TaskVerificationRequest */
+        TaskVerificationRequest: {
+            /** Budget */
+            budget: number;
+            /** Expected Plan */
+            expected_plan: string;
+            /** Profile */
+            profile: string;
+            /** Project Id */
+            project_id: string;
+            /** Run Id */
+            run_id: string;
         };
         /** Tasks */
         Tasks: {
@@ -1049,6 +1345,11 @@ export interface components {
             status: string;
             /** Tasks */
             tasks: components["schemas"]["TaskAttempt"][];
+            /**
+             * Work Items
+             * @default []
+             */
+            work_items: components["schemas"]["WorkItemView"][];
         } & {
             [key: string]: components["schemas"]["JsonValue"];
         };
@@ -1064,6 +1365,19 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** WorkItemView */
+        WorkItemView: {
+            /** Attempts */
+            attempts: components["schemas"]["TaskAttempt"][];
+            /** Id */
+            id: string;
+            /** Issue Number */
+            issue_number: number;
+            /** Recorded Status */
+            recorded_status: string | null;
+            /** Title */
+            title: string | null;
         };
         /** Workspace */
         Workspace: {
@@ -1353,6 +1667,111 @@ export interface operations {
             };
         };
     };
+    acknowledgeHandoff: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReceiptRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_Handoff_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    exportHandoff: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HandoffRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_Handoff_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    verifyTask: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskVerificationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_Operation_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     scanWorkspace: {
         parameters: {
             query?: never;
@@ -1409,6 +1828,71 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Response_GitHubView_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    handoff: {
+        parameters: {
+            query: {
+                project_id: string;
+                run_id: string;
+                handoff_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_Handoff_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    handoffs: {
+        parameters: {
+            query: {
+                project_id: string;
+                run_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_HandoffList_"];
                 };
             };
             /** @description Validation Error */
@@ -1680,6 +2164,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Response_Task_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    taskPreview: {
+        parameters: {
+            query: {
+                project_id: string;
+                run_id: string;
+                budget?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Response_TaskPreview_"];
                 };
             };
             /** @description Validation Error */

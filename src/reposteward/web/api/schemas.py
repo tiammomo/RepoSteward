@@ -168,10 +168,22 @@ class TaskAttempt(BaseModel):
     status: str
     updated_at: str
     title: str | None
+    work_item_id: str | None = None
+    work_item_status: str | None = None
+    binding_id: str | None = None
+
+
+class WorkItemView(BaseModel):
+    id: str
+    title: str | None
+    issue_number: int
+    recorded_status: str | None
+    attempts: list[TaskAttempt]
 
 
 class Tasks(Record):
     tasks: list[TaskAttempt]
+    work_items: list[WorkItemView] = []
     omitted: int
     status: str
 

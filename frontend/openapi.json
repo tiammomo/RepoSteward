@@ -350,6 +350,162 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "Handoff": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "acknowledgement": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledgement"
+          },
+          "client": {
+            "title": "Client",
+            "type": "string"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_applicability": {
+            "title": "Current Applicability",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "execution_observed": {
+            "title": "Execution Observed",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "package_state": {
+            "title": "Package State",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "verification_granted": {
+            "title": "Verification Granted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "run_id",
+          "client",
+          "digest",
+          "created_at",
+          "package_state",
+          "current_applicability",
+          "acknowledgement",
+          "execution_observed",
+          "verification_granted",
+          "content"
+        ],
+        "title": "Handoff",
+        "type": "object"
+      },
+      "HandoffList": {
+        "properties": {
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Handoff"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "title": "HandoffList",
+        "type": "object"
+      },
+      "HandoffRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "budget": {
+            "maximum": 100000.0,
+            "minimum": 512.0,
+            "title": "Budget",
+            "type": "integer"
+          },
+          "client": {
+            "enum": [
+              "codex",
+              "claude-code",
+              "copilot-vscode"
+            ],
+            "title": "Client",
+            "type": "string"
+          },
+          "expected_plan": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Plan",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "run_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "run_id",
+          "budget",
+          "expected_plan",
+          "client"
+        ],
+        "title": "HandoffRequest",
+        "type": "object"
+      },
       "ImportApplyRequest": {
         "additionalProperties": false,
         "properties": {
@@ -559,6 +715,91 @@
         "title": "Meta",
         "type": "object"
       },
+      "NativeOperation": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "can_cancel": {
+            "const": false,
+            "default": false,
+            "title": "Can Cancel",
+            "type": "boolean"
+          },
+          "can_retry": {
+            "const": false,
+            "default": false,
+            "title": "Can Retry",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "issue_number": {
+            "title": "Issue Number",
+            "type": "integer"
+          },
+          "last_error_code": {
+            "title": "Last Error Code",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "pull_number": {
+            "title": "Pull Number",
+            "type": "integer"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "trace_command": {
+            "title": "Trace Command",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "repository",
+          "action",
+          "state",
+          "run_id",
+          "issue_number",
+          "pull_number",
+          "updated_at",
+          "last_error_code",
+          "trace_command"
+        ],
+        "title": "NativeOperation",
+        "type": "object"
+      },
       "Operation": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -637,6 +878,11 @@
             "title": "Revision",
             "type": "string"
           },
+          "run_id": {
+            "default": "",
+            "title": "Run Id",
+            "type": "string"
+          },
           "stages": {
             "items": {
               "additionalProperties": {
@@ -697,6 +943,19 @@
             },
             "title": "Items",
             "type": "array"
+          },
+          "native_items": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/NativeOperation"
+            },
+            "title": "Native Items",
+            "type": "array"
+          },
+          "native_next_before": {
+            "default": 0,
+            "title": "Native Next Before",
+            "type": "integer"
           },
           "next_before": {
             "title": "Next Before",
@@ -969,6 +1228,39 @@
         "title": "ReadingStep",
         "type": "object"
       },
+      "ReceiptRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "handoff_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Handoff Id",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "run_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "run_id",
+          "handoff_id",
+          "expected_digest"
+        ],
+        "title": "ReceiptRequest",
+        "type": "object"
+      },
       "Record": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -1007,6 +1299,38 @@
           "meta"
         ],
         "title": "Response[GitHubView]",
+        "type": "object"
+      },
+      "Response_HandoffList_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/HandoffList"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[HandoffList]",
+        "type": "object"
+      },
+      "Response_Handoff_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Handoff"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[Handoff]",
         "type": "object"
       },
       "Response_ImportPreview_": {
@@ -1167,6 +1491,22 @@
           "meta"
         ],
         "title": "Response[Settings]",
+        "type": "object"
+      },
+      "Response_TaskPreview_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/TaskPreview"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[TaskPreview]",
         "type": "object"
       },
       "Response_Task_": {
@@ -1576,6 +1916,17 @@
       },
       "TaskAttempt": {
         "properties": {
+          "binding_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binding Id"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -1606,6 +1957,28 @@
           "updated_at": {
             "title": "Updated At",
             "type": "string"
+          },
+          "work_item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Item Id"
+          },
+          "work_item_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Item Status"
           }
         },
         "required": [
@@ -1617,6 +1990,144 @@
           "title"
         ],
         "title": "TaskAttempt",
+        "type": "object"
+      },
+      "TaskPreview": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "authority": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Authority",
+            "type": "object"
+          },
+          "budget": {
+            "title": "Budget",
+            "type": "integer"
+          },
+          "context": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Context",
+            "type": "object"
+          },
+          "coverage": {
+            "items": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/JsonValue"
+              },
+              "type": "object"
+            },
+            "title": "Coverage",
+            "type": "array"
+          },
+          "estimated_tokens": {
+            "title": "Estimated Tokens",
+            "type": "integer"
+          },
+          "export_available": {
+            "title": "Export Available",
+            "type": "boolean"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "plan_digest": {
+            "title": "Plan Digest",
+            "type": "string"
+          },
+          "profiles": {
+            "items": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/JsonValue"
+              },
+              "type": "object"
+            },
+            "title": "Profiles",
+            "type": "array"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "validity": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Validity",
+            "type": "array"
+          },
+          "verification_available": {
+            "title": "Verification Available",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id",
+          "run_id",
+          "kind",
+          "context",
+          "authority",
+          "plan_digest",
+          "budget",
+          "estimated_tokens",
+          "export_available",
+          "verification_available",
+          "validity",
+          "profiles",
+          "coverage"
+        ],
+        "title": "TaskPreview",
+        "type": "object"
+      },
+      "TaskVerificationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "budget": {
+            "maximum": 100000.0,
+            "minimum": 512.0,
+            "title": "Budget",
+            "type": "integer"
+          },
+          "expected_plan": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Plan",
+            "type": "string"
+          },
+          "profile": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Profile",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "run_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "run_id",
+          "budget",
+          "expected_plan",
+          "profile"
+        ],
+        "title": "TaskVerificationRequest",
         "type": "object"
       },
       "Tasks": {
@@ -1637,6 +2148,14 @@
               "$ref": "#/components/schemas/TaskAttempt"
             },
             "title": "Tasks",
+            "type": "array"
+          },
+          "work_items": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/WorkItemView"
+            },
+            "title": "Work Items",
             "type": "array"
           }
         },
@@ -1686,6 +2205,56 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WorkItemView": {
+        "properties": {
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/TaskAttempt"
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "issue_number": {
+            "title": "Issue Number",
+            "type": "integer"
+          },
+          "recorded_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded Status"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "issue_number",
+          "recorded_status",
+          "attempts"
+        ],
+        "title": "WorkItemView",
         "type": "object"
       },
       "Workspace": {
@@ -2156,6 +2725,156 @@
         "summary": "Plan"
       }
     },
+    "/api/v1/commands/tasks/acknowledge": {
+      "post": {
+        "operationId": "acknowledgeHandoff",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReceiptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Handoff_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Acknowledge"
+      }
+    },
+    "/api/v1/commands/tasks/handoff": {
+      "post": {
+        "operationId": "exportHandoff",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandoffRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Handoff_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export"
+      }
+    },
+    "/api/v1/commands/tasks/verify": {
+      "post": {
+        "operationId": "verifyTask",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskVerificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Operation_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify"
+      }
+    },
     "/api/v1/commands/workspaces/scan": {
       "post": {
         "operationId": "scanWorkspace",
@@ -2282,6 +3001,116 @@
           }
         },
         "summary": "Github"
+      }
+    },
+    "/api/v1/handoff": {
+      "get": {
+        "operationId": "handoff",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "handoff_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Handoff Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Handoff_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Handoff"
+      }
+    },
+    "/api/v1/handoffs": {
+      "get": {
+        "operationId": "handoffs",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_HandoffList_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Handoffs"
       }
     },
     "/api/v1/import": {
@@ -2646,6 +3475,68 @@
           }
         },
         "summary": "Task"
+      }
+    },
+    "/api/v1/task-preview": {
+      "get": {
+        "operationId": "taskPreview",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "budget",
+            "required": false,
+            "schema": {
+              "default": 24000,
+              "maximum": 100000,
+              "minimum": 512,
+              "title": "Budget",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_TaskPreview_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview"
       }
     },
     "/api/v1/tasks": {

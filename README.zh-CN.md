@@ -194,7 +194,7 @@ reposteward web
 - **每个插件实例绑定一个工作区**：额外项目使用 `reposteward-project-a` 等不同实例名；切换 Codex 目录不会自动切换绑定。
 - **线上事实显式刷新**：`overview refresh` 读取 GitHub 并保存带时间和错误状态的缓存；`overview show` 与网页查询读取本地事实；网页同步按钮显式创建持久本地操作，区分开放、已合并和已关闭 PR，并保留来源时间。
 
-FastAPI/React 工作台提供跨项目待办、项目导览、任务接续和审阅依据，支持本地查询和显式 GitHub 同步。
+FastAPI/React 工作台提供跨项目待办、项目导览和显式 GitHub 同步。任务按 WorkItem 归组，支持预算预览、保存接续包和排队执行受信任的隔离验证；接收确认、Agent 声明与验证证据分别展示。
 安装 wheel 已内置前端资源，日常使用无需 Node；在项目页粘贴 GitHub URL 或本地路径，审阅计划后可关联已有目录、克隆到新目录或仅关注远程项目；导入不覆盖已有代码，也不授予维护权限。
 详见[本地工作台](docs/local-workbench.zh-CN.md)与[Agent 接续指南](docs/coding-agent-assistance.zh-CN.md)。
 
