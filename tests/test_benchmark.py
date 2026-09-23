@@ -4,7 +4,7 @@ import hashlib
 import io
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -103,6 +103,58 @@ class RepoStewardBenchTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(printed, saved)
         self.assertEqual(printed["summary"]["scenario_count"], 1)
+
+    def test_cli_rejects_non_object_baseline_without_traceback(self) -> None:
+        with TemporaryDirectory() as directory:
+            baseline_path = Path(directory) / "baseline.json"
+            baseline_path.write_text("[]\n", encoding="utf-8")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "benchmark",
+                        "run",
+                        "--scenario",
+                        "context.utf8_estimate",
+                        "--baseline",
+                        str(baseline_path),
+                    ]
+                )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(
+            stderr.getvalue(),
+            "reposteward: baseline benchmark report must be an object\n",
+        )
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_cli_accepts_valid_baseline(self) -> None:
+        with TemporaryDirectory() as directory:
+            baseline_path = Path(directory) / "baseline.json"
+            baseline_path.write_text(
+                json.dumps(run_benchmark(scenario_ids=("context.utf8_estimate",))),
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = main(
+                    [
+                        "benchmark",
+                        "run",
+                        "--scenario",
+                        "context.utf8_estimate",
+                        "--baseline",
+                        str(baseline_path),
+                    ]
+                )
+
+        report = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(report["baseline_comparison"]["matched_scenarios"], 1)
 
     def test_invalid_repeat_and_empty_selection_fail_before_running(self) -> None:
         with self.assertRaisesRegex(ValueError, "repeat"):

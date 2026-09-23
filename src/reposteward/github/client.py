@@ -900,7 +900,10 @@ class GitHubClient:
     ) -> dict[int, tuple[CompetingWork, ...]]:
         references: dict[int, list[CompetingWork]] = {}
         seen_pulls: set[int] = set()
-        issue_reference = re.compile(r"(?<![\w/])#(\d+)(?!\d)")
+        issue_reference = re.compile(
+            r"(?<![\w/])(?:(?P<owner>[\w.-]+)/(?P<name>[\w.-]+))?#(?P<num>\d+)(?!\d)"
+        )
+        target_full_name = full_name.casefold()
         for page in range(1, 3):
             pulls, _ = self._request(
                 "GET",
@@ -928,8 +931,21 @@ class GitHubClient:
                     url=str(pull.get("html_url") or ""),
                     detail=f"#{pull_number}: {pull.get('title', '')}",
                 )
+                # GitHub auto-links both bare "#N" and qualified "owner/name#N"
+                # references. A qualified reference only targets this repository
+                # when its qualifier equals full_name (case-insensitively);
+                # qualifiers pointing at other repositories, and URL fragments
+                # such as "#issuecomment-1", must never count as competing work.
+                referenced: set[int] = set()
+                # Consume each reference once, including ignored qualifiers, so
+                # a trailing '-' or '.' cannot expose its '#N' as a bare match.
                 for match in issue_reference.finditer(body):
-                    number = int(match.group(1))
+                    if match.group("owner") is not None:
+                        qualifier = f"{match.group('owner')}/{match.group('name')}"
+                        if qualifier.casefold() != target_full_name:
+                            continue
+                    referenced.add(int(match.group("num")))
+                for number in sorted(referenced):
                     references.setdefault(number, []).append(conflict)
             if len(pulls) < 100:
                 break

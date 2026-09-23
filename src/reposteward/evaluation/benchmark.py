@@ -37,6 +37,10 @@ ScenarioResult = dict[str, dict[str, Any]]
 Scenario = Callable[[], ScenarioResult]
 
 
+class BenchmarkReportError(ValueError):
+    pass
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(
         value,
@@ -933,7 +937,7 @@ def run_benchmark(
 def load_benchmark_report(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
-        raise TypeError("baseline benchmark report must be an object")
+        raise BenchmarkReportError("baseline benchmark report must be an object")
     validate_benchmark_report(value)
     return value
 
