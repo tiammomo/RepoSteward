@@ -121,6 +121,12 @@ class ProjectKnowledge:
         if row is None:
             raise KeyError("knowledge not found in this project")
         value = dict(row)
+        with store._connection() as db:
+            audit = db.execute(
+                "SELECT * FROM knowledge_dispositions WHERE knowledge_id=?",
+                (identifier,),
+            ).fetchone()
+        value["disposition"] = dict(audit) if audit else None
         for field in ("scope_paths", "conditions", "evidence", "review"):
             value[field] = json.loads(value[field])
         return value
@@ -317,8 +323,10 @@ class ProjectKnowledge:
                 raise TaskConflict(
                     "knowledge sources, conditions or scoped code changed; propose updated evidence"
                 )
-            if entry["status"] == "replaced":
-                raise TaskConflict("replaced knowledge cannot be promoted again")
+            if entry["status"] in {"replaced", "withdrawn", "rejected"}:
+                raise TaskConflict(
+                    f"{entry['status']} knowledge cannot be promoted again"
+                )
             review = {
                 "reviewed_by": reviewed_by,
                 "basis": basis,
@@ -372,12 +380,82 @@ class ProjectKnowledge:
                     if previous["successor"] and previous["successor"] != identifier:
                         raise TaskConflict("knowledge already has another replacement")
                     db.execute(
-                        "UPDATE project_knowledge SET status='replaced',successor=?,updated_at=? WHERE id=?",
+                        "UPDATE project_knowledge SET status=CASE WHEN status IN ('withdrawn','rejected') THEN status ELSE 'replaced' END,successor=?,updated_at=? WHERE id=?",
                         (identifier, utc_now(), previous["id"]),
                     )
                 db.execute(
                     "UPDATE project_knowledge SET status='reviewed',review=?,updated_at=? WHERE id=?",
                     (json.dumps(review), utc_now(), identifier),
+                )
+        return {
+            **self._row(store, record["project_id"], identifier),
+            "idempotent": False,
+            "public_write": False,
+        }
+
+    def dispose(
+        self,
+        run_id: str,
+        identifier: str,
+        *,
+        action: str,
+        reviewed_by: str,
+        reason: str,
+    ) -> dict:
+        """Record one terminal decision without destroying the original review."""
+        if (
+            not isinstance(reviewed_by, str)
+            or not reviewed_by
+            or reviewed_by.casefold() != self.config.github.login.casefold()
+        ):
+            raise PolicyError(
+                "knowledge reviewer must match the configured GitHub login"
+            )
+        transitions = {
+            "withdraw": ("reviewed", "withdrawn"),
+            "reject": ("candidate", "rejected"),
+        }
+        if not isinstance(action, str) or action not in transitions:
+            raise ValueError("knowledge disposition must be withdraw or reject")
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
+            raise ValueError(
+                "knowledge disposition requires 1 to 2000 characters of reason"
+            )
+        previous, target = transitions[action]
+        store, record = self._task(run_id, write=True)
+        with store.atomic():
+            entry = self._row(store, record["project_id"], identifier)
+            audit = entry["disposition"]
+            if audit:
+                if (
+                    entry["status"] == target
+                    and audit["action"] == action
+                    and audit["reviewed_by"] == reviewed_by.casefold()
+                    and audit["reason"] == reason.strip()
+                ):
+                    return {**entry, "idempotent": True, "public_write": False}
+                raise TaskConflict(
+                    "knowledge already has a different terminal decision"
+                )
+            if entry["status"] != previous:
+                raise TaskConflict(f"{action} requires {previous} knowledge")
+            now = utc_now()
+            with store._connection() as db:
+                db.execute(
+                    "UPDATE project_knowledge SET status=?,updated_at=? WHERE id=?",
+                    (target, now, identifier),
+                )
+                db.execute(
+                    "INSERT INTO knowledge_dispositions VALUES (?,?,?,?,?,?,?)",
+                    (
+                        identifier,
+                        run_id,
+                        action,
+                        previous,
+                        reviewed_by.casefold(),
+                        reason.strip(),
+                        now,
+                    ),
                 )
         return {
             **self._row(store, record["project_id"], identifier),
@@ -471,6 +549,10 @@ class ProjectKnowledge:
             if not include_inactive and (entry["status"] != "reviewed" or reasons):
                 suppressed += 1
                 continue
+            if entry["status"] in {"withdrawn", "rejected"}:
+                entry["disposition"] = self._row(
+                    store, record["project_id"], entry["id"]
+                )["disposition"]
             entries.append(entry)
             if len(entries) == limit and index + 1 < len(rows):
                 continuation = _next_cursor(query, entry)

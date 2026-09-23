@@ -1084,6 +1084,8 @@ reposteward knowledge promote <run-id> <knowledge-id> --reviewed-by your-login \
   --basis verification_evidence --verification-id verification:<id> --rationale "说明哪些测试支持这条经验"
 reposteward knowledge list <run-id> --scope-path src --limit 5
 reposteward knowledge inspect <run-id> <knowledge-id> --live
+reposteward knowledge withdraw <run-id> <knowledge-id> --reviewed-by your-login --reason "结论不适用"
+reposteward knowledge reject <run-id> <knowledge-id> --reviewed-by your-login --reason "证据不足"
 reposteward task context <run-id> --scope-path src --format markdown
 ```
 
@@ -1150,3 +1152,17 @@ reposteward overview show --previous-digest <digest>
 证据，仍需审阅余项、形成干净提交并走 adopt；视图不自动提交、发布或合并。
 
 已有 Coding Agent 的项目关联、接续、独立验证与当前能力限制见[使用指南](coding-agent-assistance.zh-CN.md)。
+
+
+### 撤回与拒绝项目知识
+
+`knowledge withdraw` 将已审阅经验置为 `withdrawn`，`knowledge reject` 将候选置为
+`rejected`。两者都要求配置中的维护者身份和 1–2000 字符的原因，不写 GitHub。
+即使来源已经陈旧，也可以明确停用；任务身份和工作区绑定仍需有效。
+默认查询及任务上下文排除这些记录。`inspect` 和 `list --all` 保留原审阅、来源、
+停用原因与时间；状态和单条终态决策在同一事务中保存，重复相同决策幂等，冲突决策拒绝。
+终态记录不能重新晋升。需要修正时提出带 `supersedes` 的新候选并重新审阅，旧记录
+保留停用状态和原因，同时指向后继。停用是维护者决定，不是自动推导的测试结论。
+
+此功能需要任务数据库 schema 27。先停止旧写入客户端，按
+[状态升级指南](state-upgrades.zh-CN.md)备份并显式迁移；只读查询不会自动升级。

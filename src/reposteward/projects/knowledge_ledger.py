@@ -9,3 +9,12 @@ KNOWLEDGE_MIGRATION = (
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
     """CREATE INDEX IF NOT EXISTS knowledge_project ON project_knowledge(project_id,status,updated_at)""",
 )
+
+
+KNOWLEDGE_DISPOSITION_MIGRATION = (
+    """CREATE TABLE IF NOT EXISTS knowledge_dispositions (
+        knowledge_id TEXT PRIMARY KEY REFERENCES project_knowledge(id),
+        run_id TEXT NOT NULL REFERENCES runs(id), action TEXT NOT NULL,
+        previous_status TEXT NOT NULL, reviewed_by TEXT NOT NULL,
+        reason TEXT NOT NULL, created_at TEXT NOT NULL)""",
+)

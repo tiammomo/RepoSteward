@@ -243,7 +243,7 @@ def _parser() -> argparse.ArgumentParser:
     knowledge_commands = knowledge.add_subparsers(
         dest="knowledge_command", required=True
     )
-    for action in ("propose", "promote", "inspect", "list"):
+    for action in ("propose", "promote", "withdraw", "reject", "inspect", "list"):
         command = knowledge_commands.add_parser(action)
         command.add_argument("run_id")
         if action == "propose":
@@ -258,6 +258,10 @@ def _parser() -> argparse.ArgumentParser:
             )
             command.add_argument("--rationale", required=True)
             command.add_argument("--verification-id", default="")
+        elif action in {"withdraw", "reject"}:
+            command.add_argument("knowledge_id")
+            command.add_argument("--reviewed-by", required=True)
+            command.add_argument("--reason", required=True)
         elif action == "inspect":
             command.add_argument("knowledge_id")
             command.add_argument("--live", action="store_true")
@@ -1189,6 +1193,14 @@ def _main(argv: list[str]) -> int:
                     basis=args.basis,
                     rationale=args.rationale,
                     verification_id=args.verification_id,
+                )
+            elif args.knowledge_command in {"withdraw", "reject"}:
+                result = service.dispose(
+                    args.run_id,
+                    args.knowledge_id,
+                    action=args.knowledge_command,
+                    reviewed_by=args.reviewed_by,
+                    reason=args.reason,
                 )
             elif args.knowledge_command == "inspect":
                 result = service.inspect(args.run_id, args.knowledge_id, live=args.live)
