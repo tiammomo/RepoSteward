@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "suite_id": "repostewardbench-v0",
-  "benchmark_version": "0.1.0",
+  "benchmark_version": "0.2.0",
   "categories": [
     "safety",
     "context",
@@ -142,6 +142,132 @@
       "assertions": [
         {"metric": "ordered_pull_requests", "operator": "eq", "value": 1000},
         {"metric": "cycles", "operator": "eq", "value": 0}
+      ]
+    },
+    {
+      "id": "context.handoff_tail_acceptance",
+      "category": "context",
+      "critical": true,
+      "description": "Observe tail acceptance against versioned handoff gold facts.",
+      "assertions": [
+        {
+          "metric": "gold_facts_matched",
+          "operator": "eq",
+          "value": 3
+        },
+        {
+          "metric": "gold_facts_missing",
+          "operator": "eq",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "context.handoff_feedback_overflow",
+      "category": "context",
+      "critical": true,
+      "description": "Observe feedback overflow against versioned handoff gold facts.",
+      "assertions": [
+        {
+          "metric": "gold_facts_matched",
+          "operator": "eq",
+          "value": 4
+        },
+        {
+          "metric": "gold_facts_missing",
+          "operator": "eq",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "context.handoff_decision_replacement",
+      "category": "context",
+      "critical": true,
+      "description": "Observe decision replacement against versioned handoff gold facts.",
+      "assertions": [
+        {
+          "metric": "gold_facts_matched",
+          "operator": "eq",
+          "value": 4
+        },
+        {
+          "metric": "gold_facts_missing",
+          "operator": "eq",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "context.handoff_late_bundle",
+      "category": "context",
+      "critical": true,
+      "description": "Observe late bundle against versioned handoff gold facts.",
+      "assertions": [
+        {
+          "metric": "gold_facts_matched",
+          "operator": "eq",
+          "value": 2
+        },
+        {
+          "metric": "gold_facts_missing",
+          "operator": "eq",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "context.handoff_dirty_snapshot",
+      "category": "context",
+      "critical": true,
+      "description": "Observe dirty snapshot against versioned handoff gold facts.",
+      "assertions": [
+        {
+          "metric": "gold_facts_matched",
+          "operator": "eq",
+          "value": 4
+        },
+        {
+          "metric": "gold_facts_missing",
+          "operator": "eq",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "context.handoff_stale_evidence",
+      "category": "context",
+      "critical": true,
+      "description": "Observe stale evidence against versioned handoff gold facts.",
+      "assertions": [
+        {
+          "metric": "gold_facts_matched",
+          "operator": "eq",
+          "value": 5
+        },
+        {
+          "metric": "gold_facts_missing",
+          "operator": "eq",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "recovery.handoff_interrupted_checkpoint",
+      "category": "recovery",
+      "critical": true,
+      "description": "Observe interrupted checkpoint against versioned handoff gold facts.",
+      "assertions": [
+        {
+          "metric": "gold_facts_matched",
+          "operator": "eq",
+          "value": 5
+        },
+        {
+          "metric": "gold_facts_missing",
+          "operator": "eq",
+          "value": 0
+        }
       ]
     }
   ]

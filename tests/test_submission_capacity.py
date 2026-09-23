@@ -10,12 +10,12 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from reposteward.config import RepositoryPolicy
-from reposteward.github import GitHubError, PullRequest
-from reposteward.pipeline import Pipeline
-from reposteward.policy import PolicyError
-from reposteward.store import RunLease, StoreError
-from reposteward.workspace import WorkspaceError
+from reposteward.core.config import RepositoryPolicy
+from reposteward.github.client import GitHubError, PullRequest
+from reposteward.storage.store import RunLease, StoreError
+from reposteward.storage.workspace import WorkspaceError
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import PolicyError
 
 
 def _pull(number: int, *, author: str = "alice", draft: bool = False) -> PullRequest:
@@ -322,8 +322,8 @@ class SubmissionCapacityTests(unittest.TestCase):
         pipeline.workspaces.push.side_effect = push
         with (
             patch.dict(os.environ, {"REPOSTEWARD_ENABLE_SUBMIT": "1"}),
-            patch("reposteward.pipeline.resolve_token", return_value="token"),
-            patch("reposteward.pipeline.GitHubClient", return_value=client),
+            patch("reposteward.workflows.pipeline.resolve_token", return_value="token"),
+            patch("reposteward.workflows.pipeline.GitHubClient", return_value=client),
         ):
             return pipeline.submit(
                 "owner/repo",
@@ -369,6 +369,125 @@ class SubmissionCapacityTests(unittest.TestCase):
         self.assertEqual(result["pr_number"], 41)
         self.assertEqual(client.open_calls, 0)
         self.assertEqual(client.create_calls, 0)
+        pipeline.workspaces.push.assert_called_once()
+
+    def delayed_update(self):
+        pipeline = self.pipeline()
+        existing = replace(
+            _pull(41),
+            head_branch="alice/feat/example",
+            head_sha="f" * 40,
+            head_repository="owner/repo",
+        )
+        return pipeline, _SubmissionGitHub(existing=existing), existing
+
+    def test_delayed_updated_pull_head_converges_without_repeating_push(self) -> None:
+        pipeline, client, old = self.delayed_update()
+        client.pull_request = Mock(side_effect=[old, replace(old, head_sha=self.head)])
+        with patch("reposteward.workflows.pipeline.time.sleep") as sleep:
+            result = self.submit(pipeline, client)
+        self.assertEqual(result["pr_number"], old.number)
+        self.assertTrue(result["public_write"])
+        self.assertEqual(client.pull_request.call_count, 2)
+        sleep.assert_called_once_with(1)
+        pipeline.workspaces.push.assert_called_once()
+        self.assertEqual(client.create_calls, 0)
+        self.assertEqual(client.reopen_calls, 0)
+
+    def test_updated_pull_already_current_does_not_wait(self) -> None:
+        pipeline, client, old = self.delayed_update()
+        client.pull_request = Mock(return_value=replace(old, head_sha=self.head))
+        with patch("reposteward.workflows.pipeline.time.sleep") as sleep:
+            self.submit(pipeline, client)
+        client.pull_request.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_delayed_updated_pull_timeout_preserves_push_and_retry_is_read_only(
+        self,
+    ) -> None:
+        pipeline, client, old = self.delayed_update()
+        client.pull_request = Mock(return_value=old)
+        with (
+            patch("reposteward.workflows.pipeline.time.sleep") as sleep,
+            self.assertRaisesRegex(
+                PolicyError, "branch publication succeeded.*metadata"
+            ),
+        ):
+            self.submit(pipeline, client)
+        self.assertEqual(client.pull_request.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        pipeline.workspaces.push.assert_called_once()
+        self.assertIsNone(pipeline.store.updated)
+        self.assertTrue(
+            pipeline.store.publication_action_completed("run-1", action="update")
+        )
+        self.assertEqual(client.create_calls, 0)
+        pipeline.workspaces.push.reset_mock()
+        with patch("reposteward.workflows.pipeline.time.sleep") as sleep:
+            result = self.submit(pipeline, client)
+        self.assertFalse(result["public_write"])
+        pipeline.workspaces.push.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_updated_pull_conflicting_facts_fail_without_waiting(self) -> None:
+        for changes in (
+            {"head_sha": "a" * 40},
+            {"number": 42},
+            {"state": "closed"},
+            {"head_owner": "other"},
+            {"head_repository": "owner/other"},
+            {"head_branch": "other"},
+            {"base_branch": "other"},
+            {"url": "https://github.com/other/repo/pull/41"},
+        ):
+            with self.subTest(changes=changes):
+                pipeline, client, old = self.delayed_update()
+                client.pull_request = Mock(return_value=replace(old, **changes))
+                with (
+                    patch("reposteward.workflows.pipeline.time.sleep") as sleep,
+                    self.assertRaisesRegex(PolicyError, "conflicting"),
+                ):
+                    self.submit(pipeline, client)
+                client.pull_request.assert_called_once()
+                sleep.assert_not_called()
+                pipeline.workspaces.push.assert_called_once()
+                self.assertIsNone(pipeline.store.updated)
+
+    def test_updated_pull_lost_lease_during_read_cannot_finalize(self) -> None:
+        pipeline, client, old = self.delayed_update()
+
+        def read(*_args):
+            pipeline.store.validate_run_lease = Mock(
+                side_effect=StoreError("lease lost")
+            )
+            return replace(old, head_sha=self.head)
+
+        client.pull_request = Mock(side_effect=read)
+        with (
+            patch("reposteward.workflows.pipeline.time.sleep") as sleep,
+            self.assertRaisesRegex(StoreError, "lease lost"),
+        ):
+            self.submit(pipeline, client)
+        sleep.assert_not_called()
+        self.assertIsNone(pipeline.store.updated)
+        pipeline.workspaces.push.assert_called_once()
+
+    def test_updated_pull_lost_lease_during_wait_stops_reads(self) -> None:
+        pipeline, client, old = self.delayed_update()
+        client.pull_request = Mock(return_value=old)
+
+        def lose_lease(_seconds):
+            pipeline.store.validate_run_lease = Mock(
+                side_effect=StoreError("lease lost")
+            )
+
+        with (
+            patch("reposteward.workflows.pipeline.time.sleep", side_effect=lose_lease),
+            self.assertRaisesRegex(StoreError, "lease lost"),
+        ):
+            self.submit(pipeline, client)
+        client.pull_request.assert_called_once()
+        self.assertIsNone(pipeline.store.updated)
         pipeline.workspaces.push.assert_called_once()
 
     def test_capacity_read_failure_is_closed_before_push(self) -> None:

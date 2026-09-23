@@ -10,13 +10,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from reposteward.agent import _parse_metrics
-from reposteward.config import RunnerConfig, load_config
-from reposteward.models import CommandResult, VerificationResult
-from reposteward.pipeline import Pipeline
-from reposteward.review import compact_run
-from reposteward.store import Store
-from reposteward.verifier import DockerVerifier
+from reposteward.agents.agent import _parse_metrics
+from reposteward.core.config import RunnerConfig, load_config
+from reposteward.core.models import CommandResult, VerificationResult
+from reposteward.storage.store import Store
+from reposteward.verification.verifier import DockerVerifier
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.review import compact_run
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -147,7 +147,10 @@ class VerificationLogTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             log_path = root / "run" / "verification" / "01-command.log"
-            with patch("reposteward.verifier.subprocess.run", return_value=completed):
+            with patch(
+                "reposteward.verification.verifier.subprocess.run",
+                return_value=completed,
+            ):
                 result = verifier._run_container(
                     root, "pytest -q", network=False, log_path=log_path
                 )

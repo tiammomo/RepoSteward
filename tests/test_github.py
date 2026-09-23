@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from reposteward.config import GitHubConfig
-from reposteward.github import GitHubClient, GitHubError, resolve_authentication
+from reposteward.core.config import GitHubConfig
+from reposteward.github.client import GitHubClient, GitHubError, resolve_authentication
 
 
 class StubGitHubClient(GitHubClient):
@@ -48,8 +48,8 @@ class GitHubApprovalTests(unittest.TestCase):
 
 
 class GitHubAuthenticationTests(unittest.TestCase):
-    @patch("reposteward.github.shutil.which", return_value="/usr/bin/gh")
-    @patch("reposteward.github.subprocess.run")
+    @patch("reposteward.github.client.shutil.which", return_value="/usr/bin/gh")
+    @patch("reposteward.github.client.subprocess.run")
     def test_gh_oauth_is_used_when_environment_token_is_absent(
         self, run: Any, _which: Any
     ) -> None:
@@ -178,6 +178,7 @@ class GitHubOwnerReviewPolicyTests(unittest.TestCase):
             "license": None,
             "permissions": {"push": True, "admin": True},
             "owner": {"login": "owner"},
+            "delete_branch_on_merge": True,
         }
         with patch.object(client, "_request", return_value=(payload, None)):
             repository = client.repository("owner/repo")
@@ -185,6 +186,7 @@ class GitHubOwnerReviewPolicyTests(unittest.TestCase):
         self.assertTrue(repository.can_push)
         self.assertTrue(repository.can_admin)
         self.assertEqual(repository.owner_login, "owner")
+        self.assertTrue(repository.delete_branch_on_merge)
 
 
 class GitHubBranchHeadTests(unittest.TestCase):
@@ -220,6 +222,60 @@ class GitHubBranchHeadTests(unittest.TestCase):
             self.assertRaisesRegex(GitHubError, "valid head SHA"),
         ):
             client.branch_head_sha("owner/repo", "main")
+
+    def test_branch_cleanup_reads_normalize_complete_branch_facts(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        values = [
+            {
+                "name": "topic/z",
+                "protected": False,
+                "commit": {"sha": "b" * 40},
+            },
+            {
+                "name": "main",
+                "protected": True,
+                "commit": {"sha": "a" * 40},
+            },
+        ]
+        with patch.object(client, "_paginated_rest_values", return_value=values):
+            branches = client.repository_branches("owner/repo")
+
+        self.assertEqual([value["name"] for value in branches], ["main", "topic/z"])
+
+        with patch.object(
+            client,
+            "_request",
+            return_value=(values[0], None),
+        ) as request:
+            branch = client.repository_branch("owner/repo", "topic/z")
+
+        self.assertEqual(branch, branches[1])
+        request.assert_called_once_with("GET", "/repos/owner/repo/branches/topic%2Fz")
+
+    def test_branch_cleanup_reads_fail_closed_on_incomplete_facts(self) -> None:
+        client = GitHubClient(GitHubConfig(), token="test-token")
+        with (
+            patch.object(
+                client,
+                "_paginated_rest_values",
+                return_value=[
+                    {
+                        "name": "topic",
+                        "protected": "false",
+                        "commit": {"sha": "a" * 40},
+                    }
+                ],
+            ),
+            self.assertRaisesRegex(GitHubError, "snapshot was incomplete"),
+        ):
+            client.repository_branches("owner/repo")
+
+        with patch.object(
+            client,
+            "_request",
+            side_effect=GitHubError("missing", status_code=404),
+        ):
+            self.assertIsNone(client.repository_branch("owner/repo", "missing"))
 
 
 class GitHubCompetingWorkTests(unittest.TestCase):
@@ -311,6 +367,40 @@ class GitHubCompetingWorkTests(unittest.TestCase):
             )
         self.assertEqual(list(references), [5043])
         self.assertEqual(len(references[5043]), 1)
+
+    def test_other_qualified_reference_is_not_reinterpreted_as_bare(self) -> None:
+        for repository in ("other/repo-", "other/repo.", "other/.github"):
+            with self.subTest(repository=repository):
+                client, request = self._pull_request_client(f"Fixes {repository}#7")
+                with patch.object(client, "_request", side_effect=request):
+                    references = client.open_pull_request_references(
+                        "owner/repo", own_login="betterkite"
+                    )
+                self.assertEqual(references, {})
+
+    def test_qualified_punctuation_suffix_matches_selected_repository(self) -> None:
+        for repository in ("owner/repo-", "owner/repo.", "owner/.github"):
+            with self.subTest(repository=repository):
+                client, request = self._pull_request_client(
+                    f"Fixes {repository.upper()}#7 and #7"
+                )
+                with patch.object(client, "_request", side_effect=request):
+                    references = client.open_pull_request_references(
+                        repository, own_login="betterkite"
+                    )
+                self.assertEqual(list(references), [7])
+                self.assertEqual(len(references[7]), 1)
+
+    def test_ignored_qualifier_preserves_independent_bare_references(self) -> None:
+        client, request = self._pull_request_client(
+            "Fixes other/repo-#7, #8, owner/repo#9 and other/repo.#10; also #8"
+        )
+        with patch.object(client, "_request", side_effect=request):
+            references = client.open_pull_request_references(
+                "owner/repo", own_login="betterkite"
+            )
+        self.assertEqual(list(references), [8, 9])
+        self.assertTrue(all(len(pulls) == 1 for pulls in references.values()))
 
     def test_url_fragments_are_not_issue_references(self) -> None:
         client, request = self._pull_request_client(

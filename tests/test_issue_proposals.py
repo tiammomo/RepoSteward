@@ -6,11 +6,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from reposteward.config import load_config
-from reposteward.github import ProjectIssueProposal
-from reposteward.pipeline import Pipeline
-from reposteward.policy import PolicyError
-from reposteward.store import Store
+from reposteward.core.config import load_config
+from reposteward.github.client import ProjectIssueProposal
+from reposteward.storage.store import Store
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import PolicyError
 
 
 class FakeProposalClient:

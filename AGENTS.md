@@ -18,6 +18,10 @@ opens pull requests only after repository-specific gates and local human review.
 - Every code change must start from a reviewed open Issue, use a separate branch or
   worktree, and be merged through a focused PR. Never commit or push code directly to
   `main`. Handle security emergencies through the private process in `SECURITY.md`.
+- Scope each Issue and PR around one concrete, independently verifiable capability.
+  RepoSteward does not use changed-line count to force one capability into artificial
+  slices; change size remains review evidence, not the scope boundary. Keep unrelated
+  capabilities separate and preserve every non-line safety gate.
 - Never expose GitHub credentials to a coding harness, tests, repository hooks,
   Git push, or Docker containers. An API credential may be passed only to the
   GitHub REST client; Git clone/push uses the host's SSH key.

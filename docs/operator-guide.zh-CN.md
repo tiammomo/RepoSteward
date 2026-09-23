@@ -166,6 +166,41 @@ image；项目安全设置只能收紧用户限额和默认禁止路径，不能
 未跟踪文件、符号链接、`.env` 文件、仓库根级 `secrets`/`credentials` 前缀和包含通配符或父目录
 跳转的路径仍会失败关闭。每个授权前缀都会写入验证沙箱清单，便于 Review 时核对。
 
+已跟踪的 `.env.example`、`.env.sample` 和 `.env.template` 可以进入验证快照，但敏感字段只允许
+空值或严格的占位符：`replace-with-<名称>`、`your-<提供方>-api-key`。名称和提供方仅允许小写
+ASCII 字母、数字及分隔非空片段的连字符；整个占位符不能加引号且最多 128 字符。模板仍须满足
+文件大小、UTF-8、普通文件、目录和赋值语法检查；其他非空敏感值继续拒绝，错误只报告位置。
+
+若已审阅应用代码，确认某个敏感后缀字段实际是布尔开关，可以在**可信用户配置**中声明精确字段名
+及允许的字符串值。例如以下声明仅允许 RoutePilot 的两个开发认证开关取关闭值 `0`：
+
+```toml
+[repositories."tiammomo/RoutePilot".env_template_booleans]
+ROUTEPILOT_V1_DEV_AUTH = ["0"]
+ROUTEPILOT_BFF_DEV_AUTH = ["0"]
+```
+
+每个仓库最多声明 64 个字段，字段名大小写敏感，最长 128 字符，须为 ASCII 环境变量名；不支持
+通配符、前缀或后缀匹配。每个值列表须为 `"0"`、`"1"`、`"false"`、`"true"`、`"no"`、`"yes"`
+的非空、不重复子集。在模板中这些值必须是无引号、无行尾注释的精确字面量；原有空值写法仍允许。
+已声明字段的其他非空值（包括占位符）均拒绝。不要将真实凭据字段声明为开关。
+
+仓库项目配置不能添加或扩大声明，其他仓库不继承声明。未声明字段继续使用原扫描规则；真实 `.env`
+文件、未跟踪模板和非普通文件仍不适用该许可。任务快照、验证副本、bootstrap 与最终验证使用同一
+规则，声明写入沙箱清单并绑定策略和验证摘要；更改声明后必须重新建立任务及验证证据。
+
+若测试使用模拟 HTTP 客户端却仍解析测试域名，可以在可信用户配置中为单个仓库设置静态 IPv4
+映射。项目配置不能添加或覆盖这些映射：
+
+```toml
+[repositories."bytedance/deer-flow".verification_hosts]
+"example.com" = "93.184.216.34"
+```
+
+映射以 Docker `--add-host` 参数传给该仓库的安装和验证容器，并记入沙箱清单。其他仓库不受影响；
+验证仍使用 `--network none`。地址仅作为测试夹具的解析结果，不会启用网络访问。不支持 IPv6、
+`host-gateway` 或非法主机名。Node 等依赖仍须在联网 bootstrap 阶段预装。
+
 ### 并发与变更规模
 
 默认情况下，每个仓库最多同时保留 4 个由当前 GitHub 账号创建的 open PR；Draft 和 Ready 都计入，
@@ -191,6 +226,19 @@ max_diff_lines = 3000
 上述配置的实际仓库上限为 6 个 PR、60 个文件和 3,000 行；仓库值即使高于用户值，也不能突破用户
 上限。所有容量值都必须是正整数。容量门禁用于控制并行负担，不替代“一个 PR 只解决一个清晰问题”
 的范围审查。
+
+当某个仓库明确以“一个完整可验收能力”作为 Issue/PR 边界，可信用户可以只对该仓库关闭 diff
+行数门。这个例外必须写在用户配置的仓库表中；项目配置中的同名值会被忽略：
+
+```toml
+[repositories."owner/capability-scoped-repository"]
+unlimited_diff_lines = true
+```
+
+该值不使用 `0`、负数或哨兵整数，运行时把有效行数上限表示为 `None`，同时继续记录精确的新增和
+删除行数。项目配置仍可设置一个正整数 `max_diff_lines` 来收紧该例外。文件数、活动 PR 数、禁止
+路径、敏感文件、验证、Review、发布和合并门禁完全不变；关闭行数门也不意味着应把多个无关能力
+放进同一个 PR。
 
 ## 准备 Issue 草稿
 
@@ -272,6 +320,11 @@ uv run reposteward list --all
 ```bash
 uv run reposteward inbox --repo owner/repository --format text
 ```
+
+Portfolio 只读取开放 PR；只有开放快照完整时，当一个 tracked submitted PR 已不在该快照中，
+Inbox 才会在 RepoSteward 本地原生合并审计的最新终态精确为 `merged` 或 `already_merged` 时隐藏
+该历史项目。Portfolio 读取失败或不完整，以及缺失、失败、未知或 closed-unmerged 合并结果仍显示
+为 `refresh_required`；开放 PR 的新鲜在线事实始终优先。
 
 需要跨进程、账号或 Harness 保存批量待办顺序时，可先把稳定控制面引用写入本地任务队列；enqueue
 不会执行任务、调用 Harness 或写入 GitHub：
@@ -441,6 +494,34 @@ RepoSteward 会从 Codex CLI JSONL 或 Codex SDK turn result 中提取输入、�
 token，并记录工具调用次数；CLI 适配器还记录事件流大小。资源预算告警会出现在 Review Packet
 中，但不会绕过验证。
 
+## Work-item 生命周期轨迹
+
+按仓库与 Issue 读取本地生命周期事实：
+
+```bash
+uv run reposteward trace owner/repository 40 --format text
+uv run reposteward trace owner/repository 40 --format json --limit 200
+```
+
+Trace 使用版本化 JSON 契约，把同一 work item 的 successor runs、Context Pack、Checkpoint、
+Harness 摘要、验证、租约、队列、发布、GitHub PR 事件与合并审计按稳定顺序聚合，并生成稳定的
+`trace_digest`。它不联网、不调用 Harness，也不修改 Store、workspace 或 GitHub；输出只保留
+白名单字段和摘要，不包含原始 Prompt、命令或日志正文、凭据、原生会话 ID、绝对 workspace 路径
+及 token 计数。
+
+默认最多返回 200 个事件，`--limit` 允许 1 到 500；文本渲染另有 50 个事件和 12,000 字符上限。
+被数量或文本边界裁剪的事实会进入 `stats` 与各 `sources[].omitted_records`，不会静默丢失。
+旧运行或尚未进入发布/合并阶段时，无法可靠关联的来源显示为 `unknown` 或 `incomplete`，不能把
+缺失事实解释成零事件。`current` 单独保留最新 run、HEAD/base、验证状态和 checkpoint 引用，
+不会随历史事件数量上限一起丢失。同一秒创建多个 run 时，以本地插入顺序确定最新记录。
+`next_action` 根据该 run 的状态推导；只有绑定同一 run 与精确 HEAD 的原生合并终态才表示
+`complete`，尚未完成的合并意图提示 `reconcile_merge`。这些结果是本地事实，不替代发布前的
+远端新鲜度检查。
+
+Checkpoint 中的自由文本下一步不直接输出，只有已知控制面动作码可以展示，其余显示 `unknown`。
+Checkpoint 来源标记为 `derived_review_required`，导入来源标记为 `imported_untrusted`。
+精简文本保留 `passed=False`、`eligible=False` 与零计数，避免省略影响判断的结果。
+
 ## 生命周期用量与成本
 
 每次 `prepare` 和 `repair` 的 Harness 执行完成后，RepoSteward 都会追加一条有摘要保护的紧凑
@@ -552,29 +633,32 @@ RepoSteward 使用 `.agents/skills/<name>/SKILL.md` 保存可跨 Coding Harness 
 匹配的同仓库 head。状态机、凭据隔离、内容摘要、验证与已有 GitHub 公开写入门禁不会由 skill
 放宽。
 
-分支清理默认只输出 JSON 计划，不执行删除：
+原生分支清理默认只输出计划，不执行删除：
 
 ```bash
-uv run python .agents/skills/reposteward-branch-cleanup/scripts/branch_cleanup.py \
-  owner/repository --run-id SUBMITTED_RUN_ID
+uv run reposteward branch-cleanup plan owner/repository --format text
 ```
 
-可以重复 `--run-id`。计划只把本地 submitted run 明确绑定、当前 SHA 与已合并 PR head 精确一致，
-且该名称没有其他 PR 历史的非默认、明确未保护同仓库分支列为 `candidates`。确认候选和
-`plan_digest` 后，删除仍需要独立环境门禁、`--apply`、相同摘要和实际 GitHub 身份：
+计划从 SQLite 中读取全部有界 submitted run、成功合并审计和未完成清理意图，只把当前
+SHA 与已合并 PR head 精确一致、且该名称没有其他 PR 历史的非默认、明确未保护同仓库分支列为
+`candidates`。`pending` 会优先对账；`absent` 与 `completed` 保持幂等；活动、共享、fork、关闭未
+合并、已移动或事实不完整的分支进入 `retained`。确认候选和 `plan_digest` 后，删除仍需要仓库策略
+显式设置 `branch_cleanup = true`、独立环境门禁、相同摘要和实际 GitHub 身份：
 
 ```bash
 REPOSTEWARD_ENABLE_BRANCH_CLEANUP=1 \
-  uv run python .agents/skills/reposteward-branch-cleanup/scripts/branch_cleanup.py \
-  owner/repository --run-id SUBMITTED_RUN_ID --apply \
+  uv run reposteward branch-cleanup apply owner/repository \
   --expected-digest PLAN_DIGEST --reviewed-by GITHUB_LOGIN
 ```
 
-脚本会验证当前身份与 push 权限，并逐分支重新读取仓库、保护状态、完整 PR 历史和 head SHA。
-删除通过宿主 SSH 身份和绑定已审核 SHA 的 Git `--force-with-lease` 执行，同时禁用仓库 hooks 并
-移除 token 环境变量。结果不确定时再读取精确分支：已不存在记为 `reconciled_deleted`，仍存在则
-失败关闭，读回也失败则报告 `outcome_unknown`。该流程是 Issue #77 原生持久化清理状态机完成前
-的运维入口；运行结果需随维护记录保存，不能冒充 RepoSteward 本地追加审计。
+apply 会验证配置、审核声明与当前 GitHub 身份一致及 push 权限，并逐分支重新读取仓库、保护状态、
+完整 PR 历史和 head SHA。删除前先在 SQLite 追加绑定 Issue lease 的 `pending` 意图；删除通过宿主
+SSH 身份和绑定已审核 SHA 的 Git `--force-with-lease` 执行，同时禁用仓库 hooks 并移除 token 环境
+变量。结果不确定时再读取精确分支：已不存在记为 `reconciled_deleted`，仍存在则失败关闭，读回也
+失败则保留 `outcome_unknown` 待下次 apply 只读对账，不会盲目重复删除。每次终态结果同步到追加
+审计和 Checkpoint；分支清理失败或待对账不会回滚、覆盖已经成功的合并结果。
+
+项目仍保留旧版 Python 脚本供旧安装兼容；原生 CLI 可用后不要混用其非持久化 apply 路径。
 
 Context Pack v2 先建立最多 24 项的轻量技能目录，只保存经过清洗和长度限制的 `name`、
 `description`、仓库相对路径、状态和内容指纹，不复制完整正文。目录会显式报告无效项和被截断的
@@ -585,8 +669,9 @@ Claude Code 或 DeepSeek 等实现时可以共享流程，又不会让每次调�
 技能元数据和正文都属于仓库不可信输入。RepoSteward 不读取越出工作区的链接，frontmatter 最多
 扫描 8 KiB，单个技能文件上限为 1 MiB；Prompt 中的目录值会保持在 JSON 边界内，技能不能放宽
 凭据、网络或公开写入门禁。
-历史 Context Pack v1 与 Bundle v1 仍可严格校验和导入，新生成的文档使用 Context Pack/Bundle v2，
-Checkpoint 保持独立的 v1 协议。
+历史 Context Pack/Bundle v1、v2 仍可严格校验和导入，新生成的文档使用 v3，
+在技能目录基础上增加精确任务契约和修复反馈绑定。Checkpoint 保持独立的 v1 协议。
+完整版本边界与当前安装的核对方式见[协议与兼容性索引](protocol-map.zh-CN.md)。
 
 ## 提交与跟进
 
@@ -758,3 +843,370 @@ apply 前会追加 `applying` 审计；每个工作区在删除前会重新扫�
 项目原名为 Starfix。由于 PyPI 已存在活跃的 `starfix` 包，且 GitHub 上已有同名开发工具，
 公开产品改名为 RepoSteward：Python distribution 和 CLI 均使用 `reposteward`，建议 GitHub
 仓库使用 `repo-steward`。旧状态目录和 `starfix.sqlite3` 数据库仍会被兼容读取。
+
+## 关联已经在本地开发的项目
+
+在项目 clone 或 worktree 中执行 `reposteward project link .`，即可登记本机
+工作区。命令返回稳定的项目 ID 和工作区 binding ID。相同 GitHub 仓库的多个
+clone/worktree 共用项目身份，各自保留工作区身份；子目录会解析到 Git 根目录。
+
+```bash
+reposteward project link /path/to/project --name 我的项目
+reposteward project inspect /path/to/project
+reposteward project list --limit 50
+reposteward project unlink <binding-id>
+```
+
+`inspect` 检查关联是否仍匹配，并显示当前 HEAD、分支和 dirty 状态。移动目录后
+可以重新关联新路径；旧路径会在列表中显示缺失。替换目录或修改 origin 指向后，
+需要明确解除旧关联再重新关联。`unlink` 只解除本地关联，不删除源码或 Git 历史。
+这些命令不连接 GitHub，不启动 coding agent，也不发布任何内容。
+
+登记保存在用户 state 目录的 `projects.sqlite3`，工作区路径不进入可移植任务包。
+关联身份与仓库执行策略分别配置：`repo add owner/repository --mode maintainer`
+生成维护者策略，其新配置的 `min_stars` 默认为 0；已有策略中的显式值保持不变。
+Contributor 模式仍默认 1000。执行验证前仍需设置命令白名单。
+
+## 已读取反馈与已处理反馈
+
+`follow-up` 的事件水位只表示已经记录并查看了线上活动。`repair` 会另外查询同一
+PR 尚未处理的反馈，所以先查看后修复、分批压缩和 successor run 都能继续处理余项。
+读取结果中的 `pending_feedback` 提供状态计数、缺失载荷和查询省略数。
+
+反馈按原始事件版本登记一次。`pending` 是未处理，`deferred` 保留超预算或当前 PR
+范围外的事项；新版本通过 `superseded` 关联旧版本。只有本地修复产生新 commit、
+验证通过且 run 保存为 ready 后，最终提示中选中的意见才会同时记为 `verified`。
+这里的 verified 表示该批修复通过本地验证，后续仍需审核代码并确认是否满足反馈。
+模型自述完成、读取水位或失败尝试都不能独立产生这一状态。
+
+修复使用所选反馈的完整正文。最小完整事项无法放入预算时会明确报错，需要增加
+`context.follow_up_max_tokens` 或人工细分；不会截掉意见末尾再将其确认完成。
+范围外建议仍可查询，不会挤占同范围修复预算。未处理载荷有 GC 引用保护；载荷已经
+缺失时报告 unknown，不能把缺失正文当成空意见或已完成事项。
+
+Store schema 18 迁移保守地重放历史反馈：旧水位没有处理证明，不据此自动完成旧意见。
+状态在 PR 范围内共享，successor run 不创建重复事项。ready 状态与该次处理证据在
+同一个数据库事务中保存，失败或崩溃不会只确认一半结果。
+
+## 任务契约与完整提示预算
+
+Context Pack / Portable Bundle v3 把 `task_contract`、`repair_feedback` 与 `coverage`
+分开保存。旧 v1/v2 仍严格可读，导入旧包不会凭空生成已审阅契约。
+契约绑定原 Issue 的内容摘要、URL 和更新时间，独立保存目标、验收条件和范围边界。
+修复反馈绑定 PR、原 head、事件水位和事件批次摘要，验收字段不再承载 JSON 传输分片。
+
+默认契约处于 `source_bound`：保留完整 Issue 需求作为必须输入，不声称模型已经提炼
+或人工已经审阅。明确审阅过的简短契约可以替代完整需求，但必须绑定同一个 Issue
+版本并记录操作人；来源变化需要重新审阅，替代关系通过旧契约摘要保留。
+该记录不授予代码发布权限，也不把 GitHub 正文变为可执行指令。
+
+`context.prepare_max_tokens` 默认 64000，覆盖实际渲染的整个提示；修复沿用
+`context.follow_up_max_tokens`。这里使用保守的 UTF-8 字节上界估算，与具体供应商
+分词器无关。编译器可以缩短描述或省略可取回的历史摘要，但不会裁剪必须任务契约。
+最小必须集合无法放入预算时明确失败，需要增加预算或明确审阅更短的契约。
+`coverage` 记录描述、检查点字段和列表、skills 目录的省略数量、原因、来源和摘要。
+
+原生编码提示的完整预算会优先裁减可取回的历史笔记、已完成声明和观察测试。
+已生成交接中的未完成事项、决定、阻塞、下一步、风险与证据不会为适应预算而整体丢弃；
+这些内容仍放不下时返回 `ContextBudgetError`，需要提高预算或明确核对检查点。
+此保证作用于已经生成的交接；检查点生成阶段的字段数量和长度限制仍通过 `coverage`
+披露，必要时应沿来源取回完整记录。历史声明仍需核验，不代表当前代码已通过测试。
+
+## 维护者修复同仓库 PR
+
+`repair <submitted-run-id>` 支持 `mode="maintainer"` 且
+`submission_strategy="same-repository"` 的已纳管 PR。开工前重新确认认证身份与
+配置登录名一致、该身份仍有仓库推送权限，PR 作者、head 仓库与工作分支均符合
+已登记事实；默认分支、外部作者分支和 fork head 不能进入这一维护者路径。
+Issue 必须仍满足当前贡献门禁，工作区须干净，HEAD/base/policy 须与原验证一致。
+
+修复继续使用未处理反馈、隔离 Harness 和加固验证器，结果只进入本地 ready。
+检查新提交后另行 `submit --reviewed-by <login>`，仍需
+`REPOSTEWARD_ENABLE_SUBMIT=1`。提交前重新核对 head 归属和冻结事实；原提交的审阅
+记录不作为新提交的审阅。Contributor fork 修复路径保留。
+
+## 在自己启动的 Agent 中开发
+
+先关联项目，在独立 feature branch 上为已审阅的开放 Issue 开工：
+
+```bash
+reposteward project link /path/to/project
+reposteward task start /path/to/project --issue 123 --reviewed-by your-login
+reposteward task context <run-id> --format markdown
+reposteward task current /path/to/project --format markdown
+reposteward task inspect <run-id> --live
+```
+
+`start` 在线核对 Issue 的贡献门禁和本地 origin 基线，保存开发前的契约、指导来源、
+HEAD/base/policy 和快照。它不启动模型，也不修改源代码。源码存在未提交改动时可以
+登记开发快照，仍需独立分支。快照包含 tracked 和非忽略 untracked 文件，排除未跟踪
+敏感文件及缓存；数量或字节超限、特殊文件和无法安全解析的子模块明确拒绝。
+
+查询已有任务不需要 GitHub 认证或 Agent 安装。默认使用本地记录，`--live` 另外检查
+当前本地绑定；`task current` 返回所选工作区最新的活跃外部任务，并核对其
+当前本地绑定、代码与策略；这不等同于刷新线上 Issue。JSON 与 Markdown 由同一任务
+事实生成。任务契约、完整开放项、决定和下一步不能因输出预算静默丢失。
+
+在阶段结束时，把 Agent 自述写入一个 JSON 文件，例如：
+
+```json
+{"completed":["已完成初步调查"],"remaining":["补齐边界验证"],"next_action":"验证空输入"}
+```
+
+用 `task inspect --live` 返回的 revision 与 current_snapshot.digest 保存检查点：
+
+```bash
+reposteward task checkpoint <run-id> --expected-revision 0 \
+  --expected-snapshot <digest> --idempotency-key investigation-1 --input checkpoint.json
+```
+
+相同 key 和输入可以重试；过期 revision、代码变化或相同 key 对应不同内容会报冲突。
+省略的字段继承上一检查点，不会清空开放项。记录仍是 `running`，完成和测试声明是
+`agent_unverified`；Agent 不能用此入口设置 ready、verified 或人工审阅状态。
+数据库写入失败会同时回滚 checkpoint 与 revision。较旧包晚导入不取代当前外部任务
+的本地检查点。开发完毕后的发布资格继续通过干净提交的 `adopt`、验证和独立审阅取得。
+
+## 为已有 Coding Agent 接入任务入口
+
+先 `project link`，再为所用客户端预览全部写入路径和片段：
+
+```bash
+reposteward integration plan /path/to/project --client codex
+reposteward integration apply /path/to/project --client codex --plan-digest <digest>
+reposteward integration inspect /path/to/project
+reposteward integration plan /path/to/project --client codex --revert
+reposteward integration revert /path/to/project --client codex --plan-digest <digest>
+```
+
+客户端选项为 `codex`、`claude-code`、`copilot-vscode`。三者共用
+`.agents/reposteward-context.md` 的通用 CLI 指引，分别在 `AGENTS.md`、`CLAUDE.md`
+和 `.github/copilot-instructions.md` 追加受管理片段。任务数据仍从当前工作区的
+`task current` 读取，指引不包含 run ID、本机数据库路径或其他项目上下文。
+
+计划列出现有规则的路径、摘要和所在目录；嵌套规则的最终适用范围由客户端决定。
+原有文本保留，受管理片段之外的用户修改可继续保留并撤销接入；片段内发生漂移则
+停止写入。预览后文件变动需要重新生成计划。多个客户端共用的文件只在最后一个
+接入撤销时删除，预先存在的相同文件保留。中断写入留下本地日志，可用原客户端、
+操作和 plan digest 恢复；恢复时遇到用户改动会保留内容并报告冲突。
+
+Codex 通过项目指引读取共享文件；Claude Code 使用其 Markdown 导入语法。
+Copilot 此处专指 VS Code：生成仓库指引，并提供显式 `#file:` 引用后备步骤。
+这些命令不启动客户端，也不声称内容已经自动进入现有会话。
+实际客户端版本和会话接续验证在试点报告中单独记录。
+参考 [Codex 项目指引](https://learn.chatgpt.com/docs/agent-configuration/agents-md)、
+[Claude Code memory](https://code.claude.com/docs/en/memory) 和
+[GitHub Copilot customization](https://docs.github.com/en/copilot/reference/customization-cheat-sheet)。
+
+## 验证外部开发快照和取回证据
+
+外部 Agent 只能选择用户配置中的验证方案，不能提交任意命令。将方案放在用户自己的
+`~/.config/reposteward/config.toml`；项目文件中同名配置不生效：
+
+```toml
+[[verification_profiles]]
+repository = "owner/repo"
+name = "test"
+bootstrap_commands = ["uv sync --locked"]
+commands = ["uv run python -m unittest discover -s tests -v"]
+```
+
+命令仍需满足仓库允许前缀及必须验证标记。bootstrap 使用网络安装依赖，正式验证禁用
+网络，沿用加固 Docker 容器。运行前核对实际副本的文件、内容及可执行标记；bootstrap
+和验证后再次核对原有代码与源工作区，变化会使结果成为 unknown。开发期间可以验证
+未提交快照；这份证据不会把任务改为 ready，最终仍走干净提交的 adopt 和独立审阅。
+
+```bash
+reposteward verification profiles <run-id>
+reposteward task inspect <run-id> --live
+reposteward verification request <run-id> --profile test --expected-revision 0 \
+  --expected-snapshot <current-snapshot-digest> --idempotency-key test-1
+reposteward verification list <run-id> --limit 20
+reposteward verification inspect <run-id> verification:<id> --live
+reposteward verification evidence <run-id> log:<id>:0 --offset 0 --limit 8000
+```
+
+证据绑定 run、检查点版本、HEAD、base、策略、验证方案和实际源码快照。相同 key
+只返回原请求；输入不同则冲突。已完成的历史 passed 保留，但代码、检查点或配置
+改变后 `current_applicability` 不再匹配。失败为 failed，操作人中断为 cancelled，超时
+或缺少终态记录为 unknown；中断请求不自动复用成功，也不自动再次执行。
+
+查询限制在所选任务，正文按字符分页；来源可用 `source:<digest>`、检查点可用
+`checkpoint:<run-id>:<revision>` 取回。日志摘要记录完整输出摘要及已保留日志摘要，
+截断与缺失分别报告；正文被修改或丢失时返回 unknown。查询不调用模型或 GitHub。
+
+## 本地 MCP 辅助服务
+
+MCP 是已有 Coding Agent 会话的辅助入口。安装可选依赖后，在本机客户端中注册
+STDIO 服务；它只服务启动时绑定的一个工作区：
+
+```bash
+uv sync --extra mcp
+reposteward mcp config /path/to/project --client codex
+reposteward mcp serve /path/to/project
+```
+
+`config` 为 Codex、Claude Code 或 Copilot VS Code 输出各自的配置片段，不写客户端
+文件。输出包含当前 Python 和项目的本机路径，应放入用户自己的本地设置。
+客户端与服务必须在能访问该工作区的同一台机器上；云端托管 Agent 不因此获得本机访问。
+缺少 MCP 扩展或客户端能力时，继续使用 `integration` 生成的文件和 CLI 指引。
+
+工具固定为 `project`、`context`、`evidence`、`checkpoint`、`verification`。
+任务必须属于所绑定工作区；同一仓库的其他 clone/worktree 也不自动授权。
+解绑后访问失效。工具不提供任意路径、shell、GitHub 写入或 Agent 启动入口。
+输入按 JSON Schema 严格核验，单帧最多 120000 字节，结果最多 300000 字节；超过
+结果限制时需减少预算或条数，超大输入帧关闭连接。最多同时运行四个工具调用。
+
+MCP 与 CLI 调用相同的任务和验证服务，检查点同样要求 revision、snapshot 和幂等键。
+取消验证会通知执行线程、清理具体容器并保存 cancelled；进程突然退出且无终态记录
+时，可按原证据 ID 查询 unknown。STDIO 的 stdout 只用于协议，诊断进入 stderr。
+
+实现锁定官方 Python SDK 2.1.1，测试分别覆盖 2025-11-25 初始化握手和
+2026-07-28 每请求版本声明。客户端实机结果在接续试点中单独记录，协议测试通过
+不代表任意版本客户端均已验证。
+参考 [SDK v2](https://py.sdk.modelcontextprotocol.io/get-started/installation/)、
+[协议版本](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning)
+和 [STDIO](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio)。
+
+## 保存可以重验的项目经验
+
+经验先作为 `candidate` 保存，须指明适用路径、直接来源证据和可选条件。条件目前
+支持 `branch` 和 `verification_profile`，不执行模型提供的判断代码。候选不进入任务
+提示，MCP 也不提供晋升或修改规则文件的工具。
+
+```json
+{"statement":"修改此模块时应覆盖空输入", "scope_paths":["src/parser.py"],
+ "evidence_ids":["checkpoint:<run-id>:0"], "conditions":{"verification_profile":"test"}}
+```
+
+```bash
+reposteward knowledge propose <run-id> --input knowledge.json
+reposteward knowledge promote <run-id> <knowledge-id> --reviewed-by your-login \
+  --basis verification_evidence --verification-id verification:<id> --rationale "说明哪些测试支持这条经验"
+reposteward knowledge list <run-id> --scope-path src --limit 5
+reposteward knowledge inspect <run-id> <knowledge-id> --live
+reposteward knowledge withdraw <run-id> <knowledge-id> --reviewed-by your-login --reason "结论不适用"
+reposteward knowledge reject <run-id> <knowledge-id> --reviewed-by your-login --reason "证据不足"
+reposteward task context <run-id> --scope-path src --format markdown
+```
+
+审阅后状态为 `reviewed`，依据始终明确区分 `human_confirmation` 和
+`verification_evidence`。前者是人工确认，后者要求当前快照的测试证据通过，另由审阅人
+说明证据与结论的关系；测试通过本身不会自动证明模型的任意总结。
+
+依赖摘要覆盖所声明路径中的文件。路径内代码或引用来源变化、条件不符、验证配置
+变化后，条目显示 `stale` 并从默认提示中移除；路径之外的编辑不自动使其失效。
+声明路径也承担重验范围，需要审阅人确认依赖范围完整。查询只核对本地证据，线上
+来源是否更新仍需明确刷新。`--all` 可查看候选、过期与被替代条目。
+
+查询先筛选状态与路径范围，再按更新时间及 ID 降序核对最多 200 条匹配记录。
+新增候选和无关路径不会挤出范围内的已审阅知识。`scanned` 是本次核对数量，
+`suppressed` 是其中未通过有效性检查的数量，`omitted` 只统计本次窗口内超过返回
+上限的有效结果，不是整个项目的遗漏总数。`scan_incomplete` 表示还有未核对记录。
+只要 `next_cursor` 非空，即可沿用同一范围和 `--all` 设置继续查询；即使当前页为空也应如此：
+
+```bash
+reposteward knowledge list <run-id> --scope-path src --cursor <next-cursor>
+```
+
+游标绑定项目、工作区和查询范围；它只定位下一页，不授予访问或审阅权限。
+分页是实时视图，期间条目被审阅或替代会改变排序；需要最新完整视图时从首重新查询，
+并按 ID 去重。task context 的 `knowledge` 保留同样的继续线索，Agent 可以通过 CLI
+按需取回，避免一次把全部历史知识送入提示。
+
+更新经验时在新提案中设置 `supersedes`，新提案审阅通过后才原子替代旧条目，保留
+历史关系。重复提案和相同审阅幂等。跨项目查询隔离，不自动把业务经验升级为通用
+偏好，不复制原生聊天或改写项目的 AGENTS/CLAUDE/skills 文件。
+
+任务仅在显式提供 `--scope-path` 时选择最多五条有效经验；MCP 的 `context` 对应
+参数为 `scope_paths`。预算不足先省略可取回的经验，并记录数量、来源与摘要；需求、
+开放项与决定继续保留。正文可通过 `verification evidence <run-id> knowledge:<id>`
+有界取回。此流程沿用 #82/PR #84 的证据回顾思路，规则文件的最终变更仍需目标项目审阅。
+
+通用偏好单独放在用户配置的顶层 `guidance_preferences = ["偏好简短说明"]` 中，
+最多十条、每条一千字符；仓库文件里的同名字段不生效。上下文将其标为
+`user_preference`，不与项目经验或测试事实混合；预算不足时记录省略数量。
+项目经验不会自动写入此用户配置。
+
+## 多项目待办
+
+```bash
+reposteward overview show --project-limit 10 --item-limit 10 --format text
+reposteward overview refresh --project-limit 10 --item-limit 10
+reposteward overview show --previous-digest <digest>
+```
+
+默认只读已关联且配置启用的本机项目，展示本地任务与缓存的 PR 状态，不认证 GitHub、
+不启动 Harness。`refresh` 才联网更新缓存。每次最多五十个项目、每项目五十项输出；
+每项目最多检查二十个当前外部任务和五十个远程 PR 详情，未覆盖部分明确计数或标为
+不完整。刷新失败保留上次快照及其时间，同时显示错误；一个项目损坏不会把其他项目
+的待办变成空列表。缺少本地数据库时，show 报告 unknown，不创建或迁移数据库。
+
+视图复用既有 inbox/portfolio 和已审计合并终态规则。外部开发另列 dirty、阻塞、验证
+缺失/失败/未知/陈旧及等待本地审阅。新外部尝试不会遮住同 Issue 已管理的 PR。
+同一工作区、同一任务的接续尝试合并重复展示，并报告数量；变化后的事实重新出现。
+`--previous-digest` 比较事实，读取时间不导致无意义变化，尚未处理的反馈和 unknown
+始终保持可见。查看或刷新不会消耗反馈处理状态或读取水位。
+
+每项附下一步与可用的生命周期 trace、检查点或验证引用。较长下一步文本只展示前
+一千字符并注明省略量，完整记录从检查点证据取回。开发验证成功继续表示本地开发
+证据，仍需审阅余项、形成干净提交并走 adopt；视图不自动提交、发布或合并。
+
+已有 Coding Agent 的项目关联、接续、独立验证与当前能力限制见[使用指南](coding-agent-assistance.zh-CN.md)。
+
+
+### 撤回与拒绝项目知识
+
+`knowledge withdraw` 将已审阅经验置为 `withdrawn`，`knowledge reject` 将候选置为
+`rejected`。两者都要求配置中的维护者身份和 1–2000 字符的原因，不写 GitHub。
+即使来源已经陈旧，也可以明确停用；任务身份和工作区绑定仍需有效。
+默认查询及任务上下文排除这些记录。`inspect` 和 `list --all` 保留原审阅、来源、
+停用原因与时间；状态和单条终态决策在同一事务中保存，重复相同决策幂等，冲突决策拒绝。
+终态记录不能重新晋升。需要修正时提出带 `supersedes` 的新候选并重新审阅，旧记录
+保留停用状态和原因，同时指向后继。停用是维护者决定，不是自动推导的测试结论。
+
+此功能需要任务数据库 schema 27。先停止旧写入客户端，按
+[状态升级指南](state-upgrades.zh-CN.md)备份并显式迁移；只读查询不会自动升级。
+
+### 技能使用事件与效果证据
+
+在已创建的外部任务上显式记录技能使用；此入口不读取聊天记录、不安装客户端 hook，
+不会自动捕获所有技能调用。调用方先对实际使用的技能文件计算 SHA256，再提交 JSON：
+
+```json
+{
+  "event_id": "event-001",
+  "attempt_id": "attempt-001",
+  "revision": 0,
+  "skill_name": "verify-change",
+  "skill_digest": "替换为实际技能文件的64位小写SHA256",
+  "phase": "loaded",
+  "client": "codex",
+  "model": "填写实际模型标识或unknown",
+  "trigger": "change_verification"
+}
+```
+
+```sh
+reposteward skill-usage record <run-id> --input skill-event.json
+reposteward skill-usage report <run-id> --limit 50
+reposteward skill-usage report <run-id> --cursor <next-cursor>
+```
+
+`phase` 区分 `visible`、`loaded`、`executed`、`skipped`；`trigger` 支持
+`project_understanding`、`task_resume`、`change_verification`、`pr_maintenance`、`other`。
+标识字段只接受有界、无空白的标识符，不接受命令或聊天正文字段。输入文件最多 8192 字节。
+同一动作尝试使用相同 `attempt_id`；各阶段使用不同 `event_id`，传输重试复用原事件 ID。
+同一尝试、技能名称及摘要、阶段不能以另一个 ID 重复记录。摘要和执行阶段是调用方声明，
+报告标记 `agent_reported` / `caller_reported`，不是服务端自动观察到的执行事实。
+
+执行阶段可附 `verification_id: "verification:<id>"`，必须引用同一任务、同一 revision
+的终态验证。记录只保存引用及摘要，不复制验证正文。报告重新核对证据是否变化，展示
+当时的验证结果；`current_applicability=not_checked` 不代表当前工作区仍通过验证。
+失败验证也能记录；验证通过不能证明某技能导致成功。报告不产生技能成功率或节约比例。
+
+报告每次最多 100 个事件，游标绑定任务、项目与工作区；`page_counts` 只统计当前页，
+跨页的 `attempts` 不可直接相加。完整分析须取完分页并按 run、attempt、技能版本和模型
+去重分组，关联既有 usage 与验证台账，不能重复计入 token。任务 revision 改变后拒绝
+新的旧 revision 事件；完全相同的已存事件重试仍返回原记录。
+此能力仅提供可观测采集，暂不自动生成或应用技能改进规则。需要任务库 schema 28；
+升级前停止旧写入客户端并按状态升级指南保存备份。
