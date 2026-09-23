@@ -1,0 +1,3644 @@
+{
+  "components": {
+    "schemas": {
+      "Attention": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "issue_number": {
+            "default": 0,
+            "title": "Issue Number",
+            "type": "integer"
+          },
+          "next_command": {
+            "default": "",
+            "title": "Next Command",
+            "type": "string"
+          },
+          "priority": {
+            "title": "Priority",
+            "type": "integer"
+          },
+          "pull_number": {
+            "default": 0,
+            "title": "Pull Number",
+            "type": "integer"
+          },
+          "reason_code": {
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "run_id": {
+            "default": "",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "source_updated_at": {
+            "default": "",
+            "title": "Source Updated At",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "priority",
+          "summary",
+          "reason_code"
+        ],
+        "title": "Attention",
+        "type": "object"
+      },
+      "Code": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "evidence_id": {
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Source"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "status",
+          "text"
+        ],
+        "title": "Code",
+        "type": "object"
+      },
+      "Commands": {
+        "properties": {
+          "mcp_clients": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Mcp Clients",
+            "type": "object"
+          },
+          "scan": {
+            "title": "Scan",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scan",
+          "mcp_clients"
+        ],
+        "title": "Commands",
+        "type": "object"
+      },
+      "ControlRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Revision",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_revision"
+        ],
+        "title": "ControlRequest",
+        "type": "object"
+      },
+      "GitHubItem": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "checks": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checks"
+          },
+          "head_sha": {
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "observed_at": {
+            "title": "Observed At",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "closed",
+              "merged"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "number",
+          "title",
+          "state",
+          "author",
+          "url",
+          "updated_at",
+          "observed_at",
+          "head_sha"
+        ],
+        "title": "GitHubItem",
+        "type": "object"
+      },
+      "GitHubView": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "coverage": {
+            "title": "Coverage",
+            "type": "string"
+          },
+          "has_more_remote": {
+            "title": "Has More Remote",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/GitHubItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "never_synced": {
+            "title": "Never Synced",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "title": "Next Cursor",
+            "type": "string"
+          },
+          "observed_count": {
+            "title": "Observed Count",
+            "type": "integer"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "snapshot": {
+            "title": "Snapshot",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/JsonValue"
+              },
+              "type": "object"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          }
+        },
+        "required": [
+          "project_id",
+          "repository",
+          "kind",
+          "items",
+          "sources",
+          "snapshot",
+          "next_cursor",
+          "has_more_remote",
+          "total",
+          "observed_count",
+          "never_synced",
+          "coverage"
+        ],
+        "title": "GitHubView",
+        "type": "object"
+      },
+      "Guide": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "reading_path": {
+            "items": {
+              "$ref": "#/components/schemas/ReadingStep"
+            },
+            "title": "Reading Path",
+            "type": "array"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "scanned_at": {
+            "default": "",
+            "title": "Scanned At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "repository"
+        ],
+        "title": "Guide",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Handoff": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "acknowledgement": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledgement"
+          },
+          "client": {
+            "title": "Client",
+            "type": "string"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_applicability": {
+            "title": "Current Applicability",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "execution_observed": {
+            "title": "Execution Observed",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "package_state": {
+            "title": "Package State",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "verification_granted": {
+            "title": "Verification Granted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "run_id",
+          "client",
+          "digest",
+          "created_at",
+          "package_state",
+          "current_applicability",
+          "acknowledgement",
+          "execution_observed",
+          "verification_granted",
+          "content"
+        ],
+        "title": "Handoff",
+        "type": "object"
+      },
+      "HandoffList": {
+        "properties": {
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Handoff"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "title": "HandoffList",
+        "type": "object"
+      },
+      "HandoffRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "budget": {
+            "maximum": 100000.0,
+            "minimum": 512.0,
+            "title": "Budget",
+            "type": "integer"
+          },
+          "client": {
+            "enum": [
+              "codex",
+              "claude-code",
+              "copilot-vscode"
+            ],
+            "title": "Client",
+            "type": "string"
+          },
+          "expected_plan": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Plan",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "run_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "run_id",
+          "budget",
+          "expected_plan",
+          "client"
+        ],
+        "title": "HandoffRequest",
+        "type": "object"
+      },
+      "ImportApplyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "import_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Import Id",
+            "type": "string"
+          },
+          "preview_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Preview Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "import_id",
+          "preview_id",
+          "expected_digest"
+        ],
+        "title": "ImportApplyRequest",
+        "type": "object"
+      },
+      "ImportPlanRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "import_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Import Id",
+            "type": "string"
+          },
+          "inspection_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Inspection Id",
+            "type": "string"
+          },
+          "method": {
+            "enum": [
+              "link",
+              "clone",
+              "watch"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "purpose": {
+            "enum": [
+              "maintain",
+              "contribute",
+              "watch"
+            ],
+            "title": "Purpose",
+            "type": "string"
+          },
+          "target": {
+            "default": "",
+            "maxLength": 4096,
+            "title": "Target",
+            "type": "string"
+          }
+        },
+        "required": [
+          "import_id",
+          "inspection_id",
+          "method",
+          "purpose"
+        ],
+        "title": "ImportPlanRequest",
+        "type": "object"
+      },
+      "ImportPreview": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/Record"
+          }
+        },
+        "required": [
+          "id",
+          "digest",
+          "plan"
+        ],
+        "title": "ImportPreview",
+        "type": "object"
+      },
+      "ImportSource": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "github_url",
+              "local_path"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "value": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "value"
+        ],
+        "title": "ImportSource",
+        "type": "object"
+      },
+      "ImportView": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inspection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Record"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inspection_id": {
+            "title": "Inspection Id",
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/Operation"
+            },
+            "title": "Operations",
+            "type": "array"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Record"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "preview_id": {
+            "title": "Preview Id",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ImportSource"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "inspection",
+          "inspection_id",
+          "preview",
+          "preview_id",
+          "operations"
+        ],
+        "title": "ImportView",
+        "type": "object"
+      },
+      "JsonValue": {},
+      "Meta": {
+        "properties": {
+          "api_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "generated_at"
+        ],
+        "title": "Meta",
+        "type": "object"
+      },
+      "NativeOperation": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "can_cancel": {
+            "const": false,
+            "default": false,
+            "title": "Can Cancel",
+            "type": "boolean"
+          },
+          "can_retry": {
+            "const": false,
+            "default": false,
+            "title": "Can Retry",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "issue_number": {
+            "title": "Issue Number",
+            "type": "integer"
+          },
+          "last_error_code": {
+            "title": "Last Error Code",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "pull_number": {
+            "title": "Pull Number",
+            "type": "integer"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "trace_command": {
+            "title": "Trace Command",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "repository",
+          "action",
+          "state",
+          "run_id",
+          "issue_number",
+          "pull_number",
+          "updated_at",
+          "last_error_code",
+          "trace_command"
+        ],
+        "title": "NativeOperation",
+        "type": "object"
+      },
+      "Operation": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "attempt_count": {
+            "title": "Attempt Count",
+            "type": "integer"
+          },
+          "attempts": {
+            "items": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/JsonValue"
+              },
+              "type": "object"
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
+          "available_at": {
+            "title": "Available At",
+            "type": "string"
+          },
+          "binding_id": {
+            "default": "",
+            "title": "Binding Id",
+            "type": "string"
+          },
+          "can_cancel": {
+            "title": "Can Cancel",
+            "type": "boolean"
+          },
+          "can_retry": {
+            "title": "Can Retry",
+            "type": "boolean"
+          },
+          "cancel_requested": {
+            "default": false,
+            "title": "Cancel Requested",
+            "type": "boolean"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "import_id": {
+            "default": "",
+            "title": "Import Id",
+            "type": "string"
+          },
+          "last_error_code": {
+            "title": "Last Error Code",
+            "type": "string"
+          },
+          "max_attempts": {
+            "title": "Max Attempts",
+            "type": "integer"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "run_id": {
+            "default": "",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stages": {
+            "items": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/JsonValue"
+              },
+              "type": "object"
+            },
+            "title": "Stages",
+            "type": "array"
+          },
+          "stages_omitted": {
+            "default": 0,
+            "title": "Stages Omitted",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "action",
+          "repository",
+          "state",
+          "revision",
+          "attempt_count",
+          "max_attempts",
+          "created_at",
+          "updated_at",
+          "available_at",
+          "last_error_code",
+          "can_cancel",
+          "can_retry",
+          "stages",
+          "attempts"
+        ],
+        "title": "Operation",
+        "type": "object"
+      },
+      "OperationList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Operation"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "native_items": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/NativeOperation"
+            },
+            "title": "Native Items",
+            "type": "array"
+          },
+          "native_next_before": {
+            "default": 0,
+            "title": "Native Next Before",
+            "type": "integer"
+          },
+          "next_before": {
+            "title": "Next Before",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "next_before"
+        ],
+        "title": "OperationList",
+        "type": "object"
+      },
+      "Overview": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "excluded_projects": {
+            "title": "Excluded Projects",
+            "type": "integer"
+          },
+          "observed_at": {
+            "title": "Observed At",
+            "type": "string"
+          },
+          "omitted_projects": {
+            "title": "Omitted Projects",
+            "type": "integer"
+          },
+          "overview_digest": {
+            "title": "Overview Digest",
+            "type": "string"
+          },
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/OverviewProject"
+            },
+            "title": "Projects",
+            "type": "array"
+          }
+        },
+        "required": [
+          "projects",
+          "complete",
+          "omitted_projects",
+          "excluded_projects",
+          "observed_at",
+          "overview_digest"
+        ],
+        "title": "Overview",
+        "type": "object"
+      },
+      "OverviewProject": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Attention"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "omitted": {
+            "title": "Omitted",
+            "type": "integer"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "sources": {
+            "$ref": "#/components/schemas/SourceStatus"
+          }
+        },
+        "required": [
+          "project_id",
+          "repository",
+          "complete",
+          "items",
+          "omitted",
+          "sources"
+        ],
+        "title": "OverviewProject",
+        "type": "object"
+      },
+      "Policy": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "task_access": {
+            "title": "Task Access",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "mode",
+          "enabled",
+          "task_access"
+        ],
+        "title": "Policy",
+        "type": "object"
+      },
+      "Project": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "host": {
+            "title": "Host",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "identity": {
+            "title": "Identity",
+            "type": "string"
+          },
+          "missing_workspaces": {
+            "default": 0,
+            "title": "Missing Workspaces",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/Policy"
+          },
+          "purpose": {
+            "default": "unspecified",
+            "title": "Purpose",
+            "type": "string"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "workspace_check_omitted": {
+            "default": 0,
+            "title": "Workspace Check Omitted",
+            "type": "integer"
+          },
+          "workspace_count": {
+            "default": 0,
+            "title": "Workspace Count",
+            "type": "integer"
+          },
+          "workspaces": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceRef"
+            },
+            "title": "Workspaces",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "identity",
+          "host",
+          "repository",
+          "name",
+          "created_at",
+          "policy"
+        ],
+        "title": "Project",
+        "type": "object"
+      },
+      "Projects": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "omitted": {
+            "title": "Omitted",
+            "type": "integer"
+          },
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/Project"
+            },
+            "title": "Projects",
+            "type": "array"
+          },
+          "public_write": {
+            "const": false,
+            "default": false,
+            "title": "Public Write",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "projects",
+          "omitted"
+        ],
+        "title": "Projects",
+        "type": "object"
+      },
+      "ReadingStep": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Source"
+          },
+          "step": {
+            "title": "Step",
+            "type": "integer"
+          },
+          "summary": {
+            "default": "",
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "path",
+          "reason",
+          "language",
+          "source"
+        ],
+        "title": "ReadingStep",
+        "type": "object"
+      },
+      "ReceiptRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "handoff_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Handoff Id",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "run_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "run_id",
+          "handoff_id",
+          "expected_digest"
+        ],
+        "title": "ReceiptRequest",
+        "type": "object"
+      },
+      "Record": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {},
+        "title": "Record",
+        "type": "object"
+      },
+      "Response_Code_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Code"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[Code]",
+        "type": "object"
+      },
+      "Response_GitHubView_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/GitHubView"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[GitHubView]",
+        "type": "object"
+      },
+      "Response_HandoffList_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/HandoffList"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[HandoffList]",
+        "type": "object"
+      },
+      "Response_Handoff_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Handoff"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[Handoff]",
+        "type": "object"
+      },
+      "Response_ImportPreview_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ImportPreview"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[ImportPreview]",
+        "type": "object"
+      },
+      "Response_ImportView_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ImportView"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[ImportView]",
+        "type": "object"
+      },
+      "Response_OperationList_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/OperationList"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[OperationList]",
+        "type": "object"
+      },
+      "Response_Operation_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Operation"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[Operation]",
+        "type": "object"
+      },
+      "Response_Overview_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Overview"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[Overview]",
+        "type": "object"
+      },
+      "Response_Projects_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Projects"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[Projects]",
+        "type": "object"
+      },
+      "Response_Review_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Review"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[Review]",
+        "type": "object"
+      },
+      "Response_ScanPlan_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ScanPlan"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[ScanPlan]",
+        "type": "object"
+      },
+      "Response_Session_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Session"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[Session]",
+        "type": "object"
+      },
+      "Response_Settings_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Settings"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[Settings]",
+        "type": "object"
+      },
+      "Response_TaskPreview_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/TaskPreview"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[TaskPreview]",
+        "type": "object"
+      },
+      "Response_Task_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Task"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[Task]",
+        "type": "object"
+      },
+      "Response_Tasks_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Tasks"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[Tasks]",
+        "type": "object"
+      },
+      "Response_Workspace_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Workspace"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Response[Workspace]",
+        "type": "object"
+      },
+      "Review": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "decision_freshness": {
+            "const": "historical_only",
+            "title": "Decision Freshness",
+            "type": "string"
+          },
+          "publication_eligible": {
+            "const": false,
+            "title": "Publication Eligible",
+            "type": "boolean"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "trace": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Trace",
+            "type": "object"
+          },
+          "verification": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification"
+          }
+        },
+        "required": [
+          "run_id",
+          "trace",
+          "verification",
+          "decision_freshness",
+          "publication_eligible"
+        ],
+        "title": "Review",
+        "type": "object"
+      },
+      "ScanPlan": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "binding_id": {
+            "title": "Binding Id",
+            "type": "string"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/Record"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Record"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "rebuild": {
+            "title": "Rebuild",
+            "type": "boolean"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "root": {
+            "title": "Root",
+            "type": "string"
+          },
+          "source_digest": {
+            "title": "Source Digest",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/Record"
+          }
+        },
+        "required": [
+          "project_id",
+          "binding_id",
+          "root",
+          "revision",
+          "source_digest",
+          "rebuild",
+          "state",
+          "coverage",
+          "limits"
+        ],
+        "title": "ScanPlan",
+        "type": "object"
+      },
+      "ScanRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "binding_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Binding Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Revision",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "rebuild": {
+            "default": false,
+            "title": "Rebuild",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id",
+          "binding_id",
+          "expected_revision"
+        ],
+        "title": "ScanRequest",
+        "type": "object"
+      },
+      "Session": {
+        "properties": {
+          "api_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "capabilities": {
+            "items": {
+              "enum": [
+                "read_local",
+                "manage_local"
+              ],
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "expires_in_seconds": {
+            "title": "Expires In Seconds",
+            "type": "integer"
+          },
+          "frontend_digest": {
+            "title": "Frontend Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capabilities",
+          "expires_in_seconds",
+          "frontend_digest"
+        ],
+        "title": "Session",
+        "type": "object"
+      },
+      "Settings": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "configuration": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Configuration",
+            "type": "object"
+          },
+          "databases": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Databases",
+            "type": "object"
+          },
+          "installation": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Installation",
+            "type": "object"
+          },
+          "next_actions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Next Actions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "installation",
+          "configuration",
+          "databases",
+          "next_actions"
+        ],
+        "title": "Settings",
+        "type": "object"
+      },
+      "Source": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "end_line": {
+            "title": "End Line",
+            "type": "integer"
+          },
+          "evidence_id": {
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "line": {
+            "title": "Line",
+            "type": "integer"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "trust": {
+            "title": "Trust",
+            "type": "string"
+          },
+          "url": {
+            "default": "",
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "path",
+          "line",
+          "end_line",
+          "digest",
+          "trust"
+        ],
+        "title": "Source",
+        "type": "object"
+      },
+      "SourceStatus": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "fetched_at": {
+            "default": "",
+            "title": "Fetched At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "SourceStatus",
+        "type": "object"
+      },
+      "SyncRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "SyncRequest",
+        "type": "object"
+      },
+      "Task": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context"
+          },
+          "context_status": {
+            "title": "Context Status",
+            "type": "string"
+          },
+          "current_applicability": {
+            "title": "Current Applicability",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "external",
+              "managed"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "kind",
+          "context",
+          "context_status",
+          "current_applicability",
+          "command"
+        ],
+        "title": "Task",
+        "type": "object"
+      },
+      "TaskAttempt": {
+        "properties": {
+          "binding_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binding Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "issue_number": {
+            "title": "Issue Number",
+            "type": "integer"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "work_item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Item Id"
+          },
+          "work_item_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Item Status"
+          }
+        },
+        "required": [
+          "id",
+          "issue_number",
+          "stage",
+          "status",
+          "updated_at",
+          "title"
+        ],
+        "title": "TaskAttempt",
+        "type": "object"
+      },
+      "TaskPreview": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "authority": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Authority",
+            "type": "object"
+          },
+          "budget": {
+            "title": "Budget",
+            "type": "integer"
+          },
+          "context": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Context",
+            "type": "object"
+          },
+          "coverage": {
+            "items": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/JsonValue"
+              },
+              "type": "object"
+            },
+            "title": "Coverage",
+            "type": "array"
+          },
+          "estimated_tokens": {
+            "title": "Estimated Tokens",
+            "type": "integer"
+          },
+          "export_available": {
+            "title": "Export Available",
+            "type": "boolean"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "plan_digest": {
+            "title": "Plan Digest",
+            "type": "string"
+          },
+          "profiles": {
+            "items": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/JsonValue"
+              },
+              "type": "object"
+            },
+            "title": "Profiles",
+            "type": "array"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "validity": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Validity",
+            "type": "array"
+          },
+          "verification_available": {
+            "title": "Verification Available",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id",
+          "run_id",
+          "kind",
+          "context",
+          "authority",
+          "plan_digest",
+          "budget",
+          "estimated_tokens",
+          "export_available",
+          "verification_available",
+          "validity",
+          "profiles",
+          "coverage"
+        ],
+        "title": "TaskPreview",
+        "type": "object"
+      },
+      "TaskVerificationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "budget": {
+            "maximum": 100000.0,
+            "minimum": 512.0,
+            "title": "Budget",
+            "type": "integer"
+          },
+          "expected_plan": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Plan",
+            "type": "string"
+          },
+          "profile": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Profile",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "run_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "run_id",
+          "budget",
+          "expected_plan",
+          "profile"
+        ],
+        "title": "TaskVerificationRequest",
+        "type": "object"
+      },
+      "Tasks": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "omitted": {
+            "title": "Omitted",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskAttempt"
+            },
+            "title": "Tasks",
+            "type": "array"
+          },
+          "work_items": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/WorkItemView"
+            },
+            "title": "Work Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tasks",
+          "omitted",
+          "status"
+        ],
+        "title": "Tasks",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "WorkItemView": {
+        "properties": {
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/TaskAttempt"
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "issue_number": {
+            "title": "Issue Number",
+            "type": "integer"
+          },
+          "recorded_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded Status"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "issue_number",
+          "recorded_status",
+          "attempts"
+        ],
+        "title": "WorkItemView",
+        "type": "object"
+      },
+      "Workspace": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "binding": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Binding",
+            "type": "object"
+          },
+          "command_shell": {
+            "title": "Command Shell",
+            "type": "string"
+          },
+          "commands": {
+            "$ref": "#/components/schemas/Commands"
+          },
+          "guide": {
+            "$ref": "#/components/schemas/Guide"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/Policy"
+          },
+          "project": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Project",
+            "type": "object"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/WorkspaceState"
+          }
+        },
+        "required": [
+          "project",
+          "binding",
+          "workspace",
+          "policy",
+          "guide",
+          "commands",
+          "command_shell"
+        ],
+        "title": "Workspace",
+        "type": "object"
+      },
+      "WorkspaceRef": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "root": {
+            "title": "Root",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "root"
+        ],
+        "title": "WorkspaceRef",
+        "type": "object"
+      },
+      "WorkspaceState": {
+        "properties": {
+          "branch": {
+            "title": "Branch",
+            "type": "string"
+          },
+          "dirty": {
+            "title": "Dirty",
+            "type": "boolean"
+          },
+          "head": {
+            "title": "Head",
+            "type": "string"
+          }
+        },
+        "required": [
+          "head",
+          "branch",
+          "dirty"
+        ],
+        "title": "WorkspaceState",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "RepoSteward local workbench",
+    "version": "1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/code": {
+      "get": {
+        "operationId": "code",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Binding Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "evidence_id",
+            "required": true,
+            "schema": {
+              "pattern": "^code:[0-9a-f]{64}$",
+              "title": "Evidence Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_line",
+            "required": false,
+            "schema": {
+              "default": "1",
+              "pattern": "^[1-9][0-9]{0,6}$",
+              "title": "Start Line",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Code_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Code"
+      }
+    },
+    "/api/v1/commands/github/sync": {
+      "post": {
+        "operationId": "syncGitHub",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Operation_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync"
+      }
+    },
+    "/api/v1/commands/operations/cancel": {
+      "post": {
+        "operationId": "cancelOperation",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ControlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Operation_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel"
+      }
+    },
+    "/api/v1/commands/operations/retry": {
+      "post": {
+        "operationId": "retryOperation",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ControlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Operation_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry"
+      }
+    },
+    "/api/v1/commands/projects/apply": {
+      "post": {
+        "operationId": "applyProject",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Operation_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply"
+      }
+    },
+    "/api/v1/commands/projects/inspect": {
+      "post": {
+        "operationId": "inspectProject",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportSource"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Operation_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inspect"
+      }
+    },
+    "/api/v1/commands/projects/plan": {
+      "post": {
+        "operationId": "planProject",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportPlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_ImportPreview_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Plan"
+      }
+    },
+    "/api/v1/commands/tasks/acknowledge": {
+      "post": {
+        "operationId": "acknowledgeHandoff",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReceiptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Handoff_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Acknowledge"
+      }
+    },
+    "/api/v1/commands/tasks/handoff": {
+      "post": {
+        "operationId": "exportHandoff",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandoffRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Handoff_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export"
+      }
+    },
+    "/api/v1/commands/tasks/verify": {
+      "post": {
+        "operationId": "verifyTask",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskVerificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Operation_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify"
+      }
+    },
+    "/api/v1/commands/workspaces/scan": {
+      "post": {
+        "operationId": "scanWorkspace",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Operation_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scan"
+      }
+    },
+    "/api/v1/github": {
+      "get": {
+        "operationId": "github",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "default": "pulls",
+              "enum": [
+                "pulls",
+                "issues",
+                "activity"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 100,
+              "title": "Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "number",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 999999999,
+              "minimum": 0,
+              "title": "Number",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_GitHubView_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Github"
+      }
+    },
+    "/api/v1/handoff": {
+      "get": {
+        "operationId": "handoff",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "handoff_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Handoff Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Handoff_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Handoff"
+      }
+    },
+    "/api/v1/handoffs": {
+      "get": {
+        "operationId": "handoffs",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_HandoffList_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Handoffs"
+      }
+    },
+    "/api/v1/import": {
+      "get": {
+        "operationId": "projectImport",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Import Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_ImportView_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Show"
+      }
+    },
+    "/api/v1/operation": {
+      "get": {
+        "operationId": "operation",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "operation_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Operation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Operation_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Operation"
+      }
+    },
+    "/api/v1/operations": {
+      "get": {
+        "operationId": "operations",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "pattern": "^(?:[0-9a-f]{32})?$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Before",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_OperationList_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Operations"
+      }
+    },
+    "/api/v1/overview": {
+      "get": {
+        "operationId": "overview",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Overview_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Overview"
+      }
+    },
+    "/api/v1/projects": {
+      "get": {
+        "operationId": "projects",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Projects_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Projects"
+      }
+    },
+    "/api/v1/review": {
+      "get": {
+        "operationId": "review",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Review_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review"
+      }
+    },
+    "/api/v1/scan-plan": {
+      "get": {
+        "operationId": "scanPlan",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Binding Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "rebuild",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Rebuild",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_ScanPlan_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview"
+      }
+    },
+    "/api/v1/session": {
+      "get": {
+        "operationId": "session",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Session_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Current Session"
+      }
+    },
+    "/api/v1/settings": {
+      "get": {
+        "operationId": "settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Settings_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Settings"
+      }
+    },
+    "/api/v1/task": {
+      "get": {
+        "operationId": "task",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Task_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Task"
+      }
+    },
+    "/api/v1/task-preview": {
+      "get": {
+        "operationId": "taskPreview",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "budget",
+            "required": false,
+            "schema": {
+              "default": 24000,
+              "maximum": 100000,
+              "minimum": 512,
+              "title": "Budget",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_TaskPreview_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview"
+      }
+    },
+    "/api/v1/tasks": {
+      "get": {
+        "operationId": "tasks",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Tasks_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Tasks"
+      }
+    },
+    "/api/v1/workspace": {
+      "get": {
+        "operationId": "workspace",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Binding Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "focus",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 2000,
+              "title": "Focus",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_Workspace_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Workspace"
+      }
+    }
+  }
+}

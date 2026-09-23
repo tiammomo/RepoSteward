@@ -43,3 +43,8 @@
 3. Refresh the Context Pack and Checkpoint after material decisions or verification.
 4. Before switching harness, account, or maintainer, export the portable bundle and
    state the exact next action, blockers, risks, HEAD, and observed tests.
+5. After a PR merges, use the repository branch-cleanup skill to plan removal of its
+   exact remote head. Delete only after a fresh merged-PR, SHA, protection, default,
+   and open-reference check. Retain active, shared, fork, and closed-unmerged heads.
+   Bind apply to the reviewed plan digest and identity; reconcile an incomplete delete
+   intent before any retry. Cleanup failure must not rewrite the successful merge state.

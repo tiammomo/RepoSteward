@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tiammomo/RepoSteward/schemas/benchmark-report-v1.schema.json",
+  "title": "RepoStewardBench report v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "suite_id",
+    "benchmark_version",
+    "generated_at",
+    "git_sha",
+    "environment",
+    "selection",
+    "summary",
+    "scenarios",
+    "harness_invoked",
+    "network_access",
+    "public_write"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "suite_id": {"type": "string", "minLength": 1},
+    "benchmark_version": {"type": "string", "minLength": 1},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "git_sha": {"type": "string", "pattern": "^([0-9a-f]{40})?$"},
+    "environment": {
+      "type": "object",
+      "required": ["python", "implementation", "system", "machine"],
+      "additionalProperties": {"type": "string"}
+    },
+    "selection": {
+      "type": "object",
+      "required": ["categories", "scenario_ids", "repeat"],
+      "properties": {
+        "categories": {"type": "array", "items": {"type": "string"}},
+        "scenario_ids": {"type": "array", "items": {"type": "string"}},
+        "repeat": {"type": "integer", "minimum": 2, "maximum": 20}
+      },
+      "additionalProperties": false
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "scenario_count",
+        "passed",
+        "failed",
+        "critical_scenarios",
+        "critical_failed",
+        "hard_gate_pass",
+        "all_passed",
+        "deterministic",
+        "categories",
+        "timing_is_informational"
+      ],
+      "properties": {
+        "scenario_count": {"type": "integer", "minimum": 0},
+        "passed": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "critical_scenarios": {"type": "integer", "minimum": 0},
+        "critical_failed": {"type": "integer", "minimum": 0},
+        "hard_gate_pass": {"type": "boolean"},
+        "all_passed": {"type": "boolean"},
+        "deterministic": {"type": "boolean"},
+        "categories": {"type": "object"},
+        "timing_is_informational": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "category",
+          "critical",
+          "description",
+          "assertions",
+          "passed",
+          "deterministic",
+          "repeat",
+          "median_duration_ms",
+          "result_digest",
+          "metrics",
+          "facts",
+          "failures"
+        ],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "category": {"type": "string", "minLength": 1},
+          "critical": {"type": "boolean"},
+          "description": {"type": "string", "minLength": 1},
+          "assertions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["metric", "operator", "value"],
+              "properties": {
+                "metric": {"type": "string", "minLength": 1},
+                "operator": {"enum": ["eq", "ge", "gt", "le", "lt"]},
+                "value": {"type": "number"}
+              },
+              "additionalProperties": false
+            }
+          },
+          "passed": {"type": "boolean"},
+          "deterministic": {"type": "boolean"},
+          "repeat": {"type": "integer", "minimum": 2},
+          "median_duration_ms": {"type": "number", "minimum": 0},
+          "result_digest": {"type": "string", "pattern": "^([0-9a-f]{64})?$"},
+          "metrics": {"type": "object"},
+          "facts": {"type": "object"},
+          "failures": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "baseline_comparison": {"type": "object"},
+    "harness_invoked": {"const": false},
+    "network_access": {"const": false},
+    "public_write": {"const": false}
+  },
+  "additionalProperties": false
+}

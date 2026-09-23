@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 from reposteward.cli import main
-from reposteward.config import load_config
+from reposteward.core.config import load_config
 
 
 class CliSetupTests(unittest.TestCase):
@@ -262,6 +262,73 @@ class CliSetupTests(unittest.TestCase):
             "owner/repo", pull_number=2, limit=100
         )
 
+    def test_branch_cleanup_separates_read_only_plan_from_reviewed_apply(self) -> None:
+        plan = {
+            "repository": "owner/repo",
+            "plan_digest": "a" * 64,
+            "delete_branch_on_merge": True,
+            "counts": {
+                "candidates": 1,
+                "pending": 0,
+                "already_absent": 0,
+                "completed": 0,
+                "retained": 0,
+            },
+            "candidates": [
+                {
+                    "branch": "topic",
+                    "head_sha": "b" * 40,
+                    "pull_number": 7,
+                }
+            ],
+            "pending": [],
+            "absent": [],
+            "completed": [],
+            "retained": [],
+            "public_write": False,
+        }
+        pipeline = MagicMock()
+        pipeline.branch_cleanup_plan.return_value = plan
+        pipeline.apply_branch_cleanup.return_value = {
+            "complete": True,
+            "public_write": True,
+        }
+        text_output = io.StringIO()
+        apply_output = io.StringIO()
+        with (
+            patch("reposteward.cli.load_config", return_value=object()),
+            patch("reposteward.cli.Pipeline", return_value=pipeline),
+        ):
+            with redirect_stdout(text_output):
+                plan_code = main(
+                    ["branch-cleanup", "plan", "owner/repo", "--format", "text"]
+                )
+            with redirect_stdout(apply_output):
+                apply_code = main(
+                    [
+                        "branch-cleanup",
+                        "apply",
+                        "owner/repo",
+                        "--expected-digest",
+                        "a" * 64,
+                        "--reviewed-by",
+                        "alice",
+                    ]
+                )
+
+        self.assertEqual(plan_code, 0)
+        self.assertEqual(apply_code, 0)
+        self.assertIn("Branch cleanup: owner/repo", text_output.getvalue())
+        self.assertTrue(json.loads(apply_output.getvalue())["public_write"])
+        pipeline.branch_cleanup_plan.assert_called_once_with(
+            "owner/repo", expected_digest=""
+        )
+        pipeline.apply_branch_cleanup.assert_called_once_with(
+            "owner/repo",
+            expected_digest="a" * 64,
+            reviewed_by="alice",
+        )
+
     def test_ci_diagnose_is_routed_as_a_read_only_command(self) -> None:
         pipeline = MagicMock()
         pipeline.ci_failure_analysis.return_value = {
@@ -281,6 +348,49 @@ class CliSetupTests(unittest.TestCase):
         self.assertEqual(code, 0)
         pipeline.ci_failure_analysis.assert_called_once_with("owner/repo", 12)
         self.assertIn('"public_write": false', output.getvalue())
+
+    def test_lifecycle_trace_supports_json_and_text(self) -> None:
+        result = {
+            "repository": "owner/repo",
+            "issue_number": 7,
+            "trace_digest": "a" * 64,
+            "complete": False,
+            "next_action": "human_review",
+            "sources": [],
+            "events": [],
+            "stats": {"events": 0, "available_events": 0, "events_omitted": 0},
+        }
+        config = MagicMock()
+        config.state_dir = Path("/state")
+        config.repositories = {"owner/repo": MagicMock(name="owner/repo")}
+        config.repositories["owner/repo"].name = "owner/repo"
+        json_output = io.StringIO()
+        text_output = io.StringIO()
+
+        with (
+            patch("reposteward.cli.load_config", return_value=config),
+            patch(
+                "reposteward.cli.build_lifecycle_trace", return_value=result
+            ) as build_trace,
+            patch("reposteward.cli.Pipeline") as pipeline,
+        ):
+            with redirect_stdout(json_output):
+                json_code = main(["trace", "owner/repo", "7", "--limit", "12"])
+            with redirect_stdout(text_output):
+                text_code = main(["trace", "owner/repo", "7", "--format", "text"])
+
+        self.assertEqual(json_code, 0)
+        self.assertEqual(text_code, 0)
+        self.assertEqual(json.loads(json_output.getvalue()), result)
+        self.assertIn("Lifecycle: owner/repo#7", text_output.getvalue())
+        pipeline.assert_not_called()
+        self.assertEqual(
+            build_trace.call_args_list,
+            [
+                unittest.mock.call(Path("/state"), "owner/repo", 7, event_limit=12),
+                unittest.mock.call(Path("/state"), "owner/repo", 7, event_limit=200),
+            ],
+        )
 
     def test_logs_list_and_tail_are_routed_without_overwriting_command(self) -> None:
         pipeline = MagicMock()

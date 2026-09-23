@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from reposteward.config import ConfigError, load_config
+from reposteward.core.config import ConfigError, load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -388,6 +388,78 @@ max_diff_lines = 2500
         self.assertEqual(policy.max_files_changed, 50)
         self.assertEqual(policy.max_diff_lines, 2_500)
 
+    def test_only_user_configuration_can_enable_unlimited_diff_lines(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            user = root / "user.toml"
+            project = root / "project.toml"
+            user.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+unlimited_diff_lines = true
+""",
+                encoding="utf-8",
+            )
+            project.write_text(
+                """config_version = 1
+[repositories."owner/repo"]
+enabled = true
+""",
+                encoding="utf-8",
+            )
+
+            trusted = load_config(project, user_path=user)
+
+            user.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+""",
+                encoding="utf-8",
+            )
+            project.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+unlimited_diff_lines = true
+""",
+                encoding="utf-8",
+            )
+            untrusted = load_config(project, user_path=user)
+            project_only = load_config(project)
+
+        self.assertTrue(trusted.repositories["owner/repo"].unlimited_diff_lines)
+        self.assertFalse(untrusted.repositories["owner/repo"].unlimited_diff_lines)
+        self.assertFalse(project_only.repositories["owner/repo"].unlimited_diff_lines)
+
+    def test_unlimited_diff_lines_requires_a_boolean(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            user = root / "user.toml"
+            project = root / "project.toml"
+            user.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+unlimited_diff_lines = "unlimited"
+""",
+                encoding="utf-8",
+            )
+            project.write_text(
+                """config_version = 1
+[repositories."owner/repo"]
+enabled = true
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "expected a boolean"):
+                load_config(project, user_path=user)
+
     def test_capacity_limits_must_be_positive(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
@@ -699,6 +771,41 @@ submission_strategy = "same-repository"
 
         self.assertTrue(config.repositories["owner/repo"].auto_merge)
         self.assertEqual(config.repositories["owner/repo"].auto_merge_method, "squash")
+
+    def test_branch_cleanup_requires_explicit_maintainer_same_repository_mode(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+branch_cleanup = true
+mode = "contributor"
+submission_strategy = "fork"
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "branch_cleanup only"):
+                load_config(path)
+
+            path.write_text(
+                """config_version = 1
+[github]
+login = "alice"
+[repositories."owner/repo"]
+branch_cleanup = true
+mode = "maintainer"
+submission_strategy = "same-repository"
+""",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+
+        self.assertTrue(config.repositories["owner/repo"].branch_cleanup)
 
     def test_auto_merge_method_is_restricted(self) -> None:
         with TemporaryDirectory() as directory:

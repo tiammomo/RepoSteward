@@ -6,12 +6,12 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from reposteward.config import RepositoryPolicy
-from reposteward.context import repository_policy_digest
-from reposteward.github import GitHubError, PullRequest
-from reposteward.pipeline import Pipeline
-from reposteward.policy import PolicyError
-from reposteward.store import RunLease, StoreError
+from reposteward.context.pack import repository_policy_digest
+from reposteward.core.config import RepositoryPolicy
+from reposteward.github.client import GitHubError, PullRequest
+from reposteward.storage.store import RunLease, StoreError
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import PolicyError
 
 
 class StubStore:
@@ -23,6 +23,7 @@ class StubStore:
         self.dependency_events: list[dict] = []
         self.owner_attestation: dict | None = None
         self.usage_read_fails = False
+        self.saved_checkpoints: list[dict] = []
 
     def run(self, run_id: str) -> dict:
         return {
@@ -60,10 +61,17 @@ class StubStore:
 
     def context_bundle(self, _run_id: str) -> dict:
         return {
+            "work_item": {"id": "work-item-1"},
+            "context_metadata": {"id": "context-1"},
             "context_pack": {
                 "project": {"policy_digest": repository_policy_digest(self.policy)}
-            }
+            },
+            "checkpoint": None,
         }
+
+    def save_checkpoint(self, **kwargs) -> dict:
+        self.saved_checkpoints.append(kwargs)
+        return kwargs["payload"]
 
     def append_merge_decision(self, **kwargs) -> dict:
         self.audits.append(kwargs)
@@ -164,6 +172,8 @@ class StubGitHub:
         self.can_admin = True
         self.owner_login = "owner"
         self.files = ["src/example.py"]
+        self.additions = 10
+        self.deletions = 2
         self.optional_check_pending = False
 
     def pull_request_activity(
@@ -207,8 +217,8 @@ class StubGitHub:
             "unresolved_conversations": 0,
             "conversation_digest": self.conversation_marker,
             "files": self.files,
-            "additions": 10,
-            "deletions": 2,
+            "additions": self.additions,
+            "deletions": self.deletions,
             "checks": [
                 {
                     "name": "quality",
@@ -293,12 +303,18 @@ class StubGitHub:
 class MergePipelineTests(unittest.TestCase):
     @staticmethod
     def pipeline(
-        *, auto_merge: bool = False, owner_attestation: bool = False
+        *,
+        auto_merge: bool = False,
+        owner_attestation: bool = False,
+        branch_cleanup: bool = False,
+        unlimited_diff_lines: bool = False,
     ) -> Pipeline:
         policy = RepositoryPolicy(
             name="owner/repo",
             auto_merge=auto_merge,
             owner_attestation=owner_attestation,
+            branch_cleanup=branch_cleanup,
+            unlimited_diff_lines=unlimited_diff_lines,
             mode="maintainer",
             submission_strategy="same-repository",
         )
@@ -312,6 +328,19 @@ class MergePipelineTests(unittest.TestCase):
         pipeline.store = StubStore(policy)
         pipeline.github = StubGitHub()
         return pipeline
+
+    def test_trusted_unlimited_diff_policy_reaches_merge_evaluation(self) -> None:
+        pipeline = self.pipeline(unlimited_diff_lines=True)
+        pipeline.github.additions = 100_000
+        pipeline.github.deletions = 100_000
+
+        decision = pipeline.merge_decision("run-1")
+
+        self.assertTrue(decision["eligible"])
+        self.assertEqual(
+            pipeline.store.audits[0]["decision"]["snapshot"]["additions"],
+            100_000,
+        )
 
     def test_decision_reads_current_snapshot_and_appends_every_audit(self) -> None:
         policy = RepositoryPolicy(name="owner/repo")
@@ -519,6 +548,31 @@ class MergePipelineTests(unittest.TestCase):
             ["applying", "completed"],
         )
         self.assertEqual(pipeline.store.executions[-1]["outcome"], "merged")
+        self.assertFalse(result["cleanup_pending"])
+        self.assertEqual(result["next_action"], "none")
+
+    def test_successful_merge_hands_off_enabled_cleanup_without_changing_merge(
+        self,
+    ) -> None:
+        pipeline = self.pipeline(auto_merge=True, branch_cleanup=True)
+        decision = pipeline.merge_decision("run-1")
+
+        with patch.dict(os.environ, {"REPOSTEWARD_ENABLE_MERGE": "1"}):
+            result = pipeline.execute_merge(
+                "run-1", decision_id=decision["audit"]["id"], reviewed_by="alice"
+            )
+
+        self.assertTrue(result["merged"])
+        self.assertTrue(result["cleanup_pending"])
+        self.assertEqual(
+            result["next_action"],
+            "reposteward branch-cleanup plan owner/repo",
+        )
+        self.assertEqual(pipeline.store.executions[-1]["outcome"], "merged")
+        self.assertEqual(
+            pipeline.store.saved_checkpoints[-1]["payload"]["next_action"],
+            "reposteward branch-cleanup plan owner/repo",
+        )
 
     def test_executor_is_disabled_by_default_and_records_the_block(self) -> None:
         pipeline = self.pipeline(auto_merge=False)

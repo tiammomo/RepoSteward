@@ -69,9 +69,15 @@ follow_up_max_tokens = 24000
 
 [repositories."owner/repository"]
 enabled = true
+# Trusted user configuration may explicitly set this for a repository whose
+# reviewed PR boundary is one complete capability. Project configuration cannot
+# enable it, and every non-line safety gate remains enforced.
+# unlimited_diff_lines = true
 auto_prepare = false
 auto_merge = false
 auto_merge_method = "squash"
+# Maintainer same-repository mode only; apply also needs a reviewed digest and env gate.
+branch_cleanup = false
 mode = "contributor"
 submission_strategy = "fork"
 require_no_competing_work = true
@@ -86,3 +92,11 @@ branch_template = "{login}/{scope}/{slug}"
 default_scope = "repo"
 # Raw GitHub event bodies are retained indefinitely unless explicitly enabled:
 # event_payload_retention_days = 90
+
+# User configuration only: explicitly reviewed boolean switches in tracked
+# .env.example / .env.sample / .env.template files. Exact, case-sensitive names;
+# non-empty subsets of string literals 0, 1, false, true, no, yes. No wildcards.
+# Project configuration cannot add or expand this allowance. Undeclared fields
+# retain credential checks; declared fields reject other non-empty values.
+# [repositories."owner/repo".env_template_booleans]
+# APP_DEV_AUTH = ["0"]

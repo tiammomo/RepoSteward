@@ -9,10 +9,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from reposteward.batch import build_batch_plan, render_batch_plan_text
-from reposteward.github import PullRequest
-from reposteward.pipeline import BatchConflictError, BatchDeferred, Pipeline
-from reposteward.policy import PolicyError
+from reposteward.github.client import PullRequest
+from reposteward.maintenance.batch import build_batch_plan, render_batch_plan_text
+from reposteward.workflows.pipeline import BatchConflictError, BatchDeferred, Pipeline
+from reposteward.workflows.policy import PolicyError
 
 
 def _pull(number: int, files: list[str], *, draft: bool = False) -> dict:

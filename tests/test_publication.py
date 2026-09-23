@@ -5,10 +5,10 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
-from reposteward.config import RepositoryPolicy, load_config
-from reposteward.models import RepositoryInfo
-from reposteward.pipeline import Pipeline
-from reposteward.policy import PolicyError
+from reposteward.core.config import RepositoryPolicy, load_config
+from reposteward.core.models import RepositoryInfo
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import PolicyError
 
 ROOT = Path(__file__).resolve().parents[1]
 

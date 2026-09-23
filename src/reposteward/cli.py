@@ -5,22 +5,47 @@ import importlib.resources
 import json
 import subprocess
 import sys
+from contextvars import ContextVar
 from pathlib import Path
 
-from .batch import render_batch_plan_text
-from .config import ConfigError, load_config
-from .dependencies import render_dependency_plan_text
-from .discovery import DiscoveryService
-from .doctor import run_doctor
-from .inbox import render_inbox_text
-from .issues import read_details
-from .pipeline import Pipeline
-from .portfolio import render_portfolio_text
-from .setup import add_repository, initialize_user_config
+from reposteward import __version__
+from reposteward.core.api_contract import envelope, error_details
+from reposteward.core.config import ConfigError, load_config
+from reposteward.core.doctor import run_doctor
+from reposteward.core.setup import add_repository, initialize_user_config
+from reposteward.evaluation.benchmark import (
+    BENCHMARK_CATEGORIES,
+    load_benchmark_report,
+    run_benchmark,
+    write_benchmark_report,
+)
+from reposteward.github.discovery import DiscoveryService
+from reposteward.github.issues import read_details
+from reposteward.maintenance.batch import render_batch_plan_text
+from reposteward.maintenance.branch_cleanup import render_branch_cleanup_text
+from reposteward.maintenance.dependencies import render_dependency_plan_text
+from reposteward.maintenance.portfolio import render_portfolio_text
+from reposteward.web.inbox import render_inbox_text
+from reposteward.workflows.lifecycle import (
+    DEFAULT_EVENT_LIMIT,
+    build_lifecycle_trace,
+    render_lifecycle_text,
+)
+from reposteward.workflows.pipeline import Pipeline
+from reposteward.workflows.policy import PolicyError
+
+_MACHINE_OUTPUT = ContextVar("cli_machine_output", default=False)
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        if _MACHINE_OUTPUT.get():
+            raise ValueError("invalid command arguments")
+        super().error(message)
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _ArgumentParser(
         prog="reposteward",
         description=(
             "Local-first, policy-gated control plane for turning GitHub issues into "
@@ -32,7 +57,54 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="project TOML config (default: discover and layer over user config)",
     )
+    parser.add_argument(
+        "--version", action="version", version=f"reposteward {__version__}"
+    )
+    parser.add_argument(
+        "--json-envelope",
+        action="store_true",
+        help="emit a versioned machine response; place before the command",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    from reposteward.integrations.a2a.cli import add_parser as add_a2a_parser
+    from reposteward.integrations.operation_api import add_parser
+
+    add_parser(subparsers)
+    add_a2a_parser(subparsers)
+    subparsers.add_parser("version", help="show offline installation metadata as JSON")
+    subparsers.add_parser(
+        "capabilities", help="discover implemented interfaces offline"
+    )
+    web = subparsers.add_parser("web", help="open the local maintainer workbench")
+    web.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="local port (default: choose an available port)",
+    )
+    web.add_argument("--expect-state-dir", type=Path)
+    web.add_argument(
+        "--read-only",
+        action="store_true",
+        help="disable local workbench commands and worker",
+    )
+    state = subparsers.add_parser(
+        "state", help="plan and explicitly back up local database upgrades"
+    )
+    state_commands = state.add_subparsers(dest="state_command", required=True)
+    state_plan = state_commands.add_parser(
+        "plan", help="read an upgrade plan without migrating"
+    )
+    state_plan.add_argument("--expect-state-dir", type=Path)
+    state_upgrade = state_commands.add_parser(
+        "upgrade", help="back up and apply an exact local upgrade plan"
+    )
+    state_upgrade.add_argument("--expect-state-dir", type=Path, required=True)
+    state_upgrade.add_argument("--plan-digest", required=True)
+    state_backup = state_commands.add_parser(
+        "inspect-backup", help="verify a backup without restoring it"
+    )
+    state_backup.add_argument("directory", type=Path)
 
     initialize = subparsers.add_parser("init", help="create per-user configuration")
     initialize.add_argument("--path", type=Path, default=None)
@@ -61,6 +133,261 @@ def _parser() -> argparse.ArgumentParser:
     repo_add.add_argument(
         "--mode", choices=("contributor", "maintainer"), default="contributor"
     )
+
+    project = subparsers.add_parser("project", help="associate existing local projects")
+    project_commands = project.add_subparsers(dest="project_command", required=True)
+    project_link = project_commands.add_parser("link", help="link a clone or worktree")
+    project_link.add_argument("path", type=Path, nargs="?", default=Path.cwd())
+    project_link.add_argument("--name", default="")
+    project_inspect = project_commands.add_parser(
+        "inspect", help="inspect one linked workspace"
+    )
+    project_inspect.add_argument("path", type=Path, nargs="?", default=Path.cwd())
+    project_list = project_commands.add_parser(
+        "list", help="list local project identities"
+    )
+    project_list.add_argument("--limit", type=int, default=50)
+    project_unlink = project_commands.add_parser(
+        "unlink", help="remove a binding while keeping code"
+    )
+    project_unlink.add_argument("binding_id")
+
+    understand = subparsers.add_parser(
+        "understand", help="index local code and read evidence-backed project guides"
+    )
+    understanding_commands = understand.add_subparsers(
+        dest="understanding_command", required=True
+    )
+    for action in ("scan", "guide", "query", "evidence"):
+        command = understanding_commands.add_parser(action)
+        command.add_argument("path", type=Path)
+        command.add_argument(
+            "--cache-dir",
+            type=Path,
+            default=None,
+            help="user-owned cache outside the target workspace",
+        )
+        if action == "scan":
+            command.add_argument("--rebuild", action="store_true")
+        elif action in {"guide", "query"}:
+            command.add_argument(
+                "--mode", choices=("maintainer", "contributor"), default="maintainer"
+            )
+            command.add_argument("--limit", type=int, default=12)
+            command.add_argument(
+                "--format", choices=("markdown", "json"), default="markdown"
+            )
+            if action == "query":
+                command.add_argument("focus")
+            else:
+                command.add_argument("--focus", default="")
+        else:
+            command.add_argument("evidence_id")
+            command.add_argument("--start-line", type=int, default=1)
+            command.add_argument("--limit", type=int, default=80)
+
+    integration = subparsers.add_parser(
+        "integration", help="preview and manage coding client instruction fragments"
+    )
+    integration_commands = integration.add_subparsers(
+        dest="integration_command", required=True
+    )
+    for action in ("plan", "inspect", "apply", "revert"):
+        command = integration_commands.add_parser(action)
+        command.add_argument("path", type=Path, nargs="?", default=Path.cwd())
+        if action != "inspect":
+            command.add_argument(
+                "--client",
+                choices=("codex", "claude-code", "copilot-vscode"),
+                required=True,
+            )
+        if action == "plan":
+            command.add_argument("--revert", action="store_true")
+        elif action in {"apply", "revert"}:
+            command.add_argument("--plan-digest", required=True)
+
+    plugin = subparsers.add_parser(
+        "plugin",
+        help="export, diagnose and preview installation of scoped Codex plugins",
+    )
+    plugin_commands = plugin.add_subparsers(dest="plugin_command", required=True)
+    for action in ("plan", "export"):
+        command = plugin_commands.add_parser(action)
+        command.add_argument("path", type=Path)
+        command.add_argument("--output", type=Path, required=True)
+        if action == "export":
+            command.add_argument("--plan-digest", required=True)
+
+    for action in ("doctor", "install-plan"):
+        command = plugin_commands.add_parser(action)
+        command.add_argument("path", type=Path)
+        command.add_argument("--bundle", type=Path, required=True)
+        command.add_argument("--marketplace", type=Path)
+        command.add_argument("--codex-home", type=Path)
+
+    overview = subparsers.add_parser(
+        "overview", help="read local attention across linked projects"
+    )
+    overview_commands = overview.add_subparsers(dest="overview_command", required=True)
+    for action in ("show", "refresh"):
+        command = overview_commands.add_parser(action)
+        command.add_argument("--project-limit", type=int, default=10)
+        command.add_argument("--item-limit", type=int, default=10)
+        command.add_argument("--format", choices=("json", "text"), default="json")
+        if action == "show":
+            command.add_argument("--previous-digest", default="")
+
+    skill_usage = subparsers.add_parser(
+        "skill-usage", help="record and inspect explicitly reported skill use"
+    )
+    skill_usage_commands = skill_usage.add_subparsers(
+        dest="skill_usage_command", required=True
+    )
+    for action in ("record", "report"):
+        command = skill_usage_commands.add_parser(action)
+        command.add_argument("run_id")
+        if action == "record":
+            command.add_argument("--input", type=Path, required=True)
+        else:
+            command.add_argument("--limit", type=int, default=50)
+            command.add_argument("--cursor", default="")
+
+    knowledge = subparsers.add_parser(
+        "knowledge", help="review and query evidence-backed project guidance"
+    )
+    knowledge_commands = knowledge.add_subparsers(
+        dest="knowledge_command", required=True
+    )
+    for action in ("propose", "promote", "withdraw", "reject", "inspect", "list"):
+        command = knowledge_commands.add_parser(action)
+        command.add_argument("run_id")
+        if action == "propose":
+            command.add_argument("--input", type=Path, required=True)
+        elif action == "promote":
+            command.add_argument("knowledge_id")
+            command.add_argument("--reviewed-by", required=True)
+            command.add_argument(
+                "--basis",
+                choices=("human_confirmation", "verification_evidence"),
+                required=True,
+            )
+            command.add_argument("--rationale", required=True)
+            command.add_argument("--verification-id", default="")
+        elif action in {"withdraw", "reject"}:
+            command.add_argument("knowledge_id")
+            command.add_argument("--reviewed-by", required=True)
+            command.add_argument("--reason", required=True)
+        elif action == "inspect":
+            command.add_argument("knowledge_id")
+            command.add_argument("--live", action="store_true")
+        else:
+            command.add_argument("--scope-path", action="append", default=[])
+            command.add_argument("--limit", type=int, default=5)
+            command.add_argument("--all", action="store_true")
+            command.add_argument("--cursor", default="")
+
+    mcp = subparsers.add_parser(
+        "mcp", help="serve scoped local task assistance to existing clients"
+    )
+    mcp_commands = mcp.add_subparsers(dest="mcp_command", required=True)
+    mcp_serve = mcp_commands.add_parser("serve", help="run the local STDIO server")
+    mcp_serve.add_argument("path", type=Path)
+    mcp_serve.add_argument("--expected-scope", default="")
+    mcp_config = mcp_commands.add_parser(
+        "config", help="preview local client configuration"
+    )
+    mcp_config.add_argument("path", type=Path)
+    mcp_config.add_argument(
+        "--client", choices=("codex", "claude-code", "copilot-vscode"), required=True
+    )
+
+    task = subparsers.add_parser(
+        "task", help="assist coding agents in linked local projects"
+    )
+    task_commands = task.add_subparsers(dest="task_command", required=True)
+    task_start = task_commands.add_parser(
+        "start", help="freeze a reviewed Issue before external development"
+    )
+    task_start.add_argument("path", type=Path, nargs="?", default=Path.cwd())
+    task_start.add_argument("--issue", type=int, required=True)
+    task_start.add_argument("--reviewed-by", required=True)
+    task_start.add_argument("--contract", type=Path)
+    task_inspect = task_commands.add_parser(
+        "inspect", help="read an external development attempt"
+    )
+    task_inspect.add_argument("run_id")
+    task_inspect.add_argument("--live", action="store_true")
+    task_context = task_commands.add_parser(
+        "context", help="compile a bounded external task handoff"
+    )
+    task_context.add_argument("run_id")
+    task_context.add_argument("--budget", type=int, default=24_000)
+    task_context.add_argument("--live", action="store_true")
+    task_context.add_argument("--scope-path", action="append", default=[])
+    task_context.add_argument("--format", choices=("json", "markdown"), default="json")
+    task_current = task_commands.add_parser(
+        "current", help="get the current task for a linked workspace"
+    )
+    task_current.add_argument("path", type=Path, nargs="?", default=Path.cwd())
+    task_current.add_argument("--budget", type=int, default=24_000)
+    task_current.add_argument("--scope-path", action="append", default=[])
+    task_current.add_argument("--format", choices=("json", "markdown"), default="json")
+    task_checkpoint = task_commands.add_parser(
+        "checkpoint", help="save unverified Agent claims with revision checks"
+    )
+    task_checkpoint.add_argument("run_id")
+    task_checkpoint.add_argument("--expected-revision", type=int, required=True)
+    task_checkpoint.add_argument("--expected-snapshot", required=True)
+    task_checkpoint.add_argument("--idempotency-key", required=True)
+    task_checkpoint.add_argument("--input", type=Path, required=True)
+
+    for action in ("resolve-plan", "resolve"):
+        command = task_commands.add_parser(
+            action, help="review or record an external attempt outcome"
+        )
+        command.add_argument("run_id")
+        command.add_argument(
+            "--outcome", choices=("completed", "cancelled", "superseded"), required=True
+        )
+        command.add_argument("--reason", required=True)
+        command.add_argument("--target-run-id", default="")
+        if action == "resolve":
+            command.add_argument("--plan-digest", required=True)
+            command.add_argument("--reviewed-by", required=True)
+            command.add_argument("--idempotency-key", required=True)
+
+    verification = subparsers.add_parser(
+        "verification", help="verify and query exact external task snapshots"
+    )
+    verification_commands = verification.add_subparsers(
+        dest="verification_command", required=True
+    )
+    for action in ("reconcile-plan", "reconcile"):
+        command = verification_commands.add_parser(action)
+        command.add_argument("run_id")
+        command.add_argument("verification_id")
+        command.add_argument("--reason", required=True)
+        if action == "reconcile":
+            command.add_argument("--plan-digest", required=True)
+            command.add_argument("--reviewed-by", required=True)
+            command.add_argument("--idempotency-key", required=True)
+    for action in ("profiles", "request", "inspect", "list", "evidence"):
+        command = verification_commands.add_parser(action)
+        command.add_argument("run_id")
+        if action == "request":
+            command.add_argument("--profile", required=True)
+            command.add_argument("--expected-revision", type=int, required=True)
+            command.add_argument("--expected-snapshot", required=True)
+            command.add_argument("--idempotency-key", required=True)
+        elif action == "inspect":
+            command.add_argument("evidence_id")
+            command.add_argument("--live", action="store_true")
+        elif action == "list":
+            command.add_argument("--limit", type=int, default=20)
+        elif action == "evidence":
+            command.add_argument("evidence_id")
+            command.add_argument("--offset", type=int, default=0)
+            command.add_argument("--limit", type=int, default=8000)
 
     issue = subparsers.add_parser("issue", help="prepare local issue drafts")
     issue_commands = issue.add_subparsers(dest="issue_command", required=True)
@@ -112,7 +439,27 @@ def _parser() -> argparse.ArgumentParser:
         "--duplicates-reviewed", action="store_true", required=True
     )
 
-    subparsers.add_parser("doctor", help="check local tools and authentication")
+    doctor = subparsers.add_parser(
+        "doctor", help="check local tools and authentication"
+    )
+    doctor.add_argument(
+        "--local",
+        action="store_true",
+        help="inspect installation and state without authentication or writes",
+    )
+    doctor.add_argument(
+        "--expect-state-dir",
+        type=Path,
+        help="require this effective state directory in local mode",
+    )
+    doctor.add_argument(
+        "--workspace",
+        type=Path,
+        help="explicit workspace for combined local plugin diagnosis",
+    )
+    doctor.add_argument("--bundle", type=Path, help="explicit exported plugin bundle")
+    doctor.add_argument("--marketplace", type=Path)
+    doctor.add_argument("--codex-home", type=Path)
     image = subparsers.add_parser("image", help="manage the isolated verifier image")
     image.add_argument("action", choices=("build",))
 
@@ -125,6 +472,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     listing.add_argument("--status", default="candidate")
     listing.add_argument("--limit", type=int, default=30)
+
+    lifecycle = subparsers.add_parser(
+        "trace", help="read one bounded work-item lifecycle trace"
+    )
+    lifecycle.add_argument("repository")
+    lifecycle.add_argument("issue", type=int)
+    lifecycle.add_argument("--limit", type=int, default=DEFAULT_EVENT_LIMIT)
+    lifecycle.add_argument("--format", choices=("json", "text"), default="json")
 
     gate = subparsers.add_parser("gate", help="check contribution gates for one issue")
     gate.add_argument("repository")
@@ -203,6 +558,24 @@ def _parser() -> argparse.ArgumentParser:
         "usage", help="report prompt-free Harness usage and configured cost"
     )
     usage_commands = usage.add_subparsers(dest="usage_command", required=True)
+    usage_collect = usage_commands.add_parser(
+        "collect", help="collect selected local Codex turns for an external task"
+    )
+    usage_collect.add_argument("run_id")
+    usage_collect.add_argument("--codex-session", type=Path)
+    usage_collect.add_argument("--turn-id", action="append", default=[])
+    external_report = usage_commands.add_parser(
+        "external-report",
+        help="report locally collected external turns without GitHub access",
+    )
+    external_report.add_argument("repository")
+    external_report.add_argument("--issue", type=int, default=0)
+    external_report.add_argument(
+        "--group-by",
+        choices=("none", "work-item", "issue", "model"),
+        default="work-item",
+    )
+    external_report.add_argument("--include-turns", action="store_true")
     usage_report = usage_commands.add_parser(
         "report", help="aggregate one repository's Issue/PR lifecycle usage"
     )
@@ -230,6 +603,32 @@ def _parser() -> argparse.ArgumentParser:
         default="pull-request",
     )
     usage_report.add_argument("--include-runs", action="store_true")
+
+    benchmark = subparsers.add_parser(
+        "benchmark", help="run deterministic offline RepoStewardBench scenarios"
+    )
+    benchmark_commands = benchmark.add_subparsers(
+        dest="benchmark_command", required=True
+    )
+    benchmark_run = benchmark_commands.add_parser(
+        "run", help="evaluate safety gates and multi-dimensional metrics"
+    )
+    benchmark_run.add_argument(
+        "--category",
+        action="append",
+        choices=BENCHMARK_CATEGORIES,
+        default=[],
+        help="limit the suite to one or more categories",
+    )
+    benchmark_run.add_argument(
+        "--scenario",
+        action="append",
+        default=[],
+        help="limit the suite to one or more exact scenario IDs",
+    )
+    benchmark_run.add_argument("--repeat", type=int, default=2)
+    benchmark_run.add_argument("--baseline", type=Path, default=None)
+    benchmark_run.add_argument("--output", type=Path, default=None)
 
     ci = subparsers.add_parser("ci", help="inspect CI failures without rerunning jobs")
     ci_commands = ci.add_subparsers(dest="ci_command", required=True)
@@ -286,6 +685,27 @@ def _parser() -> argparse.ArgumentParser:
     dependency_list.add_argument("--pull-number", type=int, default=0)
     dependency_list.add_argument("--limit", type=int, default=100)
 
+    branch_cleanup = subparsers.add_parser(
+        "branch-cleanup", help="plan or apply terminal PR branch cleanup"
+    )
+    branch_cleanup_commands = branch_cleanup.add_subparsers(
+        dest="branch_cleanup_command", required=True
+    )
+    branch_cleanup_plan = branch_cleanup_commands.add_parser(
+        "plan", help="build a read-only managed branch cleanup backlog"
+    )
+    branch_cleanup_plan.add_argument("repository")
+    branch_cleanup_plan.add_argument("--expected-digest", default="")
+    branch_cleanup_plan.add_argument(
+        "--format", choices=("json", "text"), default="json"
+    )
+    branch_cleanup_apply = branch_cleanup_commands.add_parser(
+        "apply", help="apply one exact reviewed cleanup plan"
+    )
+    branch_cleanup_apply.add_argument("repository")
+    branch_cleanup_apply.add_argument("--expected-digest", required=True)
+    branch_cleanup_apply.add_argument("--reviewed-by", required=True)
+
     batch = subparsers.add_parser(
         "batch", help="plan and enqueue a reviewed pull request merge train"
     )
@@ -321,7 +741,7 @@ def _parser() -> argparse.ArgumentParser:
 
     repair = subparsers.add_parser(
         "repair",
-        help="prepare and verify one contributor repair from new PR activity",
+        help="prepare and verify one repair from unprocessed PR feedback",
     )
     repair.add_argument("run_id", help="submitted run whose pull request changed")
 
@@ -426,6 +846,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _json(value: object) -> None:
+    if _MACHINE_OUTPUT.get():
+        value = envelope(value)
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
@@ -442,8 +864,151 @@ def _runner_dockerfile() -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    token = _MACHINE_OUTPUT.set("--json-envelope" in arguments)
     try:
+        return _main(arguments)
+    finally:
+        _MACHINE_OUTPUT.reset(token)
+
+
+def _command_paths(parser: argparse.ArgumentParser, prefix: str = "") -> list[str]:
+    paths = []
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for name, child in action.choices.items():
+                path = (prefix + " " + name).strip()
+                children = _command_paths(child, path)
+                paths.extend(children or [path])
+    return paths
+
+
+def _main(argv: list[str]) -> int:
+    try:
+        if _MACHINE_OUTPUT.get() and any(
+            x in argv for x in ("--help", "-h", "--version")
+        ):
+            raise ValueError("use capabilities or version in machine mode")
+        parser = _parser()
+        args = parser.parse_args(argv)
+        if _MACHINE_OUTPUT.get():
+            if (
+                args.command in {"web", "image"}
+                or (args.command == "mcp" and args.mcp_command == "serve")
+                or (args.command == "a2a" and args.a2a_command == "serve")
+            ):
+                raise ValueError(
+                    "long-lived or subprocess output has no response envelope"
+                )
+            if hasattr(args, "format"):
+                args.format = "json"
+        if args.command == "capabilities":
+            from reposteward.core.capabilities import capabilities
+
+            _json(capabilities(_command_paths(parser)))
+            return 0
+        if args.command == "version":
+            from reposteward.core.runtime import installation_info
+
+            _json(installation_info())
+            return 0
+        if args.command == "a2a":
+            from reposteward.integrations.a2a.cli import create_token, serve
+
+            if args.a2a_command == "token":
+                _json(create_token(args.output))
+            else:
+                serve(
+                    load_config(args.config, include_user=True),
+                    workspace=args.workspace,
+                    token_file=args.token_file,
+                    port=args.port,
+                )
+            return 0
+        if args.command == "web":
+            from reposteward.web.server import serve
+
+            web_config = load_config(args.config, include_user=True)
+            if args.expect_state_dir is not None and (
+                web_config.state_dir.expanduser().resolve()
+                != args.expect_state_dir.expanduser().resolve()
+            ):
+                raise ValueError(
+                    "effective state directory differs from the expected directory"
+                )
+            serve(web_config, port=args.port, read_only=args.read_only)
+            return 0
+        if args.command == "state":
+            from reposteward.storage.state_upgrade import (
+                inspect_backup,
+                upgrade_plan,
+                upgrade_state,
+            )
+
+            if args.state_command == "inspect-backup":
+                _json(inspect_backup(args.directory))
+            else:
+                state_config = load_config(args.config, include_user=True)
+                if args.state_command == "plan":
+                    _json(
+                        upgrade_plan(
+                            state_config, expected_state_dir=args.expect_state_dir
+                        )
+                    )
+                else:
+                    _json(
+                        upgrade_state(
+                            state_config,
+                            expected_state_dir=args.expect_state_dir,
+                            plan_digest=args.plan_digest,
+                        )
+                    )
+            return 0
+        if args.command == "doctor" and args.local:
+            from reposteward.core.runtime import local_diagnostics
+
+            if bool(args.workspace) != bool(args.bundle) or (
+                (args.marketplace or args.codex_home) and not args.bundle
+            ):
+                raise ConfigError(
+                    "combined diagnosis requires both --workspace and --bundle"
+                )
+
+            try:
+                local_config = load_config(args.config, include_user=True)
+            except ConfigError:
+                local_config = None
+            if args.bundle:
+                from reposteward.core.runtime_alignment import alignment_report
+
+                report, ok = alignment_report(
+                    local_config,
+                    workspace=args.workspace,
+                    bundle=args.bundle,
+                    expected_state_dir=args.expect_state_dir,
+                    marketplace=args.marketplace,
+                    codex_home=args.codex_home,
+                )
+            else:
+                report, ok = local_diagnostics(
+                    local_config, expected_state_dir=args.expect_state_dir
+                )
+            if local_config is None and args.config:
+                report["configuration"]["selected_path"] = str(
+                    Path(args.config).expanduser().resolve()
+                )
+            _json(report)
+            return 0 if ok else 1
+        if args.command == "doctor" and any(
+            (
+                args.expect_state_dir,
+                args.workspace,
+                args.bundle,
+                args.marketplace,
+                args.codex_home,
+            )
+        ):
+            raise ConfigError("local diagnostic options require doctor --local")
         if args.command == "init":
             _json(
                 initialize_user_config(
@@ -470,7 +1035,397 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 0
             raise AssertionError(f"unhandled repo command: {args.repo_command}")
+        if args.command == "benchmark":
+            if args.benchmark_command == "run":
+                baseline = (
+                    load_benchmark_report(args.baseline) if args.baseline else None
+                )
+                report = run_benchmark(
+                    categories=tuple(args.category),
+                    scenario_ids=tuple(args.scenario),
+                    repeat=args.repeat,
+                    baseline=baseline,
+                )
+                if args.output is not None:
+                    write_benchmark_report(args.output, report)
+                _json(report)
+                return 0 if report["summary"]["all_passed"] else 1
+            raise AssertionError(
+                f"unhandled benchmark command: {args.benchmark_command}"
+            )
+        if args.command == "understand":
+            from reposteward.core.config import (
+                default_state_dir,
+                default_user_config_path,
+                discover_project_config,
+            )
+            from reposteward.projects.understanding import Understanding, render_guide
+
+            cache_dir = args.cache_dir
+            if cache_dir is None:
+                configured = (
+                    args.config
+                    or discover_project_config()
+                    or default_user_config_path().exists()
+                )
+                state_dir = (
+                    load_config(args.config, include_user=True).state_dir
+                    if configured
+                    else default_state_dir()
+                )
+                cache_dir = state_dir / "understanding"
+            service = Understanding(cache_dir)
+            if args.understanding_command == "scan":
+                _json(service.scan(args.path, rebuild=args.rebuild))
+            elif args.understanding_command == "evidence":
+                _json(
+                    service.evidence(
+                        args.path,
+                        args.evidence_id,
+                        start_line=args.start_line,
+                        limit=args.limit,
+                    )
+                )
+            else:
+                result = service.guide(
+                    args.path, mode=args.mode, focus=args.focus, limit=args.limit
+                )
+                if args.format == "json":
+                    _json(result)
+                else:
+                    print(render_guide(result), end="")
+            return 0
         config = load_config(args.config, include_user=True)
+        if args.command == "usage" and args.usage_command in {
+            "collect",
+            "external-report",
+        }:
+            from reposteward.tasks.usage import ExternalUsage
+
+            usage_service = ExternalUsage(config)
+            if args.usage_command == "collect":
+                result = usage_service.collect(
+                    args.run_id,
+                    codex_session=args.codex_session,
+                    turn_ids=tuple(args.turn_id),
+                )
+            else:
+                result = usage_service.report(
+                    args.repository,
+                    issue=args.issue,
+                    group_by=args.group_by,
+                    include_turns=args.include_turns,
+                )
+            _json(result)
+            return 0
+        if args.command == "plugin":
+            if args.plugin_command in {"doctor", "install-plan"}:
+                from reposteward.plugins.diagnostics import PluginDiagnostics
+
+                diagnostics = PluginDiagnostics(config)
+                method = (
+                    diagnostics.doctor
+                    if args.plugin_command == "doctor"
+                    else diagnostics.install_plan
+                )
+                result = method(
+                    args.path,
+                    bundle=args.bundle,
+                    marketplace=args.marketplace,
+                    codex_home=args.codex_home,
+                )
+                _json(result)
+                return (
+                    0
+                    if result.get(
+                        "bundle_compatible", result.get("ready_for_client_install")
+                    )
+                    else 2
+                )
+
+            from reposteward.plugins.bundle import PluginBundle
+
+            service = PluginBundle(config)
+            if args.plugin_command == "plan":
+                result = service.plan(args.path, output=args.output)
+            else:
+                result = service.export(
+                    args.path, output=args.output, plan_digest=args.plan_digest
+                )
+            _json(result)
+            return 0
+        if args.command == "integration":
+            from reposteward.integrations.clients import AgentIntegration
+
+            service = AgentIntegration(config.state_dir)
+            if args.integration_command == "inspect":
+                result = service.inspect(args.path)
+            elif args.integration_command == "plan":
+                result = service.plan(args.path, client=args.client, revert=args.revert)
+            else:
+                result = service.apply(
+                    args.path,
+                    client=args.client,
+                    plan_digest=args.plan_digest,
+                    revert=args.integration_command == "revert",
+                )
+            _json(result)
+            return 0
+        if args.command == "overview":
+            from reposteward.web.overview import ProjectOverview, render_overview
+
+            service = ProjectOverview(config)
+            if args.overview_command == "refresh":
+                result = service.refresh(
+                    project_limit=args.project_limit, item_limit=args.item_limit
+                )
+            else:
+                result = service.show(
+                    project_limit=args.project_limit,
+                    item_limit=args.item_limit,
+                    previous_digest=args.previous_digest,
+                )
+            if args.format == "text":
+                print(render_overview(result))
+            else:
+                _json(result)
+            return 0
+        if args.command == "skill-usage":
+            from reposteward.telemetry.skills import SkillUsage
+
+            service = SkillUsage(config)
+            if args.skill_usage_command == "record":
+                with args.input.open("rb") as handle:
+                    raw = handle.read(8193)
+                if len(raw) > 8192:
+                    raise ValueError("skill usage input exceeds 8192 bytes")
+                result = service.record(args.run_id, json.loads(raw))
+            else:
+                result = service.report(
+                    args.run_id, limit=args.limit, cursor=args.cursor
+                )
+            _json(result)
+            return 0
+        if args.command == "knowledge":
+            from reposteward.projects.knowledge import ProjectKnowledge
+
+            service = ProjectKnowledge(config)
+            if args.knowledge_command == "propose":
+                with args.input.open("rb") as handle:
+                    raw = handle.read(100_001)
+                if len(raw) > 100_000:
+                    raise ValueError("knowledge input exceeds 100000 bytes")
+                result = service.propose(args.run_id, json.loads(raw))
+            elif args.knowledge_command == "promote":
+                result = service.promote(
+                    args.run_id,
+                    args.knowledge_id,
+                    reviewed_by=args.reviewed_by,
+                    basis=args.basis,
+                    rationale=args.rationale,
+                    verification_id=args.verification_id,
+                )
+            elif args.knowledge_command in {"withdraw", "reject"}:
+                result = service.dispose(
+                    args.run_id,
+                    args.knowledge_id,
+                    action=args.knowledge_command,
+                    reviewed_by=args.reviewed_by,
+                    reason=args.reason,
+                )
+            elif args.knowledge_command == "inspect":
+                result = service.inspect(args.run_id, args.knowledge_id, live=args.live)
+            else:
+                result = service.list(
+                    args.run_id,
+                    scope_paths=tuple(args.scope_path) or (".",),
+                    limit=args.limit,
+                    include_inactive=args.all,
+                    cursor=args.cursor,
+                )
+            _json(result)
+            return 0
+        if args.command == "operation":
+            from reposteward.integrations.operation_api import cli
+
+            _json(cli(config, args))
+            return 0
+        if args.command == "mcp":
+            if args.mcp_command == "serve":
+                from reposteward.integrations.mcp import serve
+
+                serve(config, args.path, expected_scope=args.expected_scope)
+            else:
+                from reposteward.integrations.mcp_config import client_config
+
+                _json(client_config(config, args.path, client=args.client))
+            return 0
+        if args.command == "verification" and args.verification_command in {
+            "reconcile-plan",
+            "reconcile",
+        }:
+            from reposteward.verification.recovery import VerificationRecovery
+
+            recovery = VerificationRecovery(config)
+            if args.verification_command == "reconcile-plan":
+                result = recovery.plan(
+                    args.run_id, args.verification_id, reason=args.reason
+                )
+                _json(result)
+                return 0 if result["eligible"] else 2
+            _json(
+                recovery.reconcile(
+                    args.run_id,
+                    args.verification_id,
+                    reason=args.reason,
+                    plan_digest=args.plan_digest,
+                    reviewed_by=args.reviewed_by,
+                    idempotency_key=args.idempotency_key,
+                )
+            )
+            return 0
+        if args.command == "verification":
+            from reposteward.verification.external import ExternalVerification
+
+            service = ExternalVerification(config)
+            if args.verification_command == "profiles":
+                result = service.profiles(args.run_id)
+            elif args.verification_command == "request":
+                result = service.request(
+                    args.run_id,
+                    profile=args.profile,
+                    expected_revision=args.expected_revision,
+                    expected_snapshot=args.expected_snapshot,
+                    idempotency_key=args.idempotency_key,
+                )
+            elif args.verification_command == "inspect":
+                result = service.inspect(
+                    args.run_id,
+                    args.evidence_id.removeprefix("verification:"),
+                    live=args.live,
+                )
+            elif args.verification_command == "list":
+                result = service.list(args.run_id, limit=args.limit)
+            else:
+                result = service.evidence(
+                    args.run_id, args.evidence_id, offset=args.offset, limit=args.limit
+                )
+            _json(result)
+            return (
+                1
+                if isinstance(result, dict)
+                and args.verification_command == "request"
+                and result["outcome"] != "passed"
+                else 0
+            )
+        if args.command == "task":
+            from reposteward.tasks.external import ExternalTasks
+
+            service = ExternalTasks(config)
+
+            def read_task_input(path: Path) -> dict:
+                if path.stat().st_size > 100_000:
+                    raise ValueError("task input exceeds the 100000 byte limit")
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(value, dict):
+                    raise ConfigError("task input must be a JSON object")
+                return value
+
+            if args.task_command == "start":
+                result = service.start(
+                    args.path,
+                    issue_number=args.issue,
+                    reviewed_by=args.reviewed_by,
+                    contract_proposal=read_task_input(args.contract)
+                    if args.contract
+                    else None,
+                )
+            elif args.task_command in {"resolve-plan", "resolve"}:
+                from reposteward.tasks.lifecycle import TaskLifecycle
+
+                lifecycle = TaskLifecycle(config)
+                options = {
+                    "outcome": args.outcome,
+                    "reason": args.reason,
+                    "target_run_id": args.target_run_id,
+                }
+                if args.task_command == "resolve":
+                    result = lifecycle.resolve(
+                        args.run_id,
+                        **options,
+                        plan_digest=args.plan_digest,
+                        reviewed_by=args.reviewed_by,
+                        idempotency_key=args.idempotency_key,
+                    )
+                else:
+                    result = lifecycle.plan(args.run_id, **options)
+                _json(result)
+                return 0 if result.get("eligible", True) else 2
+            elif args.task_command == "inspect":
+                result = service.inspect(args.run_id, live=args.live)
+            elif args.task_command == "current":
+                result = service.current(
+                    args.path, budget=args.budget, scope_paths=tuple(args.scope_path)
+                )
+            elif args.task_command == "context":
+                result = service.context(
+                    args.run_id,
+                    budget=args.budget,
+                    live=args.live,
+                    scope_paths=tuple(args.scope_path),
+                )
+            else:
+                result = service.checkpoint(
+                    args.run_id,
+                    expected_revision=args.expected_revision,
+                    expected_snapshot=args.expected_snapshot,
+                    idempotency_key=args.idempotency_key,
+                    payload=read_task_input(args.input),
+                )
+            if (
+                args.task_command in {"context", "current"}
+                and args.format == "markdown"
+            ):
+                print(
+                    "# RepoSteward task handoff\n\n```json\n"
+                    + json.dumps(result, ensure_ascii=False, indent=2)
+                    + "\n```"
+                )
+            else:
+                _json(result)
+            return 0
+        if args.command == "project":
+            from reposteward.projects.registry import ProjectRegistry
+
+            registry = ProjectRegistry(config.state_dir / "projects.sqlite3")
+            if args.project_command == "link":
+                result = registry.link(args.path, name=args.name)
+            elif args.project_command == "inspect":
+                result = registry.inspect(args.path)
+            elif args.project_command == "list":
+                result = registry.list(limit=args.limit)
+            else:
+                result = registry.unlink(args.binding_id)
+            _json(result)
+            return 0
+        if args.command == "trace":
+            try:
+                policy = config.repositories[args.repository.casefold()]
+            except KeyError as exc:
+                raise PolicyError(
+                    f"repository is not allowlisted: {args.repository}"
+                ) from exc
+            result = build_lifecycle_trace(
+                config.state_dir,
+                policy.name,
+                args.issue,
+                event_limit=args.limit,
+            )
+            if args.format == "text":
+                print(render_lifecycle_text(result))
+            else:
+                _json(result)
+            return 0
         pipeline = Pipeline(config)
         if args.command == "issue":
             if args.issue_command == "draft":
@@ -695,6 +1650,27 @@ def main(argv: list[str] | None = None) -> int:
             raise AssertionError(
                 f"unhandled portfolio command: {args.portfolio_command}"
             )
+        if args.command == "branch-cleanup":
+            if args.branch_cleanup_command == "plan":
+                result = pipeline.branch_cleanup_plan(
+                    args.repository, expected_digest=args.expected_digest
+                )
+                if args.format == "text":
+                    print(render_branch_cleanup_text(result))
+                else:
+                    _json(result)
+                return 0
+            if args.branch_cleanup_command == "apply":
+                result = pipeline.apply_branch_cleanup(
+                    args.repository,
+                    expected_digest=args.expected_digest,
+                    reviewed_by=args.reviewed_by,
+                )
+                _json(result)
+                return 0 if result["complete"] else 1
+            raise AssertionError(
+                f"unhandled branch cleanup command: {args.branch_cleanup_command}"
+            )
         if args.command == "batch":
             if args.batch_command == "plan":
                 result = pipeline.batch_plan(
@@ -844,7 +1820,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         raise AssertionError(f"unhandled command: {args.command}")
     except (ConfigError, OSError, RuntimeError, ValueError, KeyError) as exc:
-        print(f"reposteward: {exc}", file=sys.stderr)
+        if _MACHINE_OUTPUT.get():
+            print(json.dumps(envelope(error=error_details(exc)), ensure_ascii=False))
+        else:
+            print(f"reposteward: {exc}", file=sys.stderr)
         return 2
 
 
