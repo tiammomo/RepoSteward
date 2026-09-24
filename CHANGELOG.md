@@ -21,6 +21,9 @@ claim that every historical change is listed.
 
 ### Delivery and maintenance
 
+- Archive deterministic benchmark reports per tested commit and workflow attempt for 30 days;
+  preserve failure reports and document offline baseline comparison.
+
 - Derive package metadata and runtime version from `src/reposteward/__init__.py`.
 - Check wheel/sdist versions and packaged source/resources against the checkout before release;
   print artifact SHA256 values and optionally validate a release tag/changelog pair.
