@@ -1,7 +1,47 @@
-# GitHub Actions 公开写入门禁
+# GitHub Actions 评测与公开写入门禁
 
 RepoSteward 把 Issue 提案和正式 Issue 分开。多人协作的共享真相是 GitHub Projects Draft Issue；
 本地 SQLite 只保存个人草稿和操作缓存，不作为团队审批记录。
+
+## CI 评测报告
+
+`CI / quality` 在锁定的 Python 3.12 环境中运行完整 RepoStewardBench。依赖安装完成后，
+评测命令使用 `uv run --locked --offline`；场景不访问网络、不调用模型，也不读取账号配置。
+评测失败会让 quality 失败，但已经生成的 JSON 仍会归档。上传步骤只读取
+`benchmark-report.json`，找不到该文件时失败；评测被跳过或任务取消时不上传。
+
+报告保存 **30 天**，artifact 名称为
+`reposteward-bench-<github.sha>-<run_id>-<run_attempt>`。每次重跑拥有独立名称，避免覆盖历史。
+`pull_request` 的 `github.sha` 是 GitHub 测试的合并提交，通常不同于 PR head；`push` 则是主线
+提交。核对 artifact 名称、运行页面和报告的 `git_sha`，不要把两种 SHA 混用。
+
+上传 action 固定到官方完整 commit SHA；输入、保留期与下载方式可查阅
+[upload-artifact 文档](https://github.com/actions/upload-artifact)和
+[GitHub 下载指南](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)。
+quality 仍只有 `contents: read`，没有新增 Secrets、发布凭据或写权限；归档报告本身不授予
+Issue、PR 或合并权限。
+
+### 下载并比较基线
+
+在可信 CI 运行页面确认仓库、提交、workflow 及运行结果后下载对应 artifact。也可用已有 GitHub
+CLI 登录下载；将下面的 `RUN_ID`、`COMMIT_SHA` 和 `ATTEMPT` 替换为该运行的实际值：
+
+```bash
+gh run download RUN_ID --repo tiammomo/RepoSteward \
+  --name reposteward-bench-COMMIT_SHA-RUN_ID-ATTEMPT \
+  --dir .artifacts/baseline
+uv run --locked --offline --python 3.12 reposteward benchmark run \
+  --baseline .artifacts/baseline/benchmark-report.json \
+  --output .artifacts/current.json
+```
+
+本地比较前先在受信任环境安装锁定依赖；公共仓库验证仍应在加固 verifier 内执行。
+基线仅作为 JSON 数据读取，不能把下载的文件当脚本执行。`baseline_comparison` 展示新增失败、
+语义摘要变化和共同指标差值；命令退出状态由本次场景结果决定，不会仅因指标变化自动失败。
+耗时只供观察，不设绝对耗时门槛。30 天后 artifact 会过期，需要长期比较时自行保存已核验的
+JSON 和来源记录；仓库不提交机器相关 timing 基线。
+
+这些是确定性控制面场景，不能替代真实客户端接续试点、模型质量或 token 节省测量。
 
 ## Issue 流程
 

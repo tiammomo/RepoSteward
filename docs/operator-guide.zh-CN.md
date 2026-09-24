@@ -596,8 +596,9 @@ uv run reposteward benchmark run \
   --output .artifacts/current.json
 ```
 
-基线比较报告新增失败、结果摘要变化及共同数值指标的 delta，但不会比较耗时。CI 应将报告作为构建
-产物保存；仓库只提交稳定 fixture、schema 和语义门槛，不提交某台机器的绝对 timing 基线。
+基线比较报告新增失败、结果摘要变化及共同数值指标的 delta，但不会比较耗时。CI 已按提交与运行次数
+归档报告，保留 30 天；下载与本地比较见 [CI 评测报告](github-actions.md#ci-评测报告)。
+仓库只提交稳定 fixture、schema 和语义门槛，不提交某台机器的绝对 timing 基线。
 
 五类 v0 指标分别回答：
 
