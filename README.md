@@ -294,6 +294,11 @@ Most operational guides are currently in Chinese.
 | Architecture, source layout and verification boundaries | [Architecture](docs/architecture.md) · [Source structure](docs/source-layout.zh-CN.md) · [Project Draft Actions](docs/github-actions.md) |
 | Usage, versions and releases | [Usage collection](docs/external-usage.md) · [Changelog](CHANGELOG.md) · [Release and rollback policy](docs/releases.md) |
 
+Workflow edits require a trusted, exact-content review grant bound to the account,
+repository, Issue, base commit and YAML hashes. Project configuration cannot grant
+this exception; publication rechecks revocation and the current base. See the
+[workflow review contract](docs/operator-guide.zh-CN.md#精确工作流审批).
+
 ## Version and contributing
 
 The source is a **0.1.0 development baseline**. Configuration, schemas and public interfaces

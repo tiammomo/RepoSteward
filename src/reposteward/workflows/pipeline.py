@@ -38,7 +38,12 @@ from reposteward.context.pack import (
 from reposteward.context.prompt_budget import fit_context
 from reposteward.context.repair_prompt import build_budgeted_repair_context_pack
 from reposteward.core.config import AppConfig, RepositoryPolicy
-from reposteward.core.models import AgentExecution, AgentResult, Candidate
+from reposteward.core.models import (
+    AgentExecution,
+    AgentResult,
+    Candidate,
+    VerificationResult,
+)
 from reposteward.core.protocol import read_context_bundle, validate_context_bundle
 from reposteward.github.client import (
     GitHubClient,
@@ -117,6 +122,7 @@ from reposteward.verification.verifier import DockerVerifier
 from reposteward.web.inbox import build_maintainer_inbox
 from reposteward.workflows.policy import (
     PolicyError,
+    changed_files,
     conventional_scope,
     enforce_change_policy,
 )
@@ -2453,7 +2459,14 @@ class Pipeline:
                 worktree, policy, agent_result, run_dir=run_dir
             )
             failure_details["verification"] = asdict(verification)
-            summary = enforce_change_policy(worktree, verification, policy, self.config)
+            summary = enforce_change_policy(
+                worktree,
+                verification,
+                policy,
+                self.config,
+                base_ref=base_commit,
+                issue_number=issue_number,
+            )
             scope = conventional_scope(agent_result.pr_title, policy.default_scope)
             branch = self.workspaces.create_branch(worktree, candidate, policy, scope)
             commit_sha = self.workspaces.commit(worktree, agent_result.pr_title)
@@ -2466,6 +2479,7 @@ class Pipeline:
                 "changed_files": list(summary.files),
                 "added_lines": summary.added_lines,
                 "deleted_lines": summary.deleted_lines,
+                "workflow_review": summary.workflow_review,
                 "agent_result": asdict(agent_result),
                 "agent_metrics": asdict(agent_execution.metrics),
                 "harness": failure_details["harness"],
@@ -2661,7 +2675,8 @@ class Pipeline:
                 verification,
                 policy,
                 self.config,
-                base_ref=base_ref,
+                base_ref=base_commit,
+                issue_number=issue_number,
             )
             details = {
                 "worktree": str(worktree),
@@ -2672,6 +2687,7 @@ class Pipeline:
                 "changed_files": list(diff.files),
                 "added_lines": diff.added_lines,
                 "deleted_lines": diff.deleted_lines,
+                "workflow_review": diff.workflow_review,
                 "agent_result": asdict(agent_result),
                 "harness": failure_details["harness"],
                 "verification": asdict(verification),
@@ -4368,6 +4384,7 @@ class Pipeline:
                 policy,
                 self.config,
                 base_ref=base_ref,
+                issue_number=int(source_run["issue_number"]),
             )
             commit_sha = self.workspaces.commit(worktree, result.pr_title)
             guard = {
@@ -4387,6 +4404,7 @@ class Pipeline:
                 "changed_files": list(diff.files),
                 "added_lines": diff.added_lines,
                 "deleted_lines": diff.deleted_lines,
+                "workflow_review": diff.workflow_review,
                 "repair_guard": guard,
             }
             self.store.seed_github_pr_watermark(
@@ -5602,6 +5620,56 @@ class Pipeline:
             target_pull_number=pull_number,
         )
 
+    def _validate_workflow_publication(
+        self,
+        client: GitHubClient,
+        repository: str,
+        issue_number: int,
+        details: dict[str, Any],
+    ) -> None:
+        base = str(details.get("base_commit") or "")
+        recorded = details.get("workflow_review")
+        recorded_paths = details.get("changed_files", ())
+        if not base:
+            if recorded or any(
+                str(p).startswith(".github/workflows/") for p in recorded_paths
+            ):
+                raise PolicyError("workflow publication is missing its reviewed base")
+            return
+        worktree = Path(details["worktree"])
+        files = tuple(changed_files(worktree, base))
+        if not recorded and not any(p.startswith(".github/workflows/") for p in files):
+            return
+        if self._revision(worktree) != details["commit_sha"]:
+            raise PolicyError("workflow publication HEAD changed after verification")
+        if subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=worktree,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip():
+            raise PolicyError(
+                "workflow publication worktree changed after verification"
+            )
+        if client.branch_head_sha(repository, str(details["base_branch"])) != base:
+            raise PolicyError("workflow review base changed; rebase and review again")
+        summary = enforce_change_policy(
+            worktree,
+            VerificationResult(
+                passed=details.get("verification", {}).get("passed") is True,
+                commands=(),
+            ),
+            self.policy(repository),
+            self.config,
+            base_ref=base,
+            issue_number=issue_number,
+        )
+        if not recorded or summary.workflow_review != recorded:
+            raise PolicyError(
+                "workflow review no longer matches verified evidence; verify again"
+            )
+
     def _publish_branch(
         self,
         client: GitHubClient,
@@ -5654,6 +5722,12 @@ class Pipeline:
             raise PolicyError(
                 "remote publication branch changed before the audited push"
             )
+        current = self.store.latest_run(repository, issue_number)
+        if current is None or str(current["id"]) != run_id:
+            raise PolicyError("publication run changed before push")
+        self._validate_workflow_publication(
+            client, repository, issue_number, current["details"]
+        )
         identity = self._publication_step(
             attempt_id=attempt_id,
             run_id=run_id,
@@ -5717,6 +5791,13 @@ class Pipeline:
         lease: RunLease,
         apply: Callable[[], PullRequest],
     ) -> tuple[PullRequest, bool]:
+        if action != "close":
+            current = self.store.latest_run(repository, issue_number)
+            if current is None or str(current["id"]) != run_id:
+                raise PolicyError("publication run changed before PR write")
+            self._validate_workflow_publication(
+                client, repository, issue_number, current["details"]
+            )
         identity = self._publication_step(
             attempt_id=attempt_id,
             run_id=run_id,
@@ -6010,6 +6091,7 @@ class Pipeline:
             raise PolicyError("publication branch must differ from the base branch")
 
         self._validate_contribution_contract(worktree, policy)
+        self._validate_workflow_publication(client, policy.name, issue_number, details)
         body = self._pull_request_body(
             issue_number, details, reviewed_by, policy=policy
         )

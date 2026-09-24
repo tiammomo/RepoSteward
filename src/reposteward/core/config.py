@@ -87,6 +87,16 @@ class DiscoveryConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkflowReviewGrant:
+    repository: str
+    issue: int
+    base_commit: str
+    reviewed_by: str
+    files: tuple[tuple[str, str], ...]
+    api_url: str = "https://api.github.com"
+
+
+@dataclass(frozen=True, slots=True)
 class SafetyConfig:
     max_active_pull_requests: int = 4
     max_files_changed: int = 40
@@ -105,6 +115,7 @@ class SafetyConfig:
         "secrets",
     )
     tracked_sensitive_paths: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    workflow_grants: tuple[WorkflowReviewGrant, ...] = ()
 
     def tracked_sensitive_paths_for(self, repository: str) -> tuple[str, ...]:
         normalized = repository.casefold()
@@ -361,6 +372,7 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
         if isinstance(safety, dict):
             safety = dict(safety)
             safety.pop("tracked_sensitive_paths", None)
+            safety.pop("workflow_grants", None)
             result["safety"] = safety
         repositories = result.get("repositories")
         if isinstance(repositories, dict):
@@ -466,6 +478,7 @@ def _merge_layers(user: dict[str, Any], project: dict[str, Any]) -> dict[str, An
         merged_safety["forbidden_paths"] = list(dict.fromkeys(forbidden))
         trusted_paths = user_safety.get("tracked_sensitive_paths", {})
         merged_safety["tracked_sensitive_paths"] = trusted_paths
+        merged_safety["workflow_grants"] = user_safety.get("workflow_grants", [])
         result["safety"] = merged_safety
 
     # Disabling the changed-line cap is a per-user trust decision. Project
@@ -559,6 +572,90 @@ def _verification_hosts(value: object) -> tuple[tuple[str, str], ...]:
             ) from error
         hosts[hostname] = address
     return tuple(sorted(hosts.items()))
+
+
+def _workflow_grants(value: Any) -> tuple[WorkflowReviewGrant, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ConfigError("safety.workflow_grants must be an array of tables")
+    result = []
+    for item in value:
+        if not isinstance(item, dict) or set(item) - {
+            "repository",
+            "issue",
+            "base_commit",
+            "reviewed_by",
+            "files",
+            "api_url",
+        }:
+            raise ConfigError("invalid workflow review grant fields")
+        repository = item.get("repository", "")
+        issue = item.get("issue")
+        base = item.get("base_commit", "")
+        reviewer = item.get("reviewed_by", "")
+        files = item.get("files")
+        api_url = item.get("api_url", "https://api.github.com")
+        if (
+            not isinstance(repository, str)
+            or not REPOSITORY_NAME.fullmatch(repository)
+            or type(issue) is not int
+            or issue <= 0
+            or not isinstance(base, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", base)
+            or not isinstance(reviewer, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", reviewer)
+            or not isinstance(api_url, str)
+            or not api_url.startswith("https://")
+            or urlparse(api_url).username
+            or urlparse(api_url).password
+            or urlparse(api_url).query
+            or urlparse(api_url).fragment
+            or not urlparse(api_url).hostname
+            or not isinstance(files, dict)
+            or not 1 <= len(files) <= 40
+        ):
+            raise ConfigError("invalid workflow review grant identity or files")
+        for path, digest in files.items():
+            if (
+                not isinstance(path, str)
+                or not re.fullmatch(
+                    r"\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.ya?ml", path
+                )
+                or not isinstance(digest, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            ):
+                raise ConfigError(
+                    "workflow grants require exact YAML paths and SHA256 hashes"
+                )
+        result.append(
+            WorkflowReviewGrant(
+                repository=repository.casefold(),
+                issue=issue,
+                base_commit=base,
+                reviewed_by=reviewer.casefold(),
+                files=tuple(sorted(files.items())),
+                api_url=api_url.rstrip("/"),
+            )
+        )
+    return tuple(result)
+
+
+def fresh_workflow_grants(config: AppConfig) -> tuple[WorkflowReviewGrant, ...]:
+    """Re-read authority from the original user layer, including revocation."""
+    user_path = dict(config.config_files).get("user")
+    if not user_path:
+        return ()
+    raw = _read_config(Path(user_path), required=True)
+    _validate_config_version(raw, Path(user_path))
+    identity = _section(raw, "github")
+    if (
+        str(identity.get("login", "")).casefold() != config.github.login.casefold()
+        or str(identity.get("api_url", "https://api.github.com")).rstrip("/")
+        != config.github.api_url
+    ):
+        raise ConfigError("workflow review account changed; reload configuration")
+    return _workflow_grants(_section(raw, "safety").get("workflow_grants"))
 
 
 def _tracked_sensitive_paths(
@@ -820,6 +917,9 @@ def load_config(
         draft_pull_requests=_boolean(safety_raw.get("draft_pull_requests"), True),
         forbidden_paths=tuple(
             dict.fromkeys(safety_defaults.forbidden_paths + configured_forbidden)
+        ),
+        workflow_grants=_workflow_grants(
+            _section(user_raw, "safety").get("workflow_grants")
         ),
         tracked_sensitive_paths=_tracked_sensitive_paths(
             safety_raw.get("tracked_sensitive_paths")

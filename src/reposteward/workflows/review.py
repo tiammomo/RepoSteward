@@ -152,6 +152,9 @@ def compact_run(run: dict[str, Any]) -> dict[str, Any]:
             "files_omitted": max(0, len(raw_files) - len(files)),
             "added_lines": details.get("added_lines"),
             "deleted_lines": details.get("deleted_lines"),
+            "workflow_review_digest": _clip(
+                (details.get("workflow_review") or {}).get("digest"), 64
+            ),
         },
         "agent": {
             "summary": _clip(agent.get("summary"), MAX_SUMMARY_CHARS),

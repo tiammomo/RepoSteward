@@ -832,6 +832,42 @@ apply 前会追加 `applying` 审计；每个工作区在删除前会重新扫�
 状态，删除后再追加 `completed` 审计。中断后可从未完成记录识别并安全重跑。SQLite Blob 删除释放
 的是可复用数据库页，不会自动执行 `VACUUM` 或承诺立即缩小数据库文件。
 
+## 精确工作流审批
+
+`.github/workflows/` 默认拒绝。对已审阅 Issue 的专项 CI 修改，可以在**用户配置**
+（`~/.config/reposteward/config.toml`，或显式指定的用户层）加入一次精确审批。
+项目配置不能授予或覆盖权限；不要将审批放入仓库的 `.reposteward.toml`。
+
+```toml
+[[safety.workflow_grants]]
+repository = "owner/repo"
+issue = 90
+base_commit = "0123456789012345678901234567890123456789"
+reviewed_by = "your-login"
+api_url = "https://api.github.com"
+
+[safety.workflow_grants.files]
+".github/workflows/ci.yml" = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+```
+
+示例 SHA 和摘要只是占位符。先在独立分支审阅完整 diff，使用 `git rev-parse origin/main`
+取得完整基线提交，使用 `sha256sum .github/workflows/ci.yml` 计算最终文件字节摘要。
+`files` 必须恰好列出此次改动的全部工作流；只支持直接位于该目录的普通 `.yml` / `.yaml`
+文件新增或修改，不支持通配符、符号链接、删除或重命名。其他禁止路径与限额仍然生效。
+
+`prepare` / `adopt` / `repair` 的验证记录保存完整匹配审批，紧凑 review packet 显示
+`workflow_review_digest`，完整证据可通过 `inspect` 查看。审批绑定账号、GitHub API 服务、
+仓库、Issue、基线和文件内容；不能借用另一项目或另一 Issue 的审批。
+
+提交前、推送前及 PR 写入前重新读取原用户配置并检查远程基线。删除审批立即阻止之后的
+发布；变更文件、基线或身份后必须重新审批并验证。已经完成的推送仍保留在审计中，恢复时
+只对账已有结果，不把撤销后的部分成功说成没有公开写入。GitHub 的分支 SHA lease 只约束
+目标分支；本地配置与上游基线的检查是写入前检查，无法与远程写入形成跨系统原子事务。
+
+本审批只允许受审阅内容通过工作流路径限制，仍需隔离验证、独立 `submit`、发布开关、
+`--reviewed-by`、贡献门禁和原有发布审计。工作流仍被合并风险策略判为高风险，审批不授予
+自动合并资格。
+
 ## 安全约束
 
 - GitHub 凭据不会传给 Agent、测试、仓库 hooks、Git push 或 Docker 容器。
