@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from reposteward.core.config import AppConfig, RepositoryPolicy
+from reposteward.core.config import (
+    AppConfig,
+    ConfigError,
+    RepositoryPolicy,
+    fresh_workflow_grants,
+)
 from reposteward.core.models import VerificationResult
 from reposteward.maintenance.capacity import (
     effective_capacity_limit,
@@ -28,6 +35,7 @@ class DiffSummary:
     files: tuple[str, ...]
     added_lines: int
     deleted_lines: int
+    workflow_review: dict | None = None
 
     @property
     def total_lines(self) -> int:
@@ -45,21 +53,29 @@ def conventional_scope(title: str, default: str) -> str:
 
 
 def changed_files(worktree: Path, base_ref: str = "HEAD") -> list[str]:
-    tracked = subprocess.run(
-        ["git", "diff", "--name-only", base_ref],
-        cwd=worktree,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.splitlines()
-    untracked = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard"],
-        cwd=worktree,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.splitlines()
-    return sorted(set(tracked + untracked))
+    tracked = (
+        subprocess.run(
+            ["git", "diff", "--no-renames", "--name-only", "-z", base_ref],
+            cwd=worktree,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        .stdout.rstrip("\0")
+        .split("\0")
+    )
+    untracked = (
+        subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=worktree,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        .stdout.rstrip("\0")
+        .split("\0")
+    )
+    return sorted(set(tracked + untracked) - {""})
 
 
 def summarize_diff(worktree: Path, base_ref: str = "HEAD") -> DiffSummary:
@@ -95,6 +111,58 @@ def summarize_diff(worktree: Path, base_ref: str = "HEAD") -> DiffSummary:
     return DiffSummary(tuple(files), added, deleted)
 
 
+def workflow_review_for_change(
+    worktree: Path,
+    files: tuple[str, ...],
+    config: AppConfig,
+    repository: str,
+    issue_number: int,
+    base_ref: str,
+) -> dict | None:
+    paths = tuple(sorted(p for p in files if p.startswith(".github/workflows/")))
+    if not paths:
+        return None
+    try:
+        grants = fresh_workflow_grants(config)
+    except (ConfigError, OSError) as exc:
+        raise PolicyError(f"workflow review cannot be refreshed: {exc}") from exc
+    base = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{base_ref}^{{commit}}"],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    hashes = {}
+    for path in paths:
+        source = worktree / path
+        if any(
+            parent.is_symlink()
+            for parent in (source, *source.parents)
+            if parent != worktree.parent
+        ):
+            raise PolicyError("workflow review refuses symlink paths")
+        if not source.is_file():
+            raise PolicyError("workflow review requires existing regular YAML files")
+        hashes[path] = hashlib.sha256(source.read_bytes()).hexdigest()
+    for grant in grants:
+        if (
+            grant.repository == repository.casefold()
+            and grant.issue == issue_number
+            and grant.base_commit == base
+            and grant.reviewed_by == config.github.login.casefold()
+            and grant.api_url == config.github.api_url
+            and dict(grant.files) == hashes
+        ):
+            evidence = asdict(grant)
+            evidence["files"] = hashes
+            evidence["digest"] = hashlib.sha256(
+                json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            return evidence
+    raise PolicyError("workflow changes require an exact trusted workflow review grant")
+
+
 def enforce_change_policy(
     worktree: Path,
     verification: VerificationResult,
@@ -102,6 +170,7 @@ def enforce_change_policy(
     config: AppConfig,
     *,
     base_ref: str = "HEAD",
+    issue_number: int = 0,
 ) -> DiffSummary:
     diff_check = subprocess.run(
         ["git", "diff", "--check", base_ref],
@@ -132,14 +201,23 @@ def enforce_change_policy(
         raise PolicyError(
             f"change has {summary.total_lines} changed lines; policy limit is {line_limit}"
         )
+    review = workflow_review_for_change(
+        worktree, summary.files, config, repository.name, issue_number, base_ref
+    )
     forbidden = tuple(value.casefold() for value in config.safety.forbidden_paths)
     rejected = [
         path
         for path in summary.files
-        if any(value in path.casefold() for value in forbidden)
+        if any(
+            value in path.casefold()
+            and not (
+                value == ".github/workflows/" and review and path in review["files"]
+            )
+            for value in forbidden
+        )
     ]
     if rejected:
         raise PolicyError(f"change touches forbidden paths: {', '.join(rejected)}")
     if config.safety.require_verification and not verification.passed:
         raise PolicyError(f"verification did not pass: {verification.reason}")
-    return summary
+    return replace(summary, workflow_review=review)
