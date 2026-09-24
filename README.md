@@ -280,6 +280,8 @@ maintainer-owned rules: evidence-backed recommendations first, then broader acti
 [RFC #70](https://github.com/tiammomo/RepoSteward/issues/70) describes that direction;
 unattended autonomous maintenance is not a current capability.
 
+[Long-term governance RFC](docs/governance-rfc.zh-CN.md) defines the proposed autonomy stages and evidence requirements; it does not enable new permissions.
+
 ## Documentation
 
 Most operational guides are currently in Chinese.
