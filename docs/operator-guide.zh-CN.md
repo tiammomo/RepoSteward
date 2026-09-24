@@ -857,7 +857,7 @@ api_url = "https://api.github.com"
 文件新增或修改，不支持通配符、符号链接、删除或重命名。其他禁止路径与限额仍然生效。
 
 `prepare` / `adopt` / `repair` 的验证记录保存完整匹配审批，紧凑 review packet 显示
-`workflow_review_digest`，完整证据可通过 `inspect` 查看。审批绑定账号、GitHub API 服务、
+`workflow_review_digest`。`inspect` 返回紧凑摘要，完整匹配证据保存在本地 run 台账中。审批绑定账号、GitHub API 服务、
 仓库、Issue、基线和文件内容；不能借用另一项目或另一 Issue 的审批。
 
 提交前、推送前及 PR 写入前重新读取原用户配置并检查远程基线。删除审批立即阻止之后的

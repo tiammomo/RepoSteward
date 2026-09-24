@@ -3,6 +3,9 @@
 RepoSteward 不是另一个 Coding Agent。它是位于 GitHub、Coding Harness 和隔离验证环境之间的
 项目维护控制面：把一次性的 Agent 对话变成可审计、可恢复、可移交的 Issue-to-PR 工作流。
 
+长期定位、职责隔离和分级授权的目标设计见[治理方向 RFC](governance-rfc.zh-CN.md)。
+RFC 不启用新的自治权限；本页继续描述当前实现。
+
 ## 为什么不直接使用 Codex 或 Claude Code
 
 Coding Harness 擅长理解代码、调用工具和修改工作区，但它通常不知道一个项目长期采用的贡献
