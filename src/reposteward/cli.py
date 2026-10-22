@@ -175,6 +175,15 @@ def _parser() -> argparse.ArgumentParser:
             )
             command.add_argument("--limit", type=int, default=12)
             command.add_argument(
+                "--detail", choices=("full", "compact"), default="full"
+            )
+            command.add_argument(
+                "--budget",
+                type=int,
+                default=24000,
+                help="compact guide UTF-8 byte upper estimate (512-100000)",
+            )
+            command.add_argument(
                 "--format", choices=("markdown", "json"), default="markdown"
             )
             if action == "query":
@@ -845,10 +854,17 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _json(value: object) -> None:
+def _json(value: object, *, compact: bool = False) -> None:
     if _MACHINE_OUTPUT.get():
         value = envelope(value)
-    print(json.dumps(value, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            indent=None if compact else 2,
+            separators=(",", ":") if compact else None,
+        )
+    )
 
 
 def _runner_dockerfile() -> Path:
@@ -1088,10 +1104,15 @@ def _main(argv: list[str]) -> int:
                 )
             else:
                 result = service.guide(
-                    args.path, mode=args.mode, focus=args.focus, limit=args.limit
+                    args.path,
+                    mode=args.mode,
+                    focus=args.focus,
+                    limit=args.limit,
+                    detail=args.detail,
+                    budget=args.budget,
                 )
                 if args.format == "json":
-                    _json(result)
+                    _json(result, compact=args.detail == "compact")
                 else:
                     print(render_guide(result), end="")
             return 0

@@ -33,6 +33,29 @@ reposteward understand guide /path/to/project --format json
 尚未扫描时返回 `not_scanned`；发生变化时返回 `stale`，隐藏旧结论并提示重新扫描。
 这些状态属于成功查询，CLI 返回 0；无效参数、损坏缓存等错误返回 2。
 
+## 给 Agent 的精简导览
+
+先用有预算的精简 JSON 获取阅读路线，再按证据 ID 读取所需源码：
+
+```bash
+reposteward understand query /path/to/project 'delivery retry' \
+  --detail compact --budget 16000 --limit 6 --format json
+```
+
+MCP 的 `understanding` 工具接受相同的 `detail: compact`、`budget: 16000` 和
+`limit: 6`。默认仍返回 `full` 表示，现有调用和字段保持兼容。随包插件技能优先请求精简表示。
+
+精简结果将每个文件的路径、摘要、信任标记和证据 ID 合并到 `source_table`。
+阅读项、符号和导入关系中的 `source.ref` 指向该表，`line` / `end_line` 保留各自的行范围。
+将表中 `evidence_id` 与行号交给 `understanding action: evidence`，即可读取原始来源。
+查询只附带阅读路线涉及的启动入口；省略项计数见 `output_omitted`。
+
+预算以紧凑 JSON 的 UTF-8 字节作为供应商无关的保守 token 上界，包含导览正文和元数据，
+不包含 CLI 外层机器响应及换行；Markdown 展示不按该字节预算计量。`estimated_tokens`
+是估算，不是模型用量或账单。超限时先移除可选关系、声明和次要符号，再缩短阅读路线，
+保留首个阅读项及新鲜度、覆盖范围和理解边界。连这些内容都无法容纳时返回错误，
+要求增加预算或缩小问题范围。需要完整细节时可显式选择 `--detail full`。
+
 导览提供：
 
 1. 本地 commit、扫描时间、工作区是否有改动，以及索引覆盖和排除原因。

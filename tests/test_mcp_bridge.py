@@ -42,6 +42,18 @@ class BridgeTests(unittest.TestCase):
             self.bridge.call("understanding", {"action": "query", "focus": "source"}),
             service.guide(self.repo, focus="source"),
         )
+        self.assertEqual(
+            self.bridge.call(
+                "understanding",
+                {
+                    "action": "query",
+                    "focus": "source",
+                    "detail": "compact",
+                    "budget": 10000,
+                },
+            ),
+            service.guide(self.repo, focus="source", detail="compact", budget=10000),
+        )
         item = service.guide(self.repo, focus="source")["reading_path"][0]
         arguments = {
             "action": "evidence",
@@ -184,6 +196,21 @@ class BridgeTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     understanding.structured_content["status"], "not_scanned"
+                )
+                compact = await client.call_tool(
+                    "understanding",
+                    {
+                        "action": "guide",
+                        "detail": "compact",
+                        "budget": 4000,
+                    },
+                )
+                self.assertEqual(
+                    len(compact.content[0].text.encode()),
+                    compact.structured_content["estimated_tokens"],
+                )
+                self.assertLessEqual(
+                    compact.structured_content["estimated_tokens"], 4000
                 )
                 cp = await client.call_tool("checkpoint", self.checkpoint_arguments())
                 self.assertEqual(cp.structured_content["revision"], 1)
