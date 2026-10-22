@@ -31,6 +31,52 @@ class TaskContractTests(unittest.TestCase):
                 **options,
             )
 
+    def test_source_bound_body_is_rendered_once_without_changing_the_pack(self):
+        for text in ("Keep the legacy behavior. ", "保留旧版行为和全部验收条件。"):
+            with self.subTest(text=text):
+                tail = "TAIL-AC: preserve the empty-input result."
+                pack = self.pack(text * 400 + tail)
+                original = pack.to_dict()
+                prompt = build_harness_prompt(pack)
+                self.assertEqual(prompt.count(tail), 1)
+                self.assertNotIn("<issue_body>", prompt)
+                self.assertIn(pack.task_contract.source_digest, prompt)
+                without_description = replace(
+                    pack, task=replace(pack.task, description="")
+                )
+                budget = (
+                    estimate_tokens(build_harness_prompt(without_description)) + 256
+                )
+                fitted, stats = fit_context(pack, budget)
+                self.assertEqual(fitted, pack)
+                self.assertLessEqual(stats["estimated_tokens"], budget)
+                self.assertEqual(pack.to_dict(), original)
+                validate_context_pack(pack.to_dict())
+
+    def test_reviewed_contract_keeps_issue_background(self):
+        body = "Background: callers rely on the legacy empty-input behavior."
+        issue = _candidate(body).issue
+        contract = review_contract(
+            issue,
+            {
+                "source_digest": issue_digest(issue),
+                "goal": issue.title,
+                "acceptance_criteria": ["Keep the empty-input result unchanged"],
+            },
+            reviewed_by="operator",
+        )
+        prompt = build_harness_prompt(self.pack(body, task_contract=contract))
+        self.assertIn("<issue_body>\n" + body, prompt)
+        self.assertIn(contract.acceptance_criteria[0], prompt)
+
+    def test_distinct_background_is_not_suppressed_by_source_bound_contract(self):
+        pack = self.pack("Keep the existing API.")
+        background = "Additional local reproduction details."
+        pack = replace(pack, task=replace(pack.task, description=background))
+        prompt = build_harness_prompt(pack)
+        self.assertIn(background, prompt)
+        self.assertIn(pack.task_contract.source_requirements, prompt)
+
     def test_unreviewed_tail_requirement_survives_description_trimming(self) -> None:
         tail = "必须保持旧 API 与 existing clients 兼容。"
         pack = self.pack("background " * 2500 + tail, task_description_max_bytes=500)
