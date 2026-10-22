@@ -121,12 +121,12 @@ class AgentMetrics:
     cached_input_tokens: int | None = None
     output_tokens: int | None = None
     reasoning_output_tokens: int | None = None
-    prompt_chars: int = 0
-    event_bytes: int = 0
-    stderr_bytes: int = 0
-    event_count: int = 0
-    tool_call_count: int = 0
-    duration_seconds: float = 0.0
+    prompt_chars: int | None = 0
+    event_bytes: int | None = 0
+    stderr_bytes: int | None = 0
+    event_count: int | None = 0
+    tool_call_count: int | None = 0
+    duration_seconds: float | None = 0.0
     log_path: str = ""
     warnings: tuple[str, ...] = ()
 

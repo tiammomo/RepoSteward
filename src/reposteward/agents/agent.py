@@ -21,6 +21,32 @@ from reposteward.storage.workspace import sanitized_environment
 class AgentError(RuntimeError):
     """The coding agent did not produce a usable change."""
 
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        metrics: AgentMetrics | None = None,
+        harness: str = "",
+        model: str = "",
+        native_session_id: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.metrics = (
+            metrics
+            if metrics is not None
+            else AgentMetrics(
+                prompt_chars=None,
+                event_bytes=None,
+                stderr_bytes=None,
+                event_count=None,
+                tool_call_count=None,
+                duration_seconds=None,
+            )
+        )
+        self.harness = harness
+        self.model = model
+        self.native_session_id = native_session_id
+
 
 WARN_INPUT_TOKENS = 50_000
 WARN_TOOL_CALLS = 20
@@ -147,8 +173,29 @@ class CodexCliHarness:
                 env=sanitized_environment(keep_codex_credentials=True),
             )
         except subprocess.TimeoutExpired as exc:
+
+            def decoded(value):
+                return (
+                    value.decode("utf-8", errors="replace")
+                    if isinstance(value, bytes)
+                    else value or ""
+                )
+
+            stdout, stderr = decoded(exc.stdout), decoded(exc.stderr)
+            log_path.write_text(
+                f"STDOUT\n{stdout}\n\nSTDERR\n{stderr}", encoding="utf-8"
+            )
             raise AgentError(
-                f"Codex exceeded the {self.config.timeout_seconds}s timeout"
+                f"Codex exceeded the {self.config.timeout_seconds}s timeout",
+                metrics=_parse_metrics(
+                    stdout,
+                    prompt_chars=len(prompt),
+                    stderr_bytes=len(stderr.encode()),
+                    duration_seconds=round(time.monotonic() - started, 3),
+                    log_path=log_path,
+                ),
+                harness=self.name,
+                model=self.config.model,
             ) from exc
         log_path.write_text(
             f"STDOUT\n{result.stdout}\n\nSTDERR\n{result.stderr}", encoding="utf-8"
@@ -161,7 +208,12 @@ class CodexCliHarness:
             log_path=log_path,
         )
         if result.returncode:
-            raise AgentError(f"Codex exited with {result.returncode}; see {log_path}")
+            raise AgentError(
+                f"Codex exited with {result.returncode}; see {log_path}",
+                metrics=metrics,
+                harness=self.name,
+                model=self.config.model,
+            )
         try:
             payload = json.loads(result_path.read_text(encoding="utf-8"))
             return AgentExecution(
@@ -178,7 +230,10 @@ class CodexCliHarness:
             ValueError,
         ) as exc:
             raise AgentError(
-                f"Codex returned an invalid result; see {log_path}"
+                f"Codex returned an invalid result; see {log_path}",
+                metrics=metrics,
+                harness=self.name,
+                model=self.config.model,
             ) from exc
 
 
