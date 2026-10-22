@@ -16,6 +16,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from reposteward.agents.agent import AgentError, build_harness_prompt
 from reposteward.agents.harness import (
     Harness,
     HarnessRequest,
@@ -246,7 +247,7 @@ class Pipeline:
         run_stage: str,
         requested_session_id: str,
         context: ContextPack,
-        execution: AgentExecution,
+        execution: AgentExecution | AgentError,
         budget: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         outcome = session_resume_outcome(
@@ -266,6 +267,60 @@ class Pipeline:
             metrics=compact_usage_metrics(execution.metrics),
             budget=compact_usage_budget(budget),
         )
+
+    def _run_harness(
+        self,
+        request: HarnessRequest,
+        *,
+        run_stage: str,
+        budget: dict[str, Any] | None = None,
+    ) -> AgentExecution:
+        run_id = request.context.provenance.run_id
+        started = time.monotonic()
+        try:
+            execution = self.harness.run(request)
+        except Exception as exc:
+            failure = exc if isinstance(exc, AgentError) else AgentError(str(exc))
+            metrics = failure.metrics
+            failure.metrics = replace(
+                metrics,
+                prompt_chars=(
+                    metrics.prompt_chars
+                    if metrics.prompt_chars is not None
+                    else len(build_harness_prompt(request.context))
+                ),
+                duration_seconds=(
+                    metrics.duration_seconds
+                    if metrics.duration_seconds is not None
+                    else round(time.monotonic() - started, 3)
+                ),
+            )
+            failure.harness = failure.harness or self.harness.name
+            failure.model = failure.model or self.config.agent.model
+            self._record_harness_usage(
+                run_id=run_id,
+                run_stage=run_stage,
+                requested_session_id=request.native_session_id,
+                context=request.context,
+                execution=failure,
+                budget=budget,
+            )
+            raise
+        self.store.update_harness_run(
+            run_id,
+            harness=execution.harness or self.harness.name,
+            model=execution.model,
+            native_session_id=execution.native_session_id,
+        )
+        self._record_harness_usage(
+            run_id=run_id,
+            run_stage=run_stage,
+            requested_session_id=request.native_session_id,
+            context=request.context,
+            execution=execution,
+            budget=budget,
+        )
+        return execution
 
     def portfolio_snapshot(
         self, repository: str, *, expected_digest: str = ""
@@ -2420,26 +2475,14 @@ class Pipeline:
                 run_id, status="running", stage="agent", worktree=str(worktree)
             )
             run_dir = self.config.state_dir / "runs" / run_id
-            agent_execution = self.harness.run(
+            agent_execution = self._run_harness(
                 HarnessRequest(
                     worktree=worktree,
                     run_dir=run_dir,
                     context=context,
                     native_session_id=native_session_id,
-                )
-            )
-            self.store.update_harness_run(
-                run_id,
-                harness=agent_execution.harness or self.harness.name,
-                model=agent_execution.model,
-                native_session_id=agent_execution.native_session_id,
-            )
-            self._record_harness_usage(
-                run_id=run_id,
+                ),
                 run_stage="prepare",
-                requested_session_id=native_session_id,
-                context=context,
-                execution=agent_execution,
             )
             agent_result = agent_execution.result
             failure_details.update(
@@ -4337,26 +4380,14 @@ class Pipeline:
                 if capabilities.native_session_resume.supported
                 else ""
             )
-            execution = self.harness.run(
+            execution = self._run_harness(
                 HarnessRequest(
                     worktree=worktree,
                     run_dir=run_dir,
                     context=context,
                     native_session_id=native_session_id,
-                )
-            )
-            self.store.update_harness_run(
-                run_id,
-                harness=execution.harness or self.harness.name,
-                model=execution.model,
-                native_session_id=execution.native_session_id,
-            )
-            self._record_harness_usage(
-                run_id=run_id,
+                ),
                 run_stage="repair",
-                requested_session_id=native_session_id,
-                context=context,
-                execution=execution,
                 budget=final_prompt_budget,
             )
             result = execution.result

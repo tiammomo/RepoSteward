@@ -90,6 +90,23 @@ class CodexSdkHarness:
         )
         model = self.config.model or None
         thread = None
+        result = None
+
+        def failure(message):
+            return AgentError(
+                message,
+                metrics=self._metrics(
+                    result,
+                    prompt=prompt,
+                    started=started,
+                    log_path=log_path,
+                    warnings=warnings,
+                ),
+                harness=self.name,
+                model=self.config.model,
+                native_session_id=str(thread.id) if thread is not None else "",
+            )
+
         try:
             with sdk.Codex(sdk_config) as codex:
                 thread_options = {
@@ -128,7 +145,7 @@ class CodexSdkHarness:
                         turn.interrupt()
                     except (sdk.CodexError, RuntimeError):
                         pass
-                    raise AgentError(
+                    raise failure(
                         f"Codex SDK exceeded the {self.config.timeout_seconds}s timeout"
                     ) from exc
                 finally:
@@ -146,10 +163,13 @@ class CodexSdkHarness:
                 json.dumps({"error": str(exc)}, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
-            raise AgentError(f"Codex SDK failed; see {log_path}: {exc}") from exc
+            raise failure(f"Codex SDK failed; see {log_path}: {exc}") from exc
 
         if thread is None:
-            raise AgentError("Codex SDK did not create a thread")
+            raise failure("Codex SDK did not create a thread")
+        metrics = self._metrics(
+            result, prompt=prompt, started=started, log_path=log_path, warnings=warnings
+        )
         final_response = result.final_response
         if not isinstance(final_response, str) or not final_response.strip():
             message = "Codex SDK returned no final structured response"
@@ -168,7 +188,7 @@ class CodexSdkHarness:
                 + "\n",
                 encoding="utf-8",
             )
-            raise AgentError(f"{message}; see {log_path}")
+            raise failure(f"{message}; see {log_path}")
         log_path.write_text(
             json.dumps(
                 {
@@ -188,11 +208,22 @@ class CodexSdkHarness:
             payload = json.loads(final_response)
             agent_result = AgentResult.from_dict(payload)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            raise AgentError(
+            raise failure(
                 f"Codex SDK returned an invalid result; see {log_path}"
             ) from exc
 
-        usage = getattr(result.usage, "last", None)
+        return AgentExecution(
+            agent_result,
+            metrics,
+            harness=self.name,
+            model=self.config.model,
+            native_session_id=str(thread.id),
+        )
+
+    def _metrics(self, result, *, prompt, started, log_path, warnings) -> AgentMetrics:
+        usage = getattr(getattr(result, "usage", None), "last", None)
+        warnings = list(warnings)
+        items = getattr(result, "items", None)
 
         def token_value(name: str) -> int | None:
             value = getattr(usage, name, None)
@@ -203,34 +234,33 @@ class CodexSdkHarness:
             )
 
         input_tokens = token_value("input_tokens")
-        tool_calls = sum(self._is_tool_item(item) for item in result.items)
+        tool_calls = (
+            sum(self._is_tool_item(item) for item in items)
+            if items is not None
+            else None
+        )
         if input_tokens is not None and input_tokens > WARN_INPUT_TOKENS:
             warnings.append(
                 f"Codex input tokens {input_tokens} exceed warning budget "
                 f"{WARN_INPUT_TOKENS}"
             )
-        if tool_calls > WARN_TOOL_CALLS:
+        if tool_calls is not None and tool_calls > WARN_TOOL_CALLS:
             warnings.append(
                 f"Codex tool calls {tool_calls} exceed warning budget {WARN_TOOL_CALLS}"
             )
-        metrics = AgentMetrics(
+        return AgentMetrics(
             input_tokens=input_tokens,
             cached_input_tokens=token_value("cached_input_tokens"),
             output_tokens=token_value("output_tokens"),
             reasoning_output_tokens=token_value("reasoning_output_tokens"),
             prompt_chars=len(prompt),
-            event_count=len(result.items),
+            event_bytes=None,
+            stderr_bytes=None,
+            event_count=len(items) if items is not None else None,
             tool_call_count=tool_calls,
             duration_seconds=round(time.monotonic() - started, 3),
             log_path=str(log_path),
             warnings=tuple(warnings),
-        )
-        return AgentExecution(
-            agent_result,
-            metrics,
-            harness=self.name,
-            model=self.config.model,
-            native_session_id=str(thread.id),
         )
 
     @staticmethod
