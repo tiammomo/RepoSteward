@@ -6,9 +6,12 @@ import hashlib
 import html
 import json
 import re
+from collections import Counter
+from copy import deepcopy
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
+from reposteward.context.budget import ContextBudgetError, estimate_tokens
 from reposteward.projects.code_index import (
     CodeIndex,
     Unreadable,
@@ -32,6 +35,102 @@ LIMITATIONS = [
     "GitHub 来源链接由本地 HEAD 推导，未联网确认该 commit 是否已经发布。",
     "新鲜度仅针对扫描覆盖内的内容和 Git 版本；被排除、超预算及未解析的文件仍需另行阅读。",
 ]
+
+
+def _compact_guide(guide: dict, budget: int) -> dict:
+    result = deepcopy(guide)
+    omitted = Counter()
+    if result.get("focus"):
+        paths = {item["path"] for item in result.get("reading_path", [])}
+        entries = result.get("entries", [])
+        retained = [item for item in entries if item["target_path"] in paths]
+        omitted["unrelated_entries"] = len(entries) - len(retained)
+        result["entries"] = retained
+    sources = {}
+    source_ids = {}
+
+    def project(value):
+        if isinstance(value, list):
+            return [project(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        if {"evidence_id", "path", "digest", "trust", "line"} <= value.keys():
+            evidence_id = value["evidence_id"]
+            if evidence_id not in source_ids:
+                ref = f"s{len(sources) + 1}"
+                source_ids[evidence_id] = ref
+                sources[ref] = {
+                    key: item
+                    for key, item in value.items()
+                    if key not in {"line", "end_line", "url"}
+                }
+                if "url" in value:
+                    sources[ref]["url"] = value["url"].split("#", 1)[0]
+            return {
+                "ref": source_ids[evidence_id],
+                "line": value["line"],
+                "end_line": value["end_line"],
+            }
+        return {key: project(item) for key, item in value.items()}
+
+    result = project(result)
+    result.update(detail="compact", budget=budget, estimated_tokens=0)
+
+    def measure():
+        refs = set()
+
+        def visit(value):
+            if isinstance(value, list):
+                for item in value:
+                    visit(item)
+            elif isinstance(value, dict):
+                if "ref" in value:
+                    refs.add(value["ref"])
+                for key, item in value.items():
+                    if key != "source_table":
+                        visit(item)
+
+        visit(result)
+        result["source_table"] = {
+            ref: value for ref, value in sources.items() if ref in refs
+        }
+        result["output_omitted"] = dict(sorted((k, v) for k, v in omitted.items() if v))
+        if "relations" in result:
+            result["relations"]["shown_edges"] = len(result["static_imports"])
+        for _ in range(8):
+            size = estimate_tokens(result)
+            if size == result["estimated_tokens"]:
+                return size
+            result["estimated_tokens"] = size
+        raise ContextBudgetError("compact guide estimate did not stabilize")
+
+    while measure() > budget:
+        result["output_truncated"] = True
+        for field in ("static_imports", "project_declarations", "entries"):
+            if result.get(field):
+                result[field].pop()
+                omitted[field] += 1
+                break
+        else:
+            for item in reversed(result.get("reading_path", [])):
+                if item["commands"]:
+                    item["commands"].pop()
+                    omitted["commands"] += 1
+                    break
+                if len(item["symbols"]) > 1:
+                    item["symbols"].pop()
+                    omitted["symbols"] += 1
+                    break
+            else:
+                if len(result.get("reading_path", [])) > 1:
+                    result["reading_path"].pop()
+                    omitted["reading_path"] += 1
+                else:
+                    raise ContextBudgetError(
+                        "compact guide freshness, coverage and first reading step exceed "
+                        "the budget; increase the budget or narrow the focus"
+                    )
+    return result
 
 
 def is_test(path: str) -> bool:
@@ -223,7 +322,14 @@ class Understanding:
         return self.index.scan(path, rebuild=rebuild, **callbacks)
 
     def guide(
-        self, path: Path, *, mode: str = "maintainer", focus: str = "", limit: int = 12
+        self,
+        path: Path,
+        *,
+        mode: str = "maintainer",
+        focus: str = "",
+        limit: int = 12,
+        detail: str = "full",
+        budget: int = 24000,
     ) -> dict:
         if (
             mode not in {"maintainer", "contributor"}
@@ -231,18 +337,22 @@ class Understanding:
             or not 1 <= limit <= 20
             or not isinstance(focus, str)
             or len(focus) > 2000
+            or detail not in {"full", "compact"}
+            or type(budget) is not int
+            or not 512 <= budget <= 100000
         ):
             raise ValueError("invalid guide mode, focus or limit")
         metadata = workspace_metadata(path)
         root = Path(metadata["root"])
         index = self.index.load(metadata)
         if index is None:
-            return {
+            result = {
                 "status": "not_scanned",
                 "repository": metadata["repository"],
                 "next_action": "Run reposteward understand scan PATH explicitly; no cache has been created.",
                 "public_write": False,
             }
+            return _compact_guide(result, budget) if detail == "compact" else result
         state = workspace_state(root)
         snapshot, _ = inventory(metadata)
         check, _ = inventory(metadata)
@@ -280,7 +390,7 @@ class Understanding:
             result["next_action"] = (
                 "Sources or Git version changed. Run understand scan before using a current guide; historical facts are withheld."
             )
-            return result
+            return _compact_guide(result, budget) if detail == "compact" else result
         files = index["files"]
         edges, modules = relations(files)
         entries = []
@@ -375,6 +485,8 @@ class Understanding:
         # Transport-independent byte budget: even long Unicode paths and symbols
         # cannot make the same application response exceed the MCP envelope.
         result["output_truncated"] = False
+        if detail == "compact":
+            return _compact_guide(result, budget)
         while len(json.dumps(result, ensure_ascii=False).encode()) > 240000:
             result["output_truncated"] = True
             for field in (
@@ -478,6 +590,22 @@ def counts_text(counts: dict) -> str:
 
 
 def render_guide(guide: dict) -> str:
+    if guide.get("detail") == "compact":
+        table = guide["source_table"]
+
+        def expand(value):
+            if isinstance(value, list):
+                return [expand(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+            if "ref" in value:
+                record = {**table[value["ref"]], **value}
+                if "url" in record:
+                    record["url"] += f"#L{value['line']}-L{value['end_line']}"
+                return record
+            return {key: expand(item) for key, item in value.items()}
+
+        guide = expand(guide)
     lines = [
         f"# {escaped(guide['repository'])} 项目导览",
         "",

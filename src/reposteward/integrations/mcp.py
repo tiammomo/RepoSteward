@@ -86,6 +86,8 @@ SCHEMAS = {
                     "mode": {"enum": ["maintainer", "contributor"]},
                     "focus": TEXT,
                     "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                    "detail": {"enum": ["full", "compact"]},
+                    "budget": {"type": "integer", "minimum": 512, "maximum": 100000},
                 },
                 ("action",),
             ),
@@ -294,6 +296,8 @@ class ScopedBridge:
                     mode=arguments.get("mode", "maintainer"),
                     focus=arguments.get("focus", ""),
                     limit=arguments.get("limit", 12),
+                    detail=arguments.get("detail", "full"),
+                    budget=arguments.get("budget", 24000),
                 )
         elif name == "checkpoint":
             result = self.tasks.checkpoint(**arguments)
@@ -429,7 +433,15 @@ def create_server(config: AppConfig, workspace: Path, *, expected_scope: str = "
         return types.CallToolResult(
             content=[
                 types.TextContent(
-                    type="text", text=json.dumps(result, ensure_ascii=False)
+                    type="text",
+                    text=json.dumps(
+                        result,
+                        ensure_ascii=False,
+                        separators=(",", ":")
+                        if params.name == "understanding"
+                        and result.get("detail") == "compact"
+                        else None,
+                    ),
                 )
             ],
             structured_content=result,

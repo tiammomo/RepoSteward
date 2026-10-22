@@ -20,6 +20,95 @@ from reposteward.projects.understanding import Understanding, render_guide
 
 
 class UnderstandingTests(unittest.TestCase):
+    def test_compact_guide_shares_sources_and_retains_resolvable_ranges(self):
+        self.service.scan(self.repo)
+        full = self.service.guide(self.repo, focus="deliver", limit=6)
+        compact = self.service.guide(
+            self.repo, focus="deliver", limit=6, detail="compact", budget=16000
+        )
+        self.assertEqual(compact["status"], "current")
+        self.assertEqual(compact["coverage"], full["coverage"])
+        self.assertEqual(compact["limitations"], full["limitations"])
+        self.assertLess(
+            len(json.dumps(compact, ensure_ascii=False).encode()),
+            len(json.dumps(full, ensure_ascii=False).encode()),
+        )
+        self.assertLessEqual(compact["estimated_tokens"], 16000)
+        for item in compact["reading_path"]:
+            for reference in [item["source"], *[s["source"] for s in item["symbols"]]]:
+                record = compact["source_table"][reference["ref"]]
+                self.assertEqual(record["path"], item["path"])
+                evidence = self.service.evidence(
+                    self.repo,
+                    record["evidence_id"],
+                    start_line=reference["line"],
+                    limit=1,
+                )
+                self.assertEqual(evidence["status"], "current_source")
+                self.assertEqual(evidence["source"]["digest"], record["digest"])
+        self.assertIn("项目导览", render_guide(compact))
+
+    def test_compact_budget_preserves_first_route_and_reports_omissions(self):
+        self.write(
+            "src/parcel/delivery.py",
+            "\n".join(
+                f'def deliver_{i}():\n    """Deliver a parcel with detailed provenance {i}."""\n    pass'
+                for i in range(20)
+            ),
+        )
+        self.service.scan(self.repo)
+        full = self.service.guide(self.repo, focus="deliver", limit=6)
+        compact = self.service.guide(
+            self.repo, focus="deliver", limit=6, detail="compact", budget=6000
+        )
+        self.assertLessEqual(compact["estimated_tokens"], 6000)
+        self.assertEqual(
+            compact["reading_path"][0]["path"], full["reading_path"][0]["path"]
+        )
+        self.assertTrue(compact["output_truncated"])
+        self.assertTrue(any(compact["output_omitted"].values()))
+        self.assertEqual(self.service.guide(self.repo, focus="deliver", limit=6), full)
+
+    def test_compact_guide_fails_closed_for_small_budget_and_stale_sources(self):
+        from reposteward.context.budget import ContextBudgetError
+
+        self.service.scan(self.repo)
+        with self.assertRaises(ContextBudgetError):
+            self.service.guide(self.repo, detail="compact", budget=512)
+        self.write("src/parcel/delivery.py", "def deliver(): return 'changed'\n")
+        compact = self.service.guide(self.repo, detail="compact", budget=16000)
+        self.assertEqual(compact["status"], "stale")
+        self.assertEqual(compact["reading_path"], [])
+        self.assertEqual(compact["source_table"], {})
+        self.assertIn("next_action", compact)
+
+    def test_compact_cli_json_honors_the_application_budget(self):
+        self.service.scan(self.repo)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = main(
+                [
+                    "understand",
+                    "query",
+                    str(self.repo),
+                    "deliver",
+                    "--cache-dir",
+                    str(self.cache),
+                    "--detail",
+                    "compact",
+                    "--budget",
+                    "16000",
+                    "--format",
+                    "json",
+                ]
+            )
+        self.assertEqual(result, 0)
+        payload = output.getvalue().strip()
+        guide = json.loads(payload)
+        self.assertEqual(len(payload.encode()), guide["estimated_tokens"])
+        self.assertLessEqual(guide["estimated_tokens"], 16000)
+        self.assertTrue(guide["source_table"])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
