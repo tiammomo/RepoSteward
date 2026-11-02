@@ -6,6 +6,10 @@ See [version and release policy](docs/releases.md) for verification and upgrade 
 
 ## [Unreleased]
 
+- User-owned runner configuration can enable lock- and image-bound npm download
+  archive reuse. Only integrity-checked content is copied between disposable runs;
+  bootstrap must succeed before publication and tests cannot write back to the cache.
+
 - Live task context and scoped knowledge reuse one workspace observation per read
   response. Authority changes reject mixed reads; writes and verifier phases keep
   independent fresh observations. No snapshot cache survives the response.

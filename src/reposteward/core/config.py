@@ -144,6 +144,7 @@ class RunnerConfig:
     max_output_chars: int = 12_000
     passed_output_chars: int = 2_000
     max_log_chars: int = 2_000_000
+    npm_download_cache_dir: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -936,6 +937,16 @@ def load_config(
     )
 
     runner_raw = _section(raw, "runner")
+    npm_cache_value = _section(user_raw, "runner").get("npm_download_cache_dir")
+    npm_cache_dir = None
+    if npm_cache_value is not None:
+        if not isinstance(npm_cache_value, str) or not npm_cache_value.strip():
+            raise ConfigError(
+                "runner.npm_download_cache_dir must be a non-empty user-owned path"
+            )
+        npm_cache_dir = Path(npm_cache_value).expanduser()
+        if not npm_cache_dir.is_absolute():
+            npm_cache_dir = (resolved_user_path.parent / npm_cache_dir).absolute()
     runner = RunnerConfig(
         image=str(runner_raw.get("image", "reposteward-runner:latest")),
         timeout_seconds=int(runner_raw.get("timeout_seconds", 1800)),
@@ -945,6 +956,7 @@ def load_config(
         max_output_chars=int(runner_raw.get("max_output_chars", 12_000)),
         passed_output_chars=int(runner_raw.get("passed_output_chars", 2_000)),
         max_log_chars=int(runner_raw.get("max_log_chars", 2_000_000)),
+        npm_download_cache_dir=npm_cache_dir,
     )
 
     storage_raw = _section(raw, "storage")
