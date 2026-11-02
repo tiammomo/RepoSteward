@@ -24,7 +24,9 @@ reposteward --json-envelope doctor --local --workspace /path/to/project \
 这里不假定 PyPI 已发布包含本文命令的版本。版本来源、构建摘要校验、正式发布与回退规则
 见[版本管理指南](releases.md)，功能变更见[CHANGELOG](../CHANGELOG.md)。
 
-在构建源码的目录执行 `uv build` 后，从绝对 wheel 路径安装到 uv 的独立工具环境：
+只需要 CLI/MCP 时，在源码目录执行 `uv build` 即可，不需要 Node。需要网页时，先运行
+`uv sync --locked --extra web`、`uv run python scripts/build_frontend.py`，
+再执行 `REPOSTEWARD_BUILD_WEB=1 uv build`；构建前端需要 Node 22.12+ 和 npm。构建后，从绝对 wheel 路径安装到 uv 的独立工具环境：
 
 ```bash
 uv tool install --python 3.12 /absolute/path/reposteward-0.1.0-py3-none-any.whl
@@ -34,7 +36,9 @@ reposteward version
 ```
 
 `uv tool update-shell` 提示的 PATH 变化可能需要新开终端。已有安装时，先完成下文的
-状态检查与备份，再使用 `uv tool install --force` 安装已核验的替换 wheel。工具安装
+状态检查与备份，再使用 `uv tool install --force` 安装已核验的替换 wheel。
+网页安装选择 `reposteward[web] @ file:///absolute/path/reposteward-0.1.0-py3-none-any.whl`；
+MCP 和网页同时使用时选择 `reposteward[mcp,web]`。工具安装
 环境的替换不等于数据库回退；保留之前的 wheel 和状态备份。
 
 要使用 MCP，在安装时明确选择同一个 wheel 的 `mcp` extra，例如：
@@ -86,7 +90,8 @@ API URL 带 userinfo、查询或 fragment 时，本地诊断会先要求修正 U
 ## 在目标项目继续工作
 
 可用 `reposteward web` 启动[本地只读工作台](local-workbench.zh-CN.md)，集中查看已关联
-项目、代码导览、任务接续与审阅依据。网页随安装提供，不需要源码 checkout 或 Node。
+项目、代码导览、任务接续与审阅依据。需要安装带网页的 wheel 并选择 `web` extra；
+已准备的网页随此 wheel 提供，运行不需要源码 checkout 或 Node。
 
 ```bash
 cd /absolute/path/to/your-project

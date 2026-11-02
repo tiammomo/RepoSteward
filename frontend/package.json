@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "generate": "openapi-typescript openapi.json -o src/api/generated/schema.ts",
-    "build": "npm run generate && tsc --noEmit && vite build",
+    "build": "npm run generate && npm run bundle",
+    "bundle": "tsc --noEmit && vite build",
     "check": "tsc --noEmit && eslint . && vitest run"
   },
   "dependencies": {

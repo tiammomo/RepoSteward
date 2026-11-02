@@ -6,6 +6,15 @@ See [version and release policy](docs/releases.md) for verification and upgrade 
 
 ## [Unreleased]
 
+- Workbench preparation reuses verified bundles after backend changes that preserve
+  OpenAPI, skips unchanged API type generation, and shares TypeScript incremental
+  checks between build and test. CI caches lock-bound npm downloads. Changed source
+  during preparation and corrupt assets still invalidate the result.
+
+- Core source, editable and wheel builds no longer invoke npm or require web dependencies.
+  Prepare workbench assets explicitly with `scripts/build_frontend.py` and package them
+  with `REPOSTEWARD_BUILD_WEB=1`; HTTP dependencies are available through the `web` extra.
+
 The current source baseline is **0.1.0**. No historical release date is inferred from
 that version string. This initial log summarizes the current baseline; it is not a
 claim that every historical change is listed.

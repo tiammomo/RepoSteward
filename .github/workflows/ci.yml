@@ -21,6 +21,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
+      - name: Install Node and cache npm downloads
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
@@ -32,6 +39,9 @@ jobs:
 
       - name: Install project
         run: uv sync --locked --python 3.12
+
+      - name: Prepare workbench assets
+        run: uv run --locked python scripts/build_frontend.py
 
       - name: Lint
         run: uvx ruff check .
@@ -56,4 +66,4 @@ jobs:
           retention-days: 30
 
       - name: Build distributions
-        run: uv build
+        run: REPOSTEWARD_BUILD_WEB=1 uv build

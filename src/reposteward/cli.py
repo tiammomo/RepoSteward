@@ -942,7 +942,15 @@ def _main(argv: list[str]) -> int:
                 )
             return 0
         if args.command == "web":
-            from reposteward.web.server import serve
+            try:
+                from reposteward.web.server import serve
+            except ModuleNotFoundError as exc:
+                if exc.name not in {"fastapi", "pydantic", "starlette", "uvicorn"}:
+                    raise
+                raise ValueError(
+                    "Workbench dependencies missing; install reposteward[web] "
+                    "or run uv sync --extra web in a source checkout."
+                ) from exc
 
             web_config = load_config(args.config, include_user=True)
             if args.expect_state_dir is not None and (

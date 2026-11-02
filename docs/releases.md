@@ -42,13 +42,46 @@ artifact checks run without network access or GitHub credentials.
 
 ```sh
 uv sync --locked --python 3.12
+uv run python scripts/build_frontend.py
 uvx ruff check .
 uvx ruff format --check .
 uv run python -W error::ResourceWarning -m unittest discover -s tests -v
 uv run reposteward --help
-uv build --out-dir dist/release-candidate
+REPOSTEWARD_BUILD_WEB=1 uv build --out-dir dist/release-candidate
 uv run python scripts/check_release.py --dist-dir dist/release-candidate
 ```
+
+Ordinary `uv build` produces the core distribution without Node or workbench assets.
+The explicit web path above prepares OpenAPI types and static assets once, then validates
+input and file hashes while packaging. Missing or stale assets fail the web build.
+Both use the same Python distribution; install its `web` extra for HTTP dependencies.
+Core and MCP installations do not require the workbench extra.
+
+A local comparison against `979b20f` measured editable packaging with
+`python -c "import hatchling.build as b; b.build_editable('dist/bench')"`.
+Each version ran three times in a disposable copy with locked npm dependencies already
+installed and `frontend/dist` removed before each run. In a no-network container with
+Python 3.12.13 and four CPUs, the median fell from 3.5161 seconds to 0.1124 seconds.
+This measures packaging when frontend assets are absent; dependency downloads, tests,
+agent execution and human review are outside the measurement.
+
+A second three-repeat comparison measured explicit workbench preparation before and
+after incremental reuse, with the same cached npm dependencies and four-CPU container:
+
+| Preparation case | Before (median) | After (median) |
+| --- | --- | --- |
+| Fresh assets and empty TypeScript cache | 3.3412 s | 3.3812 s |
+| API implementation edit, unchanged OpenAPI | 3.3411 s | 0.3820 s |
+| Frontend component edit | 3.2949 s | 2.0053 s |
+| No input changes | 0.0231 s | 0.0261 s |
+
+For each repetition, remove `frontend/dist` and
+`frontend/node_modules/.cache/reposteward`, then time
+`python scripts/build_frontend.py`. Append a comment to
+`src/reposteward/web/api/app.py` and time preparation again, append a comment to
+`frontend/src/pages/overview.tsx` and repeat, then run once without further edits.
+The comparison excludes npm downloads and end-to-end PR latency. CI download-cache
+benefits require a hosted run and are not part of these local measurements.
 
 The check opens archives without extracting or importing their code. It compares source,
 resources, documentation and metadata, and returns SHA256 values. A reused directory with

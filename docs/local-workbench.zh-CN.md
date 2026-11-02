@@ -115,10 +115,29 @@ SQL、shell、原始配置或任意文件服务。没有新增网页任务表或
 项目选择进入浏览器路由；Query 缓存只代表本地读取缓存，不能替代 GitHub 观测时间。
 切换项目后旧请求结果不会进入新项目页面。
 
-源码开发需要 Node 22.12+ 与 npm。`uv sync --locked` 的构建步骤安装锁定前端依赖，
-从 FastAPI 导出 OpenAPI、生成 TypeScript 类型并构建静态页面；`uv build` 将页面与
-逐文件摘要清单打入 wheel / sdist。已构建发行包的日常安装和运行不需要 Node。
+核心安装、editable 和普通 wheel / sdist 构建不调用 Node，也不打包网页。源码开发网页时，
+需要 Node 22.12+ 与 npm，并显式准备前端；重复执行时，输入和资源摘要相同会复用产物：
+
+```sh
+uv sync --locked --extra web
+uv run --locked --extra web python scripts/build_frontend.py
+uv run --locked --extra web reposteward web
+```
+
+构建带网页的单一发行包时，先执行上述准备，再运行 `REPOSTEWARD_BUILD_WEB=1 uv build`。
+该开关只校验、打包已准备的网页，产物缺失、过期或损坏会失败，不会隐式安装依赖或调用 npm。
+也可用 `uv run python scripts/build_frontend.py --check` 单独检查摘要。
+安装这类 wheel 时选择 `reposteward[web]` 以安装 HTTP 依赖，日常运行不需要 Node。
 构建使用清理后的环境，不把 GitHub 凭据传给 Node；依赖脚本默认禁用。
+
+前端准备按内容摘要增量执行：所有输入和产物均未变化时直接返回；后端 API 文件变化时，
+先重新导出真实 OpenAPI，接口结构与前端输入相同则复用已校验的 bundle；只改前端时，
+接口、生成器配置、锁文件和已有类型摘要一致则省略类型生成。TypeScript 使用
+`node_modules/.cache/reposteward/` 下的增量信息，构建与后续 `npm run check` 共用，
+检查仍会核对当前源码。缓存不进入安装包，`npm ci` 会清除它。
+资源缺失或损坏会重建；构建期间源码变化会报错，需重新执行准备，避免把旧产物绑定到新源码。
+CI 使用锁文件作为 npm 下载缓存的键，仍通过 `npm ci --ignore-scripts` 安装与校验依赖。
+
 
 `frontend/openapi.json` 和 `frontend/src/api/generated/schema.ts` 是生成契约；
 后端协议测试核对 OpenAPI 漂移。`npm run check` 在前端目录执行类型、ESLint 和交互检查，
