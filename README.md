@@ -26,17 +26,17 @@ application services and persistent state.
 
 ## Quick start
 
-Build from source with **Python 3.12+, uv, Git, Node 22.12+ and npm**, then try a code guide on an existing local repository.
+Use the CLI from source with **Python 3.12+, uv and Git**, then try a code guide on an existing local repository.
 You can do this before configuring a GitHub identity, Docker or an agent.
 
 ```bash
 git clone https://github.com/tiammomo/RepoSteward.git
 cd RepoSteward
-uv sync --locked --python 3.12
+uv sync --locked --no-dev --python 3.12
 
-uv run reposteward understand scan /absolute/path/to/project
-uv run reposteward understand guide /absolute/path/to/project
-uv run reposteward understand query /absolute/path/to/project "symbol_or_path"
+uv run --no-dev reposteward understand scan /absolute/path/to/project
+uv run --no-dev reposteward understand guide /absolute/path/to/project
+uv run --no-dev reposteward understand query /absolute/path/to/project "symbol_or_path"
 ```
 
 Replace the path with your clone/worktree. `scan` writes an understanding cache outside
@@ -216,7 +216,7 @@ reposteward web
 - **Refresh GitHub facts explicitly.** `overview refresh` fetches and caches facts with timestamps and error states. `overview show` and web queries read local records; the web sync action explicitly creates a durable local operation. Open, merged and closed PRs retain their source timestamps and observed state.
 
 The FastAPI/React workbench provides local views and explicit GitHub synchronization of cross-project work, code guides,
-task continuity and review evidence. Installed wheels bundle the frontend and do not require Node.
+task continuity and review evidence. Web-enabled wheels bundle the frontend and do not require Node. Install the `web` extra for the HTTP dependencies. For source usage, run `uv run --extra web python scripts/build_frontend.py` explicitly (Node 22.12+ and npm required).
 In the Projects page, paste a GitHub URL or local path, review the plan, then link an existing directory, clone into a new directory, or follow the remote project only. Importing does not overwrite existing code or grant maintenance permissions.
 See [workbench (中文)](docs/local-workbench.zh-CN.md) and [agent assistance (中文)](docs/coding-agent-assistance.zh-CN.md).
 

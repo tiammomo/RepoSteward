@@ -19,15 +19,16 @@ RepoSteward 采用 Issue 驱动、聚焦 PR、自动检查和人工 Review 的�
 
 ## 本地开发
 
-项目需要 Python 3.12+、uv、Git 和 Docker。
+项目需要 Python 3.12+、uv、Git 和 Docker。完整网页回归还需要 Node 22.12+ 和 npm。
 
 ```bash
-uv sync
+uv sync --locked
+uv run python scripts/build_frontend.py
 uv run python -m unittest discover -s tests -v
 uvx ruff check .
 uvx ruff format --check .
 uv run reposteward --help
-uv build
+REPOSTEWARD_BUILD_WEB=1 uv build
 ```
 
 仅运行与改动相关的测试不足以替代完整检查。涉及容器验证链路时，还应构建并检查 Runner：

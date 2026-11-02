@@ -24,17 +24,17 @@ Copilot 编码；RepoSteward 在会话之外保存项目事实、决定、验证
 
 ## 快速开始
 
-从源码构建需要 **Python 3.12+、uv、Git、Node 22.12+ 和 npm**，然后可对已有本地仓库体验代码导览，
+从源码使用 CLI 需要 **Python 3.12+、uv 和 Git**，然后可对已有本地仓库体验代码导览，
 无需先配置 GitHub 身份、Docker 或 Agent。
 
 ```bash
 git clone https://github.com/tiammomo/RepoSteward.git
 cd RepoSteward
-uv sync --locked --python 3.12
+uv sync --locked --no-dev --python 3.12
 
-uv run reposteward understand scan /absolute/path/to/project
-uv run reposteward understand guide /absolute/path/to/project
-uv run reposteward understand query /absolute/path/to/project "symbol_or_path"
+uv run --no-dev reposteward understand scan /absolute/path/to/project
+uv run --no-dev reposteward understand guide /absolute/path/to/project
+uv run --no-dev reposteward understand query /absolute/path/to/project "symbol_or_path"
 ```
 
 将路径替换为你的 clone/worktree。`scan` 写入仓库外的理解缓存；`guide` 返回项目入口、
@@ -195,7 +195,9 @@ reposteward web
 - **线上事实显式刷新**：`overview refresh` 读取 GitHub 并保存带时间和错误状态的缓存；`overview show` 与网页查询读取本地事实；网页同步按钮显式创建持久本地操作，区分开放、已合并和已关闭 PR，并保留来源时间。
 
 FastAPI/React 工作台提供跨项目待办、项目导览和显式 GitHub 同步。任务按 WorkItem 归组，支持预算预览、保存接续包和排队执行受信任的隔离验证；接收确认、Agent 声明与验证证据分别展示。
-安装 wheel 已内置前端资源，日常使用无需 Node；在项目页粘贴 GitHub URL 或本地路径，审阅计划后可关联已有目录、克隆到新目录或仅关注远程项目；导入不覆盖已有代码，也不授予维护权限。
+带网页的 wheel 内置前端资源，安装时选择 `web` extra，日常使用无需 Node。
+从源码启动网页前，显式运行 `uv run --extra web python scripts/build_frontend.py`（需要 Node 22.12+ 和 npm）。
+在项目页粘贴 GitHub URL 或本地路径，审阅计划后可关联已有目录、克隆到新目录或仅关注远程项目；导入不覆盖已有代码，也不授予维护权限。
 详见[本地工作台](docs/local-workbench.zh-CN.md)与[Agent 接续指南](docs/coding-agent-assistance.zh-CN.md)。
 
 ## 从任务接续到 GitHub 维护

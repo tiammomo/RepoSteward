@@ -40,5 +40,6 @@ def load_assets() -> tuple[dict[str, tuple[bytes, str]], str]:
         return assets, manifest["inputs_digest"]
     except (OSError, KeyError, TypeError, ValueError) as exc:
         raise RuntimeError(
-            "Workbench assets missing or invalid; build or reinstall RepoSteward."
+            "Workbench assets missing or invalid; run uv run --extra web python "
+            "scripts/build_frontend.py in a source checkout, or install a web-enabled wheel."
         ) from exc

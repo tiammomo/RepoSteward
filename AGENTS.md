@@ -7,7 +7,9 @@ opens pull requests only after repository-specific gates and local human review.
 
 ## Commands
 
-- Install: `uv sync`
+- Core install (no Node): `uv sync --locked --no-dev`
+- Full development: `uv sync --locked`, then `uv run python scripts/build_frontend.py`
+- Web/release package: `REPOSTEWARD_BUILD_WEB=1 uv build` (requires prepared assets)
 - Tests: `uv run python -m unittest discover -s tests -v`
 - Lint: `uvx ruff check .`
 - Format check: `uvx ruff format --check .`
