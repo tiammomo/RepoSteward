@@ -344,6 +344,64 @@ class ExternalTasks:
             "public_write": False,
         }
 
+    def _observe_for_write(self, run_id: str):
+        """Freeze bytes outside SQLite, then fence task authority in the short write."""
+        store = self._store()
+        record = self._record(store, run_id)
+        observed = self.inspect(run_id, live=True)
+        snapshot = self._snapshot(
+            Path(record["workspace_root"]), store.run(run_id)["repository"]
+        )
+        if snapshot["digest"] != observed["current_snapshot"]["digest"]:
+            raise TaskConflict("workspace changed before saving task evidence")
+        return record, observed, snapshot
+
+    def _assert_write_observation(
+        self, store: Store, run_id: str, record: dict
+    ) -> None:
+        if self._record(store, run_id) != record:
+            raise TaskConflict(
+                "checkpoint revision changed or task authority changed concurrently"
+            )
+        run = store.run(run_id)
+        linked = self.registry.inspect(Path(record["workspace_root"]))
+        policy = self._policy(run["repository"])
+        base = local_git(
+            Path(record["workspace_root"]),
+            "rev-parse",
+            "--verify",
+            f"refs/remotes/origin/{run['details']['base_branch']}^{{commit}}",
+        )
+        if (
+            linked["project"]["id"] != record["project_id"]
+            or linked["binding"]["fingerprint"] != record["binding_fingerprint"]
+            or repository_policy_digest(policy) != record["policy_digest"]
+            or base != record["base_commit"]
+        ):
+            raise TaskConflict("task baseline or policy changed before saving evidence")
+
+    @staticmethod
+    def _checkpoint_retry(store, run_id, key, request_digest):
+        with store._connection() as db:
+            existing = db.execute(
+                "SELECT * FROM external_task_checkpoints WHERE run_id=? AND idempotency_key=?",
+                (run_id, key),
+            ).fetchone()
+        if existing is None:
+            return None
+        if existing["request_digest"] != request_digest:
+            raise TaskConflict(
+                "idempotency key already belongs to a different checkpoint request"
+            )
+        return {
+            "run_id": run_id,
+            "revision": existing["revision"],
+            "checkpoint_id": existing["checkpoint_id"],
+            "snapshot": snapshot_summary(json.loads(existing["snapshot"])),
+            "idempotent": True,
+            "public_write": False,
+        }
+
     def checkpoint(
         self,
         run_id: str,
@@ -399,31 +457,21 @@ class ExternalTasks:
             }
         )
         store = self._store(write=True)
+        retry = self._checkpoint_retry(store, run_id, idempotency_key, request_digest)
+        if retry is not None:
+            return retry
+        record, observed, snapshot = self._observe_for_write(run_id)
         with store.atomic():
-            record = self._record(store, run_id)
-            with store._connection() as db:
-                existing = db.execute(
-                    "SELECT * FROM external_task_checkpoints WHERE run_id=? AND idempotency_key=?",
-                    (run_id, idempotency_key),
-                ).fetchone()
-            if existing is not None:
-                if existing["request_digest"] != request_digest:
-                    raise TaskConflict(
-                        "idempotency key already belongs to a different checkpoint request"
-                    )
-                return {
-                    "run_id": run_id,
-                    "revision": existing["revision"],
-                    "checkpoint_id": existing["checkpoint_id"],
-                    "snapshot": snapshot_summary(json.loads(existing["snapshot"])),
-                    "idempotent": True,
-                    "public_write": False,
-                }
+            retry = self._checkpoint_retry(
+                store, run_id, idempotency_key, request_digest
+            )
+            if retry is not None:
+                return retry
+            self._assert_write_observation(store, run_id, record)
             if record["checkpoint_revision"] != expected_revision:
                 raise TaskConflict(
                     "checkpoint revision changed; reload the current task"
                 )
-            observed = self.inspect(run_id, live=True)
             if any(
                 reason != "workspace_changed_since_checkpoint"
                 for reason in observed["validity"]
@@ -438,7 +486,6 @@ class ExternalTasks:
                 raise TaskConflict(
                     "external attempt no longer accepts development checkpoints"
                 )
-            snapshot = self._snapshot(Path(record["workspace_root"]), run["repository"])
             if snapshot["digest"] != expected_snapshot:
                 raise TaskConflict("workspace changed before saving the checkpoint")
             bundle = store.context_bundle(run_id)

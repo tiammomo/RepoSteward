@@ -6,6 +6,10 @@ See [version and release policy](docs/releases.md) for verification and upgrade 
 
 ## [Unreleased]
 
+- Task handoff export, checkpoint creation and verification reservation observe source
+  outside SQLite writer transactions, then compare revision, scope and evidence before
+  atomic publication. Concurrent changes and idempotent retries retain their checks.
+
 - Workbench preparation reuses verified bundles after backend changes that preserve
   OpenAPI, skips unchanged API type generation, and shares TypeScript incremental
   checks between build and test. CI caches lock-bound npm downloads. Changed source

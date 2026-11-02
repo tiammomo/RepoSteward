@@ -248,6 +248,9 @@ class ExternalVerification:
                 ) from exc
             from reposteward.verification.execution import begin
 
+            observed_record, current, snapshot = self.tasks._observe_for_write(run_id)
+            if observed_record != record:
+                raise TaskConflict("task authority changed before verification")
             begin(directory)
             with store.atomic():
                 with store._connection() as db:
@@ -257,7 +260,7 @@ class ExternalVerification:
                         raise TaskConflict(
                             "verification request started concurrently; query its evidence ID"
                         )
-                current = self.tasks.inspect(run_id, live=True)
+                self.tasks._assert_write_observation(store, run_id, record)
                 fresh_run = store.run(run_id)
                 if fresh_run["status"] != "running" or fresh_run["stage"] != "external":
                     raise TaskConflict("external task is no longer running")
@@ -272,9 +275,6 @@ class ExternalVerification:
                     raise TaskConflict(
                         "task policy or base changed before verification"
                     )
-                snapshot = self.tasks._snapshot(
-                    Path(record["workspace_root"]), run["repository"]
-                )
                 if snapshot["digest"] != expected_snapshot:
                     raise TaskConflict("workspace changed before verification")
                 now = utc_now()

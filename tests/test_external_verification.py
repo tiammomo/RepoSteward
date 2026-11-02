@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import unittest
@@ -436,3 +437,20 @@ class ExternalVerificationTests(unittest.TestCase):
         finally:
             timer.cancel()
             timer.join()
+
+    def test_reservation_observes_source_without_a_writer_lock(self):
+        snapshot = self.check.tasks._snapshot
+        observations = []
+
+        def probe(*args):
+            with sqlite3.connect(
+                self.config.state_dir / "reposteward.sqlite3", timeout=0
+            ) as db:
+                db.execute("BEGIN IMMEDIATE")
+                db.rollback()
+            observations.append(True)
+            return snapshot(*args)
+
+        with patch.object(self.check.tasks, "_snapshot", side_effect=probe):
+            self.assertEqual(self.request()["outcome"], "passed")
+        self.assertGreaterEqual(len(observations), 2)

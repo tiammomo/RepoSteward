@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import unittest
 from dataclasses import replace
 from unittest.mock import patch
@@ -392,3 +393,43 @@ class TaskHandoffTests(unittest.TestCase):
             self.preview()
             self.handoffs.listing(*self.scope)
             self.local.listing(self.project_id)
+
+    def test_export_previews_allow_an_independent_writer(self):
+        plan = self.preview()["plan_digest"]
+        preview = self.handoffs.preview
+        observed = []
+
+        def probe(*args):
+            with sqlite3.connect(
+                self.config.state_dir / "reposteward.sqlite3", timeout=0
+            ) as db:
+                db.execute("BEGIN IMMEDIATE")
+                db.rollback()
+            observed.append(True)
+            return preview(*args)
+
+        with patch.object(self.handoffs, "preview", side_effect=probe):
+            self.export(plan=plan)
+        self.assertGreaterEqual(len(observed), 2)
+
+    def test_checkpoint_between_preview_and_write_rejects_export(self):
+        plan = self.preview()["plan_digest"]
+        preview = self.handoffs.preview
+        calls = 0
+
+        def advance(*args):
+            nonlocal calls
+            result = preview(*args)
+            calls += 1
+            if calls == 2:
+                test_external_tasks.ExternalTaskTests.checkpoint(
+                    self, self.run_id, key="racer"
+                )
+            return result
+
+        with (
+            patch.object(self.handoffs, "preview", side_effect=advance),
+            self.assertRaisesRegex(TaskConflict, "changed"),
+        ):
+            self.export(plan=plan)
+        self.assertEqual(self.handoffs.listing(*self.scope)["items"], [])
