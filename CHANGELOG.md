@@ -6,6 +6,10 @@ See [version and release policy](docs/releases.md) for verification and upgrade 
 
 ## [Unreleased]
 
+- Live task context and scoped knowledge reuse one workspace observation per read
+  response. Authority changes reject mixed reads; writes and verifier phases keep
+  independent fresh observations. No snapshot cache survives the response.
+
 - Task handoff export, checkpoint creation and verification reservation observe source
   outside SQLite writer transactions, then compare revision, scope and evidence before
   atomic publication. Concurrent changes and idempotent retries retain their checks.

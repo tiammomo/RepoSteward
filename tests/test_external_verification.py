@@ -21,7 +21,7 @@ from test_projects import git
 from reposteward.cli import main
 from reposteward.core.config import ConfigError, VerificationProfile, load_config
 from reposteward.core.models import CommandResult
-from reposteward.tasks.external import TaskConflict
+from reposteward.tasks.external import ExternalTasks, TaskConflict, _read_response
 from reposteward.verification.external import ExternalVerification
 from reposteward.verification.verifier import (
     DockerVerifier,
@@ -454,3 +454,65 @@ class ExternalVerificationTests(unittest.TestCase):
         with patch.object(self.check.tasks, "_snapshot", side_effect=probe):
             self.assertEqual(self.request()["outcome"], "passed")
         self.assertGreaterEqual(len(observations), 2)
+
+    def test_live_context_shares_one_snapshot_with_evidence_and_knowledge(self):
+        for index in range(3):
+            self.request(key=f"evidence-{index}")
+        snapshot = ExternalTasks._snapshot
+        with patch.object(
+            ExternalTasks, "_snapshot", autospec=True, side_effect=snapshot
+        ) as scan:
+            self.service.context(
+                self.task["run_id"], live=True, scope_paths=("source.txt",)
+            )
+        self.assertEqual(scan.call_count, 1)
+
+    def test_read_scope_does_not_survive_another_context_request(self):
+        self.request()
+        first = self.service.context(self.task["run_id"], live=True)
+        (self.repo / "source.txt").write_text("a later query sees this edit")
+        second = self.service.context(self.task["run_id"], live=True)
+        self.assertNotEqual(
+            first["current_snapshot"]["digest"], second["current_snapshot"]["digest"]
+        )
+
+    def test_verification_inside_a_read_scope_still_takes_fresh_observations(self):
+        @_read_response
+        def read_then_write():
+            self.service.inspect(self.task["run_id"], live=True)
+            (self.repo / "source.txt").write_text("changed after observation")
+            self.request()
+
+        with self.assertRaises(TaskConflict):
+            read_then_write()
+        self.assertEqual(self.calls, [])
+
+    def test_revision_change_during_context_rejects_mixed_observations(self):
+        self.request()
+        inspect = ExternalVerification.inspect
+        advanced = False
+
+        def advance(service, *args, **kwargs):
+            nonlocal advanced
+            if kwargs.get("live") and not advanced:
+                advanced = True
+                current = self.service.inspect(self.task["run_id"], live=True)
+                self.service.checkpoint(
+                    self.task["run_id"],
+                    expected_revision=0,
+                    expected_snapshot=current["current_snapshot"]["digest"],
+                    idempotency_key="advance-during-context",
+                    payload={"next_action": "new revision"},
+                )
+            return inspect(service, *args, **kwargs)
+
+        with (
+            patch.object(
+                ExternalVerification, "inspect", autospec=True, side_effect=advance
+            ),
+            self.assertRaisesRegex(TaskConflict, "authority changed"),
+        ):
+            self.service.context(self.task["run_id"], live=True)
+        self.assertEqual(
+            self.service.context(self.task["run_id"], live=True)["revision"], 1
+        )

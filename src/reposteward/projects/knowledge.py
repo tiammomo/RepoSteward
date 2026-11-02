@@ -13,7 +13,12 @@ from reposteward.context.pack import repository_policy_digest
 from reposteward.core.config import AppConfig
 from reposteward.projects.registry import canonical_digest
 from reposteward.storage.store import utc_now
-from reposteward.tasks.external import ExternalTasks, TaskConflict
+from reposteward.tasks.external import (
+    ExternalTasks,
+    TaskConflict,
+    _fresh_observation,
+    _read_response,
+)
 from reposteward.verification.external import ExternalVerification
 from reposteward.workflows.policy import PolicyError
 
@@ -131,6 +136,7 @@ class ProjectKnowledge:
             value[field] = json.loads(value[field])
         return value
 
+    @_fresh_observation
     def propose(self, run_id: str, payload: dict) -> dict:
         if not isinstance(payload, dict) or set(payload) - {
             "statement",
@@ -289,6 +295,7 @@ class ProjectKnowledge:
                 reasons.append("review_evidence_unavailable")
         return sorted(set(reasons))
 
+    @_fresh_observation
     def promote(
         self,
         run_id: str,
@@ -393,6 +400,7 @@ class ProjectKnowledge:
             "public_write": False,
         }
 
+    @_fresh_observation
     def dispose(
         self,
         run_id: str,
@@ -483,6 +491,7 @@ class ProjectKnowledge:
             "public_write": False,
         }
 
+    @_read_response
     def list(
         self,
         run_id: str,
@@ -506,7 +515,7 @@ class ProjectKnowledge:
         )
         after = _cursor_after(cursor, query)
         repository = store.run(run_id)["repository"]
-        snapshot = self.tasks._snapshot(Path(record["workspace_root"]), repository)
+        snapshot = self.tasks._read_snapshot(run_id, record, store.run(run_id))
         clauses, parameters = ["project_id=?"], [record["project_id"]]
         if not include_inactive:
             clauses.append("status='reviewed'")
