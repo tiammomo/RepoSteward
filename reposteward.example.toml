@@ -42,6 +42,8 @@ executable = "codex"
 timeout_seconds = 1800
 
 [runner]
+# Optional, trusted user configuration only; requires an immutable image ID/digest.
+# npm_download_cache_dir = "~/.cache/reposteward/npm-downloads"
 image = "reposteward-runner:latest"
 timeout_seconds = 1800
 cpus = 4

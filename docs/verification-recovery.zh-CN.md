@@ -25,3 +25,22 @@ reposteward verification reconcile RUN_ID VERIFICATION_ID --reason '核查中断
 
 数据库 schema 24 增加独立回执表。升级前停止共享状态的旧客户端，按 `state plan`
 和 `state upgrade` 完成备份与升级；只读命令不会自动迁移。
+
+
+## npm 下载缓存
+
+可在用户自己的配置中设置 `[runner] npm_download_cache_dir = "~/.cache/reposteward/npm-downloads"`，
+并把 `runner.image` 固定为 `sha256:<image-id>` 或 `image@sha256:<digest>`。项目配置中
+的同名路径不会生效。缓存默认关闭；无支持的 package-lock v2/v3 或不可变镜像身份时
+继续使用每次新建的验证环境。可通过 `docker image inspect <image> --format '{{.Id}}'`
+取得本机镜像 ID。
+
+缓存按账号、仓库、镜像、bootstrap 命令和锁文件内容隔离，只保存锁文件中 SHA512
+完整性值对应的 npm 下载包。每次恢复重新核对字节摘要；只在 bootstrap 成功后保存，
+测试阶段不写回。安装环境与 node_modules 每次独立创建，缓存目录不会挂进容器。
+不缓存可执行环境、可变 npm 索引、uv/Gradle/Maven 构建缓存。源码验证日志目录的
+`verification/sandbox.json` 记录缓存 key、恢复/保存文件数和拒绝文件数。
+
+单次最多处理 4096 个包、每包 64 MiB、合计 512 MiB；锁文件总量最多 16 MiB。
+旧 key 不自动清理，可在没有验证进程使用缓存时从用户指定目录清理。缓存异常不会被
+当成验证成功；缺失的依赖仍由原 bootstrap 安装，正式验证继续禁网。

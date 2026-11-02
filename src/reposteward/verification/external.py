@@ -56,10 +56,14 @@ class ExternalVerification:
 
     def _profile_digest(self, profile: VerificationProfile) -> str:
         boolean_fields = self.tasks._policy(profile.repository).env_template_booleans
+        runner = asdict(self.config.runner)
+        # Download placement does not change verification authority or its
+        # existing profile digest, and Path values are not JSON evidence.
+        runner.pop("npm_download_cache_dir", None)
         return canonical_digest(
             {
                 "profile": asdict(profile),
-                "runner": asdict(self.config.runner),
+                "runner": runner,
                 "trusted_sensitive_paths": self.config.safety.tracked_sensitive_paths_for(
                     profile.repository
                 ),

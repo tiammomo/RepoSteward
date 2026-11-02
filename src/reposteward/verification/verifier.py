@@ -136,6 +136,9 @@ class DockerVerifier:
                 "missing required verification: " + ", ".join(missing_markers),
             )
 
+        from reposteward.verification.npm_cache import NpmDownloadCache
+
+        cache = NpmDownloadCache.for_workspace(self.config, policy, worktree)
         verification_dir = run_dir / "verification" if run_dir is not None else None
         results: list[CommandResult] = []
         cancellation = (
@@ -150,6 +153,8 @@ class DockerVerifier:
             worktree, verification_dir, policy=policy
         ) as sandbox:
             sandbox_worktree, environment_dir, git_dir = sandbox
+            if cache is not None:
+                self._cache_report(verification_dir, cache.restore(environment_dir))
             if snapshot_guard is not None:
                 snapshot_guard(sandbox_worktree, "copied")
             if policy.bootstrap_commands:
@@ -173,6 +178,8 @@ class DockerVerifier:
                     return VerificationResult(
                         False, tuple(results), "dependency bootstrap failed"
                     )
+                if cache is not None:
+                    self._cache_report(verification_dir, cache.save(environment_dir))
             if snapshot_guard is not None:
                 snapshot_guard(sandbox_worktree, "bootstrapped")
             for index, command in enumerate(commands, start=1):
@@ -198,6 +205,14 @@ class DockerVerifier:
                         False, tuple(results), f"verification failed: {command}"
                     )
             return VerificationResult(True, tuple(results))
+
+    @staticmethod
+    def _cache_report(verification_dir: Path | None, report: dict) -> None:
+        if verification_dir is not None:
+            path = verification_dir / "sandbox.json"
+            manifest = json.loads(path.read_text())
+            manifest["npm_download_cache"] = report
+            path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
 
     @staticmethod
     def _sandbox_ignore(_directory: str, names: list[str]) -> set[str]:
