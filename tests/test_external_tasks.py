@@ -335,6 +335,62 @@ class ExternalTaskTests(unittest.TestCase):
             next(v for v in linked["files"] if v["path"] == "escape")["kind"], "symlink"
         )
 
+    def test_checkpoint_observes_bytes_without_a_writer_lock(self):
+        task = self.start()
+        snapshot = self.service._snapshot
+        observed = []
+
+        def probe(*args):
+            with sqlite3.connect(
+                self.config.state_dir / "reposteward.sqlite3", timeout=0
+            ) as db:
+                db.execute("BEGIN IMMEDIATE")
+                db.rollback()
+            observed.append(True)
+            return snapshot(*args)
+
+        with patch.object(self.service, "_snapshot", side_effect=probe):
+            result = self.checkpoint(task["run_id"])
+        self.assertEqual(result["revision"], 1)
+        self.assertGreaterEqual(len(observed), 2)
+
+    def test_concurrent_checkpoint_after_observation_wins_without_lost_update(self):
+        task = self.start()
+        run_id = task["run_id"]
+        current = self.service.inspect(run_id, live=True)
+        observe = self.service._observe_for_write
+        injected = False
+
+        def advance(*args):
+            nonlocal injected
+            result = observe(*args)
+            if not injected:
+                injected = True
+                self.service.checkpoint(
+                    run_id,
+                    expected_revision=0,
+                    expected_snapshot=current["current_snapshot"]["digest"],
+                    idempotency_key="winner",
+                    payload={"next_action": "winner"},
+                )
+            return result
+
+        with (
+            patch.object(self.service, "_observe_for_write", side_effect=advance),
+            self.assertRaisesRegex(TaskConflict, "revision changed"),
+        ):
+            self.service.checkpoint(
+                run_id,
+                expected_revision=0,
+                expected_snapshot=current["current_snapshot"]["digest"],
+                idempotency_key="loser",
+                payload={"next_action": "loser"},
+            )
+        self.assertEqual(self.service.inspect(run_id)["revision"], 1)
+        self.assertEqual(
+            self.service.inspect(run_id)["checkpoint"]["next_action"], "winner"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
