@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -31,6 +33,37 @@ MAX_CHECKPOINT_BYTES = 100_000
 
 class TaskConflict(RuntimeError):
     """The requested task revision, binding, or snapshot is no longer current."""
+
+
+_READ_SNAPSHOTS: ContextVar[dict | None] = ContextVar(
+    "task_read_snapshots", default=None
+)
+
+
+def _read_response(method):
+    @wraps(method)
+    def scoped(*args, **kwargs):
+        if _READ_SNAPSHOTS.get() is not None:
+            return method(*args, **kwargs)
+        token = _READ_SNAPSHOTS.set({})
+        try:
+            return method(*args, **kwargs)
+        finally:
+            _READ_SNAPSHOTS.reset(token)
+
+    return scoped
+
+
+def _fresh_observation(method):
+    @wraps(method)
+    def fresh(*args, **kwargs):
+        token = _READ_SNAPSHOTS.set(None)
+        try:
+            return method(*args, **kwargs)
+        finally:
+            _READ_SNAPSHOTS.reset(token)
+
+    return fresh
 
 
 class ExternalTasks:
@@ -311,7 +344,7 @@ class ExternalTasks:
             ):
                 raise TaskConflict("task workspace binding changed")
             policy = self._policy(run["repository"])
-            current = self._snapshot(Path(record["workspace_root"]), policy.name)
+            current = self._read_snapshot(run_id, record, run)
             if repository_policy_digest(policy) != record["policy_digest"]:
                 validity.append("policy_changed")
             base = local_git(
@@ -344,6 +377,37 @@ class ExternalTasks:
             "public_write": False,
         }
 
+    def _read_snapshot(self, run_id: str, record: dict, run: dict):
+        scope = _READ_SNAPSHOTS.get()
+        policy = self._policy(run["repository"])
+        key = (
+            str(self.config.state_dir.resolve()),
+            self.config.github.api_url,
+            self.config.github.login.casefold(),
+            run_id,
+        )
+        authority = canonical_digest(
+            {
+                "record": record,
+                "status": run["status"],
+                "stage": run["stage"],
+                "policy": repository_policy_digest(policy),
+                "sensitive_paths": self.config.safety.tracked_sensitive_paths_for(
+                    policy.name
+                ),
+            }
+        )
+        if scope is not None and key in scope:
+            previous, snapshot = scope[key]
+            if previous != authority:
+                raise TaskConflict("task authority changed during context query")
+            return snapshot
+        snapshot = self._snapshot(Path(record["workspace_root"]), policy.name)
+        if scope is not None:
+            scope[key] = (authority, snapshot)
+        return snapshot
+
+    @_fresh_observation
     def _observe_for_write(self, run_id: str):
         """Freeze bytes outside SQLite, then fence task authority in the short write."""
         store = self._store()
@@ -568,6 +632,7 @@ class ExternalTasks:
             "public_write": False,
         }
 
+    @_read_response
     def context(
         self,
         run_id: str,

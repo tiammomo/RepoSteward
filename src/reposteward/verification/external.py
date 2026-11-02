@@ -18,7 +18,7 @@ from reposteward.core.models import AgentResult
 from reposteward.projects.registry import canonical_digest
 from reposteward.storage.snapshots import snapshot_summary, verify_snapshot_copy
 from reposteward.storage.store import Store, utc_now
-from reposteward.tasks.external import ExternalTasks, TaskConflict
+from reposteward.tasks.external import ExternalTasks, TaskConflict, _fresh_observation
 from reposteward.verification.verifier import (
     DockerVerifier,
     VerificationCancelled,
@@ -189,6 +189,7 @@ class ExternalVerification:
             "public_write": False,
         }
 
+    @_fresh_observation
     def request(
         self,
         run_id: str,
