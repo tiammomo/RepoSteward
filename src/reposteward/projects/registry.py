@@ -30,6 +30,7 @@ from reposteward.storage.workspace import sanitized_environment
 
 PROJECT_SCHEMA_VERSION = 2
 MAX_GIT_OUTPUT = 1_000_000
+LOCAL_GIT_TIMEOUT_SECONDS = 15
 
 
 class ProjectError(RuntimeError):
@@ -79,10 +80,15 @@ def local_git(path: Path, *args: str, optional: bool = False) -> str:
             ],
             capture_output=True,
             check=False,
-            timeout=15,
+            timeout=LOCAL_GIT_TIMEOUT_SECONDS,
             env=env,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        raise ProjectError(
+            f"local Git query timed out after {LOCAL_GIT_TIMEOUT_SECONDS} seconds; "
+            "inspect workspace filesystem performance"
+        ) from exc
+    except OSError as exc:
         raise ProjectError("local Git query unavailable") from exc
     if len(result.stdout) > MAX_GIT_OUTPUT:
         raise ProjectError("local Git result exceeds the metadata limit")

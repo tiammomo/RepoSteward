@@ -107,6 +107,17 @@ MCP 绑定服务启动时的那个工作区，不接收任意 `path` 或命令�
 先用 CLI 扫描到同一配置状态目录的 `understanding/`。若 CLI 使用了额外的 `--cache-dir`，
 该独立缓存不会自动出现在 MCP 服务中。取消关联后，原服务的查询也会失效。
 
+## 本地 Git 查询超时
+
+扫描和新鲜度检查中的每次本地 Git 查询都有 15 秒上限。超过上限时，命令行报告
+`local Git query timed out after 15 seconds; inspect workspace filesystem performance`；
+这与 Git 无法启动时的 `local Git query unavailable` 分开，便于确定排查方向。
+
+可先在目标仓库中检查 `git status` 的耗时和文件系统访问速度。在 WSL 中，如果仓库位于
+`/mnt/c`、`/mnt/d` 等 Windows 挂载目录，可尝试使用 Linux 文件系统中的独立 clone 后重新扫描。
+此提示不表示所有超时都由挂载目录引起，也不会自动重试或提高查询时限。
+诊断不包含命令参数、工作区路径或 Git 输出；`--json-envelope` 保持现有错误分类。
+
 ## 覆盖与版本边界
 
 - 当前解析 Python AST 的模块、函数/类、静态导入和 main guard；读取 `pyproject.toml`、
