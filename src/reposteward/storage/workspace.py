@@ -40,13 +40,16 @@ def sanitized_environment(
     *,
     keep_codex_credentials: bool = True,
     keep_ssh_credentials: bool = False,
+    keep_anthropic_credentials: bool = False,
 ) -> dict[str, str]:
     result: dict[str, str] = {}
     for key, value in os.environ.items():
         upper = key.upper()
         if upper in SENSITIVE_ENV_NAMES:
-            if (keep_codex_credentials and upper == "CODEX_API_KEY") or (
-                keep_ssh_credentials and upper == "SSH_AUTH_SOCK"
+            if (
+                (keep_codex_credentials and upper == "CODEX_API_KEY")
+                or (keep_anthropic_credentials and upper == "ANTHROPIC_API_KEY")
+                or (keep_ssh_credentials and upper == "SSH_AUTH_SOCK")
             ):
                 result[key] = value
             continue

@@ -25,8 +25,15 @@ def run_doctor(config: AppConfig) -> tuple[dict[str, Any], bool]:
     }
     ok = True
     tools = ["git", "docker"]
+    harness_executable = ""
     if config.agent.harness == "codex-cli":
-        tools.append(config.agent.executable)
+        harness_executable = config.agent.executable
+    elif config.agent.harness == "claude-code":
+        from reposteward.agents.claude_code import resolve_executable
+
+        harness_executable = resolve_executable(config.agent)
+    if harness_executable:
+        tools.append(harness_executable)
     for tool in tools:
         path = shutil.which(tool)
         report["tools"][tool] = path or "missing"
@@ -49,6 +56,9 @@ def run_doctor(config: AppConfig) -> tuple[dict[str, Any], bool]:
         report["harness"]["sdk_available"] = sdk_available
         report["harness"]["install_hint"] = "uv sync --extra codex-sdk"
         ok = ok and sdk_available
+    if config.agent.harness == "claude-code":
+        report["harness"]["executable"] = harness_executable
+        report["harness"]["install_hint"] = "npm install -g @anthropic-ai/claude-code"
     if shutil.which("docker"):
         docker = subprocess.run(
             ["docker", "info", "--format", "{{.ServerVersion}}"],
