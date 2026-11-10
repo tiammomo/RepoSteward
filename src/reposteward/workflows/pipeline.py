@@ -6440,6 +6440,8 @@ class Pipeline:
         name = str(harness.get("name", "codex-cli")).strip() or "codex-cli"
         if name == "codex-cli":
             return "OpenAI Codex CLI"
+        if name == "claude-code":
+            return "Claude Code"
         if name == "external-workspace":
             return "an external coding workspace"
         return name
