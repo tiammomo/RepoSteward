@@ -113,4 +113,12 @@ def create_harness(config: AgentConfig) -> Harness:
         from reposteward.agents.codex_sdk import CodexSdkHarness
 
         return CodexSdkHarness(config)
+    if config.harness == "claude-code":
+        from reposteward.agents.claude_code import ClaudeCodeHarness
+
+        return ClaudeCodeHarness(config)
+    if config.harness == "copilot-cli":
+        from reposteward.agents.copilot_cli import CopilotCliHarness
+
+        return CopilotCliHarness(config)
     raise ConfigError(f"unsupported coding harness: {config.harness!r}")
